@@ -1,0 +1,79 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+# Query Language Design Principles
+
+## Core Concepts
+
+1. QueryKit DSL should be:
+   - Readable and intuitive
+   - Consistent across environments
+   - Type-safe
+   - Extensible
+
+## Query Structure
+
+### Filtering
+1. Basic operators:
+   - Comparison: `==`, `!=`, `>`, `>=`, `<`, `<=`
+   - Logical: `&&`, `||`, `!`
+2. Complex operations:
+   - String matching
+   - Array operations
+   - Nested property access
+
+### Sorting
+1. Sort syntax:
+   - Single field: `field ASC|DESC`
+   - Multiple fields: `field1 ASC, field2 DESC`
+2. Sort priorities respected in order
+
+## Type Safety
+
+1. All queries must be type-safe
+2. Runtime validation must match compile-time types
+3. Clear error messages for type mismatches
+4. Generic type parameters for reusability
+
+## Parser Implementation
+
+1. Clear separation of:
+   - Lexical analysis
+   - Syntax parsing
+   - Semantic validation
+2. Detailed error reporting
+3. Performance optimization
+4. Extensible grammar
+
+## Translation Layer
+
+1. Consistent translation interface
+2. Support for multiple targets:
+   - SQL (via Drizzle)
+   - In-memory filtering
+   - Future adapters
+3. Optimization opportunities
+4. Type preservation
+
+## Error Handling
+
+1. Clear error messages
+2. Validation at parse time
+3. Runtime safety checks
+4. Debugging support
+
+## Security
+
+1. Input validation
+2. Query size limits
+3. Resource usage controls
+4. Safe evaluation
+
+## Performance
+
+1. Efficient parsing
+2. Optimized translation
+3. Caching where appropriate
+4. Resource management

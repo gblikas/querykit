@@ -1,0 +1,77 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+# QueryKit Project Structure
+
+QueryKit is organized into several key architectural components, each with a specific responsibility. This guide outlines where different types of code should be located and how they relate to each other.
+
+## Core Components
+
+### Parser
+- Location: `src/parser`
+- Purpose: Core query parsing engine that converts QueryKit DSL expressions into structured internal format
+- Key files:
+  - Parser implementation
+  - AST type definitions
+  - Validation logic
+
+### Translators
+- Location: `src/translators`
+- Purpose: Convert parsed queries into target-specific formats
+- Each translator should be in its own subdirectory
+- Must implement the standard translator interface
+
+### Adapters
+- Location: `src/adapters`
+- Purpose: Connect QueryKit to external systems/libraries
+- Each adapter (e.g. Drizzle) has its own subdirectory
+- Must implement the standard adapter interface
+
+### CLI
+- Location: `src/cli`
+- Purpose: Command-line interface for QueryKit
+- Includes commands for:
+  - Query parsing/testing
+  - Query translation debugging
+  - Code generation utilities
+
+### Frontend Utilities
+- Location: `src/frontend`
+- Purpose: Browser-specific implementations and components
+- Includes:
+  - Query builder components
+  - Client-side filtering utilities
+  - Browser-optimized query parsing
+
+### Server Helpers
+- Location: `src/server`
+- Purpose: Server-side integration utilities
+- Includes:
+  - Middleware implementations
+  - Request parsing helpers
+  - Database integration utilities
+
+## Code Organization Guidelines
+
+1. Each major component should have its own directory
+2. Shared utilities go in `src/common`
+3. Types and interfaces should be in `types.ts` files within their relevant component
+4. Tests should be co-located with the code they test
+5. Examples should be in an `examples` directory at the root
+
+## TypeScript Guidelines
+
+1. Use strict TypeScript configuration
+2. Explicit return types on exported functions
+3. Prefer interfaces over type aliases for public APIs
+4. Use generics to ensure type safety across query operations
+
+## Testing Guidelines
+
+1. Jest for unit and integration tests
+2. Co-locate test files with implementation
+3. Use `.test.ts` or `.spec.ts` suffix
+4. Include both unit and integration tests
+5. Mock external dependencies appropriately
