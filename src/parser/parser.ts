@@ -224,16 +224,32 @@ export class QueryParser implements IQueryParser {
 
   /**
    * Convert a Liqe value to a QueryKit value
+   * Security: Strict type checking to prevent NoSQL injection via objects
    */
   private convertLiqeValue(value: unknown): QueryValue {
-    if (
-      typeof value === 'string' ||
-      typeof value === 'number' ||
-      typeof value === 'boolean' ||
-      value === null ||
-      Array.isArray(value)
-    ) {
+    // Security fix: Strict type checking to prevent object injection
+    if (value === null) {
+      return null;
+    }
+    
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
       return value as QueryValue;
+    }
+    
+    if (Array.isArray(value)) {
+      // Security fix: Recursively validate array elements
+      const validatedArray = value.map(item => {
+        if (typeof item === 'object' && item !== null) {
+          throw new QueryParseError('Object values are not allowed in arrays');
+        }
+        return this.convertLiqeValue(item);
+      });
+      return validatedArray as QueryValue;
+    }
+    
+    // Security fix: Reject all object types to prevent NoSQL injection
+    if (typeof value === 'object') {
+      throw new QueryParseError('Object values are not supported for security reasons');
     }
 
     throw new QueryParseError(`Unsupported value type: ${typeof value}`);
