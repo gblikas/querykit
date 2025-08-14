@@ -228,7 +228,11 @@ describe('Security Audit Tests', () => {
 
   describe('Query Complexity Limits', () => {
     it('should enforce maximum query depth', () => {
-      const deepQuery = parser.parse('((((name:"test"))))');
+      // Create a query with nested logical operations that exceeds depth limit of 3
+      // Each AND/OR/NOT adds to depth, not parentheses
+      const deepQuery = parser.parse(
+        'a:1 AND (b:2 AND (c:3 AND (d:4 AND e:5)))'
+      );
 
       expect(() => validator.validate(deepQuery)).toThrow(
         'Query exceeds maximum depth'
@@ -236,11 +240,16 @@ describe('Security Audit Tests', () => {
     });
 
     it('should enforce maximum clause count', () => {
-      const complexQuery = parser.parse(
-        'a:1 AND b:2 AND c:3 AND d:4 AND e:5 AND f:6 AND g:7'
-      );
+      // Create validator with lower clause count for this test
+      const strictValidator = new QuerySecurityValidator({
+        allowedFields: ['a', 'b', 'c', 'd', 'e', 'f', 'g'],
+        maxClauseCount: 3,
+        maxQueryDepth: 10 // Higher depth so clause count limit hits first
+      });
 
-      expect(() => validator.validate(complexQuery)).toThrow(
+      const complexQuery = parser.parse('a:1 AND b:2 AND c:3 AND d:4');
+
+      expect(() => strictValidator.validate(complexQuery)).toThrow(
         'Query exceeds maximum clause count'
       );
     });
