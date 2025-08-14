@@ -293,10 +293,11 @@ export class QuerySecurityValidator {
 
       // Security fix: Enhanced array validation to prevent bypass
       if (Array.isArray(value)) {
-        if (value.length > 100) { // Limit array size
+        if (value.length > 100) {
+          // Limit array size
           throw new QuerySecurityError('Array values cannot exceed 100 items');
         }
-        
+
         for (const item of value) {
           if (
             typeof item === 'string' &&
@@ -306,16 +307,22 @@ export class QuerySecurityValidator {
               `Query contains a string value in array that exceeds maximum length of ${this.options.maxValueLength} characters`
             );
           }
-          
+
           // Security fix: Prevent object injection in arrays
           if (typeof item === 'object' && item !== null) {
-            throw new QuerySecurityError('Object values are not allowed in arrays');
+            throw new QuerySecurityError(
+              'Object values are not allowed in arrays'
+            );
           }
         }
       }
-      
+
       // Security fix: Prevent object values entirely
-      if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+      if (
+        typeof value === 'object' &&
+        value !== null &&
+        !Array.isArray(value)
+      ) {
         throw new QuerySecurityError('Object values are not allowed');
       }
     } else {
@@ -344,15 +351,16 @@ export class QuerySecurityValidator {
         if (wildcardCount > 10) {
           throw new QuerySecurityError('Excessive wildcard usage');
         }
-        
+
         // Security fix: Prevent alternating patterns that cause catastrophic backtracking
-        if (/(\*[^*]*){5,}/.test(value)) {
+        // Pattern like "*a*b*c*d*e*f" (alternating * and non-* chars)
+        if (/(\*[^*]+){5,}/.test(value)) {
           throw new QuerySecurityError('Complex wildcard patterns not allowed');
         }
-        
+
         // Enhanced sanitization: limit consecutive wildcards
         const sanitized = value
-          .replace(/\*{2,}/g, '*')  // Limit consecutive asterisks
+          .replace(/\*{2,}/g, '*') // Limit consecutive asterisks
           .replace(/\?{2,}/g, '?'); // Limit consecutive question marks
         (expression as IComparisonExpression).value = sanitized;
       }
