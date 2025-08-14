@@ -200,13 +200,12 @@ export class QuerySecurityValidator {
 
     // Check each field in the query
     for (const field of fieldSet) {
-      // For security reasons, both denied fields and unauthorized fields return the same error
-      // to prevent field enumeration attacks
+      // Security fix: Generic error to prevent field enumeration attacks
       if (
         deniedFields.has(field) ||
         (allowedFields.size > 0 && !allowedFields.has(field))
       ) {
-        throw new QuerySecurityError(`Unknown field: ${field}`);
+        throw new QuerySecurityError('Invalid query parameters');
       }
     }
   }
@@ -273,6 +272,7 @@ export class QuerySecurityValidator {
 
   /**
    * Validate that string values do not exceed maximum length
+   * Security: Enhanced to prevent type confusion attacks via arrays/objects
    *
    * @private
    * @param expression - The query expression to validate
@@ -281,6 +281,7 @@ export class QuerySecurityValidator {
     if (expression.type === 'comparison') {
       const { value } = expression;
 
+      // Check string values
       if (
         typeof value === 'string' &&
         value.length > this.options.maxValueLength
@@ -290,7 +291,13 @@ export class QuerySecurityValidator {
         );
       }
 
+      // Security fix: Enhanced array validation to prevent bypass
       if (Array.isArray(value)) {
+        if (value.length > 100) {
+          // Limit array size
+          throw new QuerySecurityError('Array values cannot exceed 100 items');
+        }
+
         for (const item of value) {
           if (
             typeof item === 'string' &&
@@ -300,7 +307,23 @@ export class QuerySecurityValidator {
               `Query contains a string value in array that exceeds maximum length of ${this.options.maxValueLength} characters`
             );
           }
+
+          // Security fix: Prevent object injection in arrays
+          if (typeof item === 'object' && item !== null) {
+            throw new QuerySecurityError(
+              'Object values are not allowed in arrays'
+            );
+          }
         }
+      }
+
+      // Security fix: Prevent object values entirely
+      if (
+        typeof value === 'object' &&
+        value !== null &&
+        !Array.isArray(value)
+      ) {
+        throw new QuerySecurityError('Object values are not allowed');
       }
     } else {
       this.validateValueLengths(expression.left);
@@ -312,6 +335,7 @@ export class QuerySecurityValidator {
 
   /**
    * Sanitize wildcard patterns in LIKE queries to prevent regex DoS
+   * Security: Enhanced to prevent ReDoS attacks via catastrophic backtracking
    *
    * @private
    * @param expression - The query expression to sanitize
@@ -322,8 +346,22 @@ export class QuerySecurityValidator {
 
       // Only sanitize LIKE operators with string values
       if (operator === 'LIKE' && typeof value === 'string') {
-        // Simple sanitization: limit consecutive wildcards
-        const sanitized = value.replace(/\*{2,}/g, '*');
+        // Security fix: Count wildcards to prevent ReDoS
+        const wildcardCount = (value.match(/[*?]/g) || []).length;
+        if (wildcardCount > 10) {
+          throw new QuerySecurityError('Excessive wildcard usage');
+        }
+
+        // Security fix: Prevent alternating patterns that cause catastrophic backtracking
+        // Pattern like "*a*b*c*d*e*f" (alternating * and non-* chars)
+        if (/(\*[^*]+){5,}/.test(value)) {
+          throw new QuerySecurityError('Complex wildcard patterns not allowed');
+        }
+
+        // Enhanced sanitization: limit consecutive wildcards
+        const sanitized = value
+          .replace(/\*{2,}/g, '*') // Limit consecutive asterisks
+          .replace(/\?{2,}/g, '?'); // Limit consecutive question marks
         (expression as IComparisonExpression).value = sanitized;
       }
     } else {

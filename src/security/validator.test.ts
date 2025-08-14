@@ -145,7 +145,7 @@ describe('QuerySecurityValidator', () => {
       const query = parser.parse('name:"John" AND priority:>18');
       expect(() => validator.validate(query)).toThrow(QuerySecurityError);
       expect(() => validator.validate(query)).toThrow(
-        'Unknown field: priority'
+        'Invalid query parameters'
       );
     });
 
@@ -156,7 +156,7 @@ describe('QuerySecurityValidator', () => {
       const query = parser.parse('username:"admin" AND password:"secret"');
       expect(() => validator.validate(query)).toThrow(QuerySecurityError);
       expect(() => validator.validate(query)).toThrow(
-        'Unknown field: password'
+        'Invalid query parameters'
       );
     });
 
@@ -168,7 +168,7 @@ describe('QuerySecurityValidator', () => {
       const query = parser.parse('username:"admin" AND password:"secret"');
       expect(() => validator.validate(query)).toThrow(QuerySecurityError);
       expect(() => validator.validate(query)).toThrow(
-        'Unknown field: password'
+        'Invalid query parameters'
       );
     });
   });
@@ -351,7 +351,7 @@ describe('QuerySecurityValidator', () => {
 
       expect(() => validator.validate(mockQuery)).toThrow(QuerySecurityError);
       expect(() => validator.validate(mockQuery)).toThrow(
-        'Unknown field: malicious_field'
+        'Invalid query parameters'
       );
     });
 

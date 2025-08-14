@@ -141,8 +141,14 @@ export class DrizzleTranslator implements ITranslator<SQL> {
 
   /**
    * Build SQL for a specific operator with raw field name
+   * Security: Validates field names to prevent SQL injection
    */
   private buildSqlForOperator(fieldName: string, operator: string, value: unknown): SQL {
+    // Security fix: Validate field name format before using it (prevents SQL injection)
+    if (!this.isValidFieldName(fieldName)) {
+      throw new DrizzleTranslationError(`Invalid field name: ${fieldName}`);
+    }
+    
     switch (operator) {
       case '==':
         return sql`${sql.identifier(fieldName)} = ${value}`;
@@ -259,5 +265,23 @@ export class DrizzleTranslator implements ITranslator<SQL> {
     
     // If the field is not found in the schema or not in the format 'table.column'
     return null;
+  }
+
+  /**
+   * Security: Validates field names to prevent SQL injection
+   * Only allows alphanumeric chars, dots, underscores. Max 64 chars per part.
+   */
+  private isValidFieldName(fieldName: string): boolean {
+    const validFieldPattern = /^[a-zA-Z][a-zA-Z0-9._]*$/;
+    const parts = fieldName.split('.');
+    
+    // Only allow table.column format (max 2 parts)
+    if (parts.length > 2) return false;
+    
+    return parts.every(part => 
+      validFieldPattern.test(part) && 
+      part.length <= 64 && 
+      !part.includes('__') // Prevent reserved patterns
+    );
   }
 } 
