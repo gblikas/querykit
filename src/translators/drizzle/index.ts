@@ -1,12 +1,28 @@
 /**
  * Drizzle ORM Translator for QueryKit
- * 
+ *
  * This translator converts QueryKit AST expressions into Drizzle ORM
  * query conditions that can be used in Drizzle's SQL query builder.
  */
 
-import { SQL, SQLWrapper, eq, gt, gte, inArray, lt, lte, ne, notInArray, sql } from 'drizzle-orm';
-import { IComparisonExpression, ILogicalExpression, QueryExpression } from '../../parser/types';
+import {
+  SQL,
+  SQLWrapper,
+  eq,
+  gt,
+  gte,
+  inArray,
+  lt,
+  lte,
+  ne,
+  notInArray,
+  sql
+} from 'drizzle-orm';
+import {
+  IComparisonExpression,
+  ILogicalExpression,
+  QueryExpression
+} from '../../parser/types';
 import { ITranslator, ITranslatorOptions } from '../types';
 
 /**
@@ -82,20 +98,24 @@ export class DrizzleTranslator implements ITranslator<SQL> {
       case 'logical':
         return this.translateLogicalExpression(expression);
       default:
-        throw new DrizzleTranslationError(`Unsupported expression type: ${(expression as { type: string }).type}`);
+        throw new DrizzleTranslationError(
+          `Unsupported expression type: ${(expression as { type: string }).type}`
+        );
     }
   }
 
   /**
    * Translate a comparison expression to a Drizzle ORM condition
    */
-  private translateComparisonExpression(expression: IComparisonExpression): SQL {
+  private translateComparisonExpression(
+    expression: IComparisonExpression
+  ): SQL {
     const { field, operator, value } = expression;
     const fieldName = this.normalizeField(field);
-    
+
     // Get the field from the schema if available
     const schemaField = this.getSchemaField(fieldName);
-    
+
     // If we have a schema field, use it directly with Drizzle operators
     if (schemaField) {
       switch (operator) {
@@ -113,7 +133,9 @@ export class DrizzleTranslator implements ITranslator<SQL> {
           return lte(schemaField, value);
         case 'LIKE': {
           if (typeof value !== 'string') {
-            throw new DrizzleTranslationError('LIKE operator requires a string value');
+            throw new DrizzleTranslationError(
+              'LIKE operator requires a string value'
+            );
           }
           // Convert wildcard to SQL pattern and use the like function
           const sqlPattern = this.wildcardToSqlPattern(value);
@@ -121,19 +143,25 @@ export class DrizzleTranslator implements ITranslator<SQL> {
         }
         case 'IN':
           if (!Array.isArray(value)) {
-            throw new DrizzleTranslationError('IN operator requires an array value');
+            throw new DrizzleTranslationError(
+              'IN operator requires an array value'
+            );
           }
           return inArray(schemaField, value);
         case 'NOT IN':
           if (!Array.isArray(value)) {
-            throw new DrizzleTranslationError('NOT IN operator requires an array value');
+            throw new DrizzleTranslationError(
+              'NOT IN operator requires an array value'
+            );
           }
           return notInArray(schemaField, value);
         default:
-          throw new DrizzleTranslationError(`Unsupported operator: ${operator}`);
+          throw new DrizzleTranslationError(
+            `Unsupported operator: ${operator}`
+          );
       }
     }
-    
+
     // If we don't have a schema field, we need to build the SQL manually
     // Handle each operator type
     return this.buildSqlForOperator(fieldName, operator, value);
@@ -143,12 +171,16 @@ export class DrizzleTranslator implements ITranslator<SQL> {
    * Build SQL for a specific operator with raw field name
    * Security: Validates field names to prevent SQL injection
    */
-  private buildSqlForOperator(fieldName: string, operator: string, value: unknown): SQL {
+  private buildSqlForOperator(
+    fieldName: string,
+    operator: string,
+    value: unknown
+  ): SQL {
     // Security fix: Validate field name format before using it (prevents SQL injection)
     if (!this.isValidFieldName(fieldName)) {
       throw new DrizzleTranslationError(`Invalid field name: ${fieldName}`);
     }
-    
+
     switch (operator) {
       case '==':
         return sql`${sql.identifier(fieldName)} = ${value}`;
@@ -164,7 +196,9 @@ export class DrizzleTranslator implements ITranslator<SQL> {
         return sql`${sql.identifier(fieldName)} <= ${value}`;
       case 'LIKE': {
         if (typeof value !== 'string') {
-          throw new DrizzleTranslationError('LIKE operator requires a string value');
+          throw new DrizzleTranslationError(
+            'LIKE operator requires a string value'
+          );
         }
         // Convert wildcard to SQL pattern
         const sqlPattern = this.wildcardToSqlPattern(value);
@@ -172,7 +206,9 @@ export class DrizzleTranslator implements ITranslator<SQL> {
       }
       case 'IN': {
         if (!Array.isArray(value)) {
-          throw new DrizzleTranslationError('IN operator requires an array value');
+          throw new DrizzleTranslationError(
+            'IN operator requires an array value'
+          );
         }
         if (value.length === 0) {
           // Empty IN clause should always be false
@@ -182,7 +218,9 @@ export class DrizzleTranslator implements ITranslator<SQL> {
       }
       case 'NOT IN': {
         if (!Array.isArray(value)) {
-          throw new DrizzleTranslationError('NOT IN operator requires an array value');
+          throw new DrizzleTranslationError(
+            'NOT IN operator requires an array value'
+          );
         }
         if (value.length === 0) {
           // Empty NOT IN clause should always be true
@@ -202,10 +240,10 @@ export class DrizzleTranslator implements ITranslator<SQL> {
     // Replace * with % and ? with _ for SQL LIKE syntax
     // Also escape any existing SQL LIKE special characters
     return pattern
-      .replace(/%/g, '\\%')  // Escape existing %
-      .replace(/_/g, '\\_')  // Escape existing _
-      .replace(/\*/g, '%')   // * → %
-      .replace(/\?/g, '_');  // ? → _
+      .replace(/%/g, '\\%') // Escape existing %
+      .replace(/_/g, '\\_') // Escape existing _
+      .replace(/\*/g, '%') // * → %
+      .replace(/\?/g, '_'); // ? → _
   }
 
   /**
@@ -213,26 +251,30 @@ export class DrizzleTranslator implements ITranslator<SQL> {
    */
   private translateLogicalExpression(expression: ILogicalExpression): SQL {
     const { operator, left, right } = expression;
-    
+
     const leftSql = this.translateExpression(left);
-    
+
     if (operator === 'NOT') {
       return sql`NOT (${leftSql})`;
     }
-    
+
     if (!right) {
-      throw new DrizzleTranslationError(`${operator} operator requires two operands`);
+      throw new DrizzleTranslationError(
+        `${operator} operator requires two operands`
+      );
     }
-    
+
     const rightSql = this.translateExpression(right);
-    
+
     switch (operator) {
       case 'AND':
         return sql`(${leftSql}) AND (${rightSql})`;
       case 'OR':
         return sql`(${leftSql}) OR (${rightSql})`;
       default:
-        throw new DrizzleTranslationError(`Unsupported logical operator: ${operator}`);
+        throw new DrizzleTranslationError(
+          `Unsupported logical operator: ${operator}`
+        );
     }
   }
 
@@ -253,17 +295,29 @@ export class DrizzleTranslator implements ITranslator<SQL> {
   private getSchemaField(fieldName: string): SQLWrapper | null {
     // Extract table and column names from fieldName (e.g., 'users.id' -> { table: 'users', column: 'id' })
     const parts = fieldName.split('.');
-    
+
     if (parts.length === 2) {
       const [tableName, columnName] = parts;
       const table = this.options.schema[tableName];
-      
+
       if (table && columnName in table) {
         return table[columnName];
       }
     }
-    
-    // If the field is not found in the schema or not in the format 'table.column'
+
+    // Heuristic: if there's only one table in the schema, allow bare field lookup
+    if (parts.length === 1) {
+      const [onlyTableName] = Object.keys(this.options.schema);
+      if (onlyTableName) {
+        const table = this.options.schema[onlyTableName];
+        const columnName = parts[0];
+        if (table && columnName in table) {
+          return table[columnName];
+        }
+      }
+    }
+
+    // If the field is not found in the schema
     return null;
   }
 
@@ -274,14 +328,15 @@ export class DrizzleTranslator implements ITranslator<SQL> {
   private isValidFieldName(fieldName: string): boolean {
     const validFieldPattern = /^[a-zA-Z][a-zA-Z0-9._]*$/;
     const parts = fieldName.split('.');
-    
+
     // Only allow table.column format (max 2 parts)
     if (parts.length > 2) return false;
-    
-    return parts.every(part => 
-      validFieldPattern.test(part) && 
-      part.length <= 64 && 
-      !part.includes('__') // Prevent reserved patterns
+
+    return parts.every(
+      part =>
+        validFieldPattern.test(part) &&
+        part.length <= 64 &&
+        !part.includes('__') // Prevent reserved patterns
     );
   }
-} 
+}

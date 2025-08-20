@@ -1,5 +1,5 @@
 {
-  "name": "querykit",
+  "name": "@gblikas/querykit",
   "version": "0.1.0",
   "description": "A comprehensive query toolkit for TypeScript that simplifies building and executing data queries across different environments",
   "main": "dist/index.js",
@@ -28,6 +28,9 @@
   ],
   "author": "",
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
     "drizzle-orm": "^0.30.2",
     "liqe": "^3.3.0"

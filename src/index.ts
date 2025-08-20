@@ -11,6 +11,7 @@ import { QueryBuilder, IQueryBuilderOptions } from './query';
 import { QueryParser, IParserOptions } from './parser';
 import { SqlTranslator } from './translators/sql';
 import { ISecurityOptions, QuerySecurityValidator } from './security';
+import { IAdapter, IAdapterOptions } from './adapters';
 
 export {
   // Parser exports
@@ -52,7 +53,7 @@ export interface IQueryKitOptions {
   /**
    * The adapter to use for database connections
    */
-  adapter: unknown; // Replace with actual adapter interface
+  adapter: IAdapter;
 
   /**
    * The schema to use for query validation
@@ -63,6 +64,11 @@ export interface IQueryKitOptions {
    * Security options for query validation
    */
   security?: ISecurityOptions;
+
+  /**
+   * Options to initialize the provided adapter
+   */
+  adapterOptions?: IAdapterOptions & { [key: string]: unknown };
 }
 
 // Define interfaces for return types
@@ -70,6 +76,7 @@ interface IQueryExecutor {
   execute(): Promise<unknown[]>;
   orderBy(field: string, direction?: 'asc' | 'desc'): IQueryExecutor;
   limit(count: number): IQueryExecutor;
+  offset(count: number): IQueryExecutor;
 }
 
 interface IWhereClause {
@@ -85,37 +92,68 @@ export function createQueryKit(options: IQueryKitOptions): {
   const parser = new QueryParser();
   const securityValidator = new QuerySecurityValidator(options.security);
 
+  // Initialize adapter if options provided. If adapter is already initialized,
+  // calling initialize again with the same options should be a no-op for most adapters.
+  if (options.adapterOptions) {
+    const mergedAdapterOptions: IAdapterOptions & { [key: string]: unknown } = {
+      // Ensure adapter receives schema information if not already provided
+      schema: options.adapterOptions.schema ?? options.schema,
+      ...options.adapterOptions
+    } as IAdapterOptions & { [key: string]: unknown };
+
+    try {
+      options.adapter.initialize(mergedAdapterOptions);
+    } catch {
+      // If initialization fails here, the adapter might already be initialized
+      // or require a different init path; we'll let execute-time errors surface.
+    }
+  }
+
   // This function would be expanded to include all QueryKit functionality
   return {
     query: (table: string): IWhereClause => {
-      // This would be expanded to include query building functionality
       return {
         where: (queryString: string): IQueryExecutor => {
-          // Parse the query
-          const ast = parser.parse(queryString);
+          // Parse and validate the query
+          const expressionAst = parser.parse(queryString);
+          securityValidator.validate(expressionAst, options.schema);
 
-          // Validate against security constraints
-          securityValidator.validate(ast, options.schema);
+          // Execution state accumulated via fluent calls
+          let orderByState: Record<string, 'asc' | 'desc'> = {};
+          let limitState: number | undefined;
+          let offsetState: number | undefined;
 
-          // Return a query builder with the validated AST
           const executor: IQueryExecutor = {
-            // Additional query methods would be added here
             orderBy: (
-              /* eslint-disable-next-line @typescript-eslint/no-unused-vars */
-              _field: string,
-              /* eslint-disable-next-line @typescript-eslint/no-unused-vars */
-              _direction?: 'asc' | 'desc'
+              field: string,
+              direction: 'asc' | 'desc' = 'asc'
             ): IQueryExecutor => {
+              orderByState = { ...orderByState, [field]: direction };
               return executor;
             },
-            /* eslint-disable-next-line @typescript-eslint/no-unused-vars */
-            limit: (_count: number): IQueryExecutor => {
+            limit: (count: number): IQueryExecutor => {
+              limitState = count;
+              return executor;
+            },
+            offset: (count: number): IQueryExecutor => {
+              offsetState = count;
               return executor;
             },
             execute: async (): Promise<unknown[]> => {
-              // Actual query execution would happen here using the 'table' parameter
-              console.log(`Query executed on table: ${table}`);
-              return [];
+              // Delegate to adapter
+              const results = await options.adapter.execute(
+                table,
+                expressionAst,
+                {
+                  orderBy:
+                    Object.keys(orderByState).length > 0
+                      ? orderByState
+                      : undefined,
+                  limit: limitState,
+                  offset: offsetState
+                }
+              );
+              return results as unknown[];
             }
           };
 

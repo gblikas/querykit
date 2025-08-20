@@ -1,0 +1,105 @@
+name: Publish public release
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  publish-ghpkgs:
+    name: Publish package to GitHub Packages
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@gblikas'
+          always-auth: true
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 8
+          run_install: false
+
+      - name: Get pnpm store directory
+        id: pnpm-cache
+        shell: bash
+        run: |
+          echo "STORE_PATH=$(pnpm store path)" >> $GITHUB_OUTPUT
+
+      - name: Setup pnpm cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Verify tag matches package.json version
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: node -e "const v=require('./package.json').version; const tag=(process.env.TAG||'').replace(/^v/, ''); if(v!==tag){console.error(`package.json version ${v} does not match tag ${tag}`); process.exit(1)} else {console.log('Version matches tag:', v)}"
+
+      - name: Build package
+        run: pnpm run build
+
+      - name: Publish package to GitHub Packages
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: pnpm publish --no-git-checks
+
+  publish-npm:
+    name: Publish package to npm registry
+    runs-on: ubuntu-latest
+    needs: publish-ghpkgs
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+          always-auth: true
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 8
+          run_install: false
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Build package
+        run: pnpm run build
+
+      - name: Verify tag matches package.json version
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: node -e "const v=require('./package.json').version; const tag=(process.env.TAG||'').replace(/^v/, ''); if(v!==tag){console.error(`package.json version ${v} does not match tag ${tag}`); process.exit(1)} else {console.log('Version matches tag:', v)}"
+
+      - name: Publish package to npmjs
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: pnpm publish --no-git-checks --access public
+
+

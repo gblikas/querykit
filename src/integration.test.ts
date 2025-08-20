@@ -2,7 +2,7 @@ import { QueryParser } from './parser';
 import { DrizzleTranslator } from './translators/drizzle';
 import { DrizzleAdapter, IDrizzleDatabase } from './adapters/drizzle';
 import { SQLWrapper, SQL, sql } from 'drizzle-orm';
-import { createQueryBuilder } from './index';
+import { createQueryBuilder, createQueryKit } from './index';
 
 // Helper function to safely get SQL string value for testing
 function getSqlString(sqlObj: SQL): string {
@@ -88,6 +88,12 @@ describe('QueryKit Integration Tests', () => {
       expect(mockSelect).toHaveBeenCalled();
       expect(mockFrom).toHaveBeenCalled();
       expect(mockWhere).toHaveBeenCalled();
+
+      // Verify the WHERE clause reflects the parsed query
+      const whereArg = mockWhere.mock.calls[0][0] as unknown as SQL;
+      const whereStr = getSqlString(whereArg);
+      expect(whereStr).toContain('priority');
+      expect(whereStr.toLowerCase()).toContain('active');
     });
 
     it('should work with the query builder', async () => {
@@ -159,6 +165,38 @@ describe('QueryKit Integration Tests', () => {
         expect(stringTranslatedStr).toContain('priority');
         expect(builderTranslatedStr).toContain('priority');
       }
+    });
+  });
+
+  describe('Fluent API execution', () => {
+    it('executes a fluent query via createQueryKit', async () => {
+      const adapter = new DrizzleAdapter();
+      adapter.initialize({ db: mockDb, schema: mockSchema });
+
+      const qk = createQueryKit({
+        adapter,
+        schema: { todos: { id: {}, title: {}, priority: {}, status: {} } }
+      });
+
+      const results = await qk
+        .query('todos')
+        .where('priority:>1 AND status:"active"')
+        .orderBy('priority', 'desc')
+        .limit(10)
+        .execute();
+
+      expect(results).toHaveLength(2);
+      expect(mockSelect).toHaveBeenCalled();
+      expect(mockFrom).toHaveBeenCalled();
+      expect(mockWhere).toHaveBeenCalled();
+      expect(mockOrderBy).toHaveBeenCalled();
+      expect(mockLimit).toHaveBeenCalledWith(10);
+
+      // Verify WHERE clause from fluent path
+      const whereArg = mockWhere.mock.calls[0][0] as unknown as SQL;
+      const whereStr = getSqlString(whereArg);
+      expect(whereStr).toContain('priority');
+      expect(whereStr.toLowerCase()).toContain('active');
     });
   });
 });
