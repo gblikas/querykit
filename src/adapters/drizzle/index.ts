@@ -8,7 +8,7 @@ import { DrizzleTranslator } from '../../translators/drizzle';
 import { IAdapter, IAdapterOptions, IQueryExecutionOptions } from '../types';
 import { QueryExpression } from '../../parser/types';
 import { SQL, SQLWrapper, asc, desc, sql } from 'drizzle-orm';
-
+import { createQueryKit, QueryKit } from '../../index';
 /**
  * Type for Drizzle ORM database instance
  */
@@ -37,16 +37,18 @@ export interface IDrizzleQueryBuilder {
 /**
  * Options specific to the Drizzle adapter
  */
-export interface IDrizzleAdapterOptions extends IAdapterOptions {
+export interface IDrizzleAdapterOptions<
+  TSchema extends Record<string, unknown> = Record<string, unknown>
+> extends IAdapterOptions {
   /**
    * The Drizzle ORM database instance
    */
-  db: IDrizzleDatabase;
+  db: IDrizzleDatabase | unknown;
 
   /**
    * Schema information with Drizzle table definitions
    */
-  schema: Record<string, Record<string, SQLWrapper>>;
+  schema: TSchema;
 
   /**
    * Whether to normalize field names (e.g., lowercase them)
@@ -87,16 +89,19 @@ export class DrizzleAdapterError extends Error {
 /**
  * Adapter for Drizzle ORM
  */
-export class DrizzleAdapter implements IAdapter<IDrizzleAdapterOptions> {
-  private db!: IDrizzleDatabase;
-  private schema!: Record<string, Record<string, SQLWrapper>>;
+export class DrizzleAdapter<
+  TSchema extends Record<string, unknown> = Record<string, unknown>
+> implements IAdapter<IDrizzleAdapterOptions<TSchema>>
+{
+  private db!: unknown;
+  private schema!: TSchema;
   private translator!: DrizzleTranslator;
   private initialized: boolean = false;
 
   /**
    * Optionally initialize via constructor for convenience
    */
-  constructor(options?: IDrizzleAdapterOptions) {
+  constructor(options?: IDrizzleAdapterOptions<TSchema>) {
     if (options) {
       this.initialize(options);
     }
@@ -105,7 +110,7 @@ export class DrizzleAdapter implements IAdapter<IDrizzleAdapterOptions> {
   /**
    * Initialize the adapter with options
    */
-  public initialize(options: IDrizzleAdapterOptions): void {
+  public initialize(options: IDrizzleAdapterOptions<TSchema>): void {
     if (!options.db) {
       throw new DrizzleAdapterError('Drizzle db instance is required');
     }
@@ -119,7 +124,10 @@ export class DrizzleAdapter implements IAdapter<IDrizzleAdapterOptions> {
     this.translator = new DrizzleTranslator({
       normalizeFieldNames: options.normalizeFieldNames,
       fieldMappings: options.fieldMappings,
-      schema: options.schema
+      schema: options.schema as unknown as Record<
+        string,
+        Record<string, unknown>
+      >
     });
 
     this.initialized = true;
@@ -143,7 +151,7 @@ export class DrizzleAdapter implements IAdapter<IDrizzleAdapterOptions> {
 
     try {
       // Start with a base query
-      let query = this.db.select().from(table);
+      let query = (this.db as IDrizzleDatabase).select().from(table);
 
       // Add where condition if expression is provided
       if (expression) {
@@ -213,7 +221,7 @@ export class DrizzleAdapter implements IAdapter<IDrizzleAdapterOptions> {
    * Get a table from the schema
    */
   private getTable(tableName: string): unknown {
-    return this.schema[tableName];
+    return (this.schema as Record<string, unknown>)[tableName as string];
   }
 
   /**
@@ -223,7 +231,11 @@ export class DrizzleAdapter implements IAdapter<IDrizzleAdapterOptions> {
     tableName: string,
     fieldName: string
   ): SQLWrapper | null {
-    const table = this.schema[tableName];
+    const schemaAsColumns = this.schema as unknown as Record<
+      string,
+      Record<string, SQLWrapper>
+    >;
+    const table = schemaAsColumns[tableName];
     if (table && fieldName in table) {
       return table[fieldName];
     }
@@ -243,8 +255,45 @@ export class DrizzleAdapter implements IAdapter<IDrizzleAdapterOptions> {
 /**
  * Convenience factory to create a pre-initialized Drizzle adapter
  */
-export function drizzleAdapter(
-  options: IDrizzleAdapterOptions
-): DrizzleAdapter {
-  return new DrizzleAdapter(options);
+export function drizzleAdapter<TSchema extends Record<string, unknown>>(
+  options: IDrizzleAdapterOptions<TSchema>
+): DrizzleAdapter<TSchema> {
+  return new DrizzleAdapter<TSchema>(options);
+}
+
+// Helper types and factory for zero-cast DX with Drizzle tables
+export type RowTypeFromDrizzleTable<TTable> = TTable extends {
+  $inferSelect: infer R;
+}
+  ? R
+  : unknown;
+
+export type RowMapFromDrizzleSchema<TSchema extends Record<string, unknown>> = {
+  [K in keyof TSchema]: RowTypeFromDrizzleTable<TSchema[K]>;
+};
+
+export function createDrizzleQueryKit<
+  TSchema extends Record<string, object>
+>(args: {
+  db: unknown;
+  schema: TSchema;
+  normalizeFieldNames?: boolean;
+  fieldMappings?: Record<string, string>;
+  security?: import('../../security').ISecurityOptions;
+}): QueryKit<TSchema, RowMapFromDrizzleSchema<TSchema>> {
+  const adapter = new DrizzleAdapter<TSchema>();
+  adapter.initialize({
+    db: args.db,
+    schema: args.schema,
+    normalizeFieldNames: args.normalizeFieldNames,
+    fieldMappings: args.fieldMappings
+  });
+
+  type RowMap = RowMapFromDrizzleSchema<TSchema>;
+
+  return createQueryKit<TSchema, RowMap>({
+    adapter,
+    schema: args.schema as unknown as TSchema,
+    security: args.security
+  });
 }

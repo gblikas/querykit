@@ -32,7 +32,7 @@ export interface IDrizzleTranslatorOptions extends ITranslatorOptions {
   /**
    * Schema information for type safety
    */
-  schema?: Record<string, Record<string, SQLWrapper>>;
+  schema?: Record<string, Record<string, unknown>>;
 }
 
 /**
@@ -298,10 +298,12 @@ export class DrizzleTranslator implements ITranslator<SQL> {
 
     if (parts.length === 2) {
       const [tableName, columnName] = parts;
-      const table = this.options.schema[tableName];
+      const table = this.options.schema[tableName] as
+        | Record<string, unknown>
+        | undefined;
 
       if (table && columnName in table) {
-        return table[columnName];
+        return table[columnName] as SQLWrapper;
       }
     }
 
@@ -309,10 +311,12 @@ export class DrizzleTranslator implements ITranslator<SQL> {
     if (parts.length === 1) {
       const [onlyTableName] = Object.keys(this.options.schema);
       if (onlyTableName) {
-        const table = this.options.schema[onlyTableName];
+        const table = this.options.schema[onlyTableName] as
+          | Record<string, unknown>
+          | undefined;
         const columnName = parts[0];
         if (table && columnName in table) {
-          return table[columnName];
+          return table[columnName] as SQLWrapper;
         }
       }
     }

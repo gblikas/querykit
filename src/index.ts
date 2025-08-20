@@ -49,7 +49,12 @@ export function createQueryParser(options?: IParserOptions): QueryParser {
 /**
  * Options for creating a new QueryKit instance
  */
-export interface IQueryKitOptions {
+export interface IQueryKitOptions<
+  TSchema extends Record<string, object> = Record<
+    string,
+    Record<string, unknown>
+  >
+> {
   /**
    * The adapter to use for database connections
    */
@@ -58,7 +63,7 @@ export interface IQueryKitOptions {
   /**
    * The schema to use for query validation
    */
-  schema: Record<string, Record<string, unknown>>;
+  schema: TSchema;
 
   /**
    * Security options for query validation
@@ -72,23 +77,38 @@ export interface IQueryKitOptions {
 }
 
 // Define interfaces for return types
-interface IQueryExecutor {
-  execute(): Promise<unknown[]>;
-  orderBy(field: string, direction?: 'asc' | 'desc'): IQueryExecutor;
-  limit(count: number): IQueryExecutor;
-  offset(count: number): IQueryExecutor;
+export interface IQueryExecutor<TResult> {
+  execute(): Promise<TResult[]>;
+  orderBy(field: string, direction?: 'asc' | 'desc'): IQueryExecutor<TResult>;
+  limit(count: number): IQueryExecutor<TResult>;
+  offset(count: number): IQueryExecutor<TResult>;
 }
 
-interface IWhereClause {
-  where(queryString: string): IQueryExecutor;
+export interface IWhereClause<TResult> {
+  where(queryString: string): IQueryExecutor<TResult>;
 }
+
+/**
+ * Public QueryKit type
+ */
+export type QueryKit<
+  TSchema extends Record<string, object>,
+  TRows extends { [K in keyof TSchema & string]: unknown } = {
+    [K in keyof TSchema & string]: unknown;
+  }
+> = {
+  query<K extends keyof TSchema & string>(table: K): IWhereClause<TRows[K]>;
+};
 
 /**
  * Create a new QueryKit instance
  */
-export function createQueryKit(options: IQueryKitOptions): {
-  query(table: string): IWhereClause;
-} {
+export function createQueryKit<
+  TSchema extends Record<string, object>,
+  TRows extends { [K in keyof TSchema & string]: unknown } = {
+    [K in keyof TSchema & string]: unknown;
+  }
+>(options: IQueryKitOptions<TSchema>): QueryKit<TSchema, TRows> {
   const parser = new QueryParser();
   const securityValidator = new QuerySecurityValidator(options.security);
 
@@ -111,35 +131,40 @@ export function createQueryKit(options: IQueryKitOptions): {
 
   // This function would be expanded to include all QueryKit functionality
   return {
-    query: (table: string): IWhereClause => {
+    query: <K extends keyof TSchema & string>(
+      table: K
+    ): IWhereClause<TRows[K]> => {
       return {
-        where: (queryString: string): IQueryExecutor => {
+        where: (queryString: string): IQueryExecutor<TRows[K]> => {
           // Parse and validate the query
           const expressionAst = parser.parse(queryString);
-          securityValidator.validate(expressionAst, options.schema);
+          securityValidator.validate(
+            expressionAst,
+            options.schema as unknown as Record<string, Record<string, unknown>>
+          );
 
           // Execution state accumulated via fluent calls
           let orderByState: Record<string, 'asc' | 'desc'> = {};
           let limitState: number | undefined;
           let offsetState: number | undefined;
 
-          const executor: IQueryExecutor = {
+          const executor: IQueryExecutor<TRows[K]> = {
             orderBy: (
               field: string,
               direction: 'asc' | 'desc' = 'asc'
-            ): IQueryExecutor => {
+            ): IQueryExecutor<TRows[K]> => {
               orderByState = { ...orderByState, [field]: direction };
               return executor;
             },
-            limit: (count: number): IQueryExecutor => {
+            limit: (count: number): IQueryExecutor<TRows[K]> => {
               limitState = count;
               return executor;
             },
-            offset: (count: number): IQueryExecutor => {
+            offset: (count: number): IQueryExecutor<TRows[K]> => {
               offsetState = count;
               return executor;
             },
-            execute: async (): Promise<unknown[]> => {
+            execute: async (): Promise<TRows[K][]> => {
               // Delegate to adapter
               const results = await options.adapter.execute(
                 table,
@@ -153,7 +178,7 @@ export function createQueryKit(options: IQueryKitOptions): {
                   offset: offsetState
                 }
               );
-              return results as unknown[];
+              return results as TRows[K][];
             }
           };
 
