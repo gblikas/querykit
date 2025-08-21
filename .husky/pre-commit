@@ -1,0 +1,30 @@
+#!/usr/bin/env sh
+. "$(dirname -- "$0")/_/husky.sh"
+
+# Check if SKIP_TESTS is set to true
+if [ "$SKIP_TESTS" = "true" ]; then
+  echo "⚠️ Skipping tests due to SKIP_TESTS=true"
+  echo "⚠️ This should only be used for emergency fixes!"
+  RUN_TESTS=false
+else
+  RUN_TESTS=true
+fi
+
+echo "Running pre-commit checks..."
+
+# Run lint-staged to process only changed files
+echo "🔍 Running lint-staged..."
+pnpm lint-staged || { echo "❌ Linting failed"; exit 1; }
+
+# Check TypeScript compilation
+echo "🔍 Checking TypeScript compilation..."
+pnpm exec tsc --noEmit || { echo "❌ TypeScript check failed"; exit 1; }
+
+# Run tests
+if [ "$RUN_TESTS" = "true" ]; then
+  echo "🧪 Running tests..."
+  pnpm test || { echo "❌ Tests failed"; exit 1; }
+fi
+
+# If everything passes, allow the commit
+echo "✅ Pre-commit checks passed!" 

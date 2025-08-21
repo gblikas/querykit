@@ -1,0 +1,118 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+# SOLID Principles in QueryKit
+
+## Single Responsibility Principle (SRP)
+
+1. Each module should have one reason to change
+2. Implementation guidelines:
+   - Parser only handles parsing
+   - Translators only handle translation
+   - Adapters only handle integration
+3. Examples:
+   - `Parser` class focuses only on converting DSL to AST
+   - `DrizzleTranslator` only handles Drizzle-specific translation
+   - `ValidationService` only handles query validation
+
+## Open/Closed Principle (OCP)
+
+1. Software entities should be open for extension but closed for modification
+2. Implementation guidelines:
+   - Use interfaces for core components
+   - Implement new features through extension
+   - Avoid modifying existing, tested code
+3. Examples:
+   - New query operators via operator registry
+   - Custom translators via translator interface
+   - New adapters via adapter interface
+
+## Liskov Substitution Principle (LSP)
+
+1. Subtypes must be substitutable for their base types
+2. Implementation guidelines:
+   - Maintain contract consistency
+   - Preserve invariants
+   - Follow interface specifications
+3. Examples:
+   - All translators must preserve query semantics
+   - Custom operators must maintain type safety
+   - Adapters must handle all valid queries
+
+## Interface Segregation Principle (ISP)
+
+1. Clients should not depend on interfaces they don't use
+2. Implementation guidelines:
+   - Split large interfaces
+   - Create focused, cohesive interfaces
+   - Allow selective implementation
+3. Examples:
+   ```typescript
+   // Instead of one large interface:
+   interface QueryProcessor {
+     parse(): AST;
+     validate(): boolean;
+     translate(): string;
+   }
+   
+   // Split into focused interfaces:
+   interface Parser {
+     parse(): AST;
+   }
+   
+   interface Validator {
+     validate(): boolean;
+   }
+   
+   interface Translator {
+     translate(): string;
+   }
+   ```
+
+## Dependency Inversion Principle (DIP)
+
+1. High-level modules should not depend on low-level modules
+2. Implementation guidelines:
+   - Depend on abstractions
+   - Use dependency injection
+   - Define clear interfaces
+3. Examples:
+   ```typescript
+   // Instead of:
+   class QueryExecutor {
+     private drizzleTranslator = new DrizzleTranslator();
+   }
+   
+   // Use:
+   class QueryExecutor {
+     constructor(private translator: ITranslator) {}
+   }
+   ```
+
+## Practical Application
+
+### Component Design
+1. Create interfaces before implementations
+2. Use abstract factories for component creation
+3. Implement dependency injection
+4. Design for extensibility
+
+### Code Organization
+1. Group related interfaces together
+2. Separate interface definitions from implementations
+3. Use meaningful namespaces
+4. Maintain clear dependency hierarchy
+
+### Testing
+1. Test against interfaces, not implementations
+2. Use mock implementations for testing
+3. Verify LSP compliance
+4. Test extension points
+
+### Documentation
+1. Document interface contracts
+2. Specify invariants
+3. Explain extension points
+4. Provide implementation examples

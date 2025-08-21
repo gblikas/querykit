@@ -1,0 +1,78 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+# Testing Standards
+
+## Test Organization
+
+1. Co-locate tests with source files
+2. Use descriptive test file names:
+   - `[feature].test.ts`
+   - `[feature].spec.ts`
+3. Group related tests in describe blocks
+4. Use clear test case descriptions
+
+## Test Structure
+
+### Unit Tests
+1. Follow Arrange-Act-Assert pattern
+2. One assertion per test when possible
+3. Clear setup and teardown
+4. Mock external dependencies
+
+### Integration Tests
+1. Test component interactions
+2. Focus on public APIs
+3. Minimize mocking where possible
+4. Test error cases and edge conditions
+
+## Naming Conventions
+
+1. Test variables:
+   - `inputX` for test inputs
+   - `expectedX` for expected results
+   - `actualX` for actual results
+   - `mockX` for mocks
+2. Test descriptions:
+   - Should describe the scenario
+   - Include expected behavior
+   - Mention important conditions
+
+## Test Coverage
+
+1. Required coverage:
+   - Public APIs: 100%
+   - Internal implementation: 80%
+   - Edge cases and error conditions
+2. Types of tests needed:
+   - Unit tests for individual components
+   - Integration tests for component interaction
+   - E2E tests for critical paths
+
+## Mocking Guidelines
+
+1. Mock external dependencies
+2. Use Jest mock functions
+3. Clear mock setup and verification
+4. Reset mocks between tests
+5. Document mock behavior
+
+## Best Practices
+
+1. Keep tests focused and simple
+2. Avoid test interdependence
+3. Clean up test resources
+4. Use appropriate assertions
+5. Test both success and failure cases
+6. Include performance tests where relevant
+7. Attempt feature-first development
+
+## Test Data
+
+1. Use factories for test data
+2. Keep test data minimal
+3. Make test data intention clear
+4. Avoid sharing mutable test data
+5. Use meaningful test values

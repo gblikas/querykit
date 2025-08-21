@@ -1,0 +1,114 @@
+name: QueryKit CI
+
+on:
+  push:
+    branches: [main, staging]
+  pull_request:
+    branches: [main, staging]
+
+jobs:
+  test:
+    name: Test & Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 8
+          run_install: false
+
+      - name: Get pnpm store directory
+        id: pnpm-cache
+        shell: bash
+        run: |
+          echo "STORE_PATH=$(pnpm store path)" >> $GITHUB_OUTPUT
+
+      - name: Setup pnpm cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+
+      - name: Install dependencies
+        run: pnpm i
+
+      - name: Lint code
+        run: pnpm run lint
+
+      - name: Check TypeScript compilation
+        run: pnpm exec tsc --noEmit
+
+      - name: Run tests
+        run: pnpm run test
+
+  build:
+    name: Build Package
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [18.x, 20.x]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 8
+          run_install: false
+
+      - name: Get pnpm store directory
+        id: pnpm-cache
+        shell: bash
+        run: |
+          echo "STORE_PATH=$(pnpm store path)" >> $GITHUB_OUTPUT
+
+      - name: Setup pnpm cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-store-node-${{ matrix.node-version }}-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-node-${{ matrix.node-version }}-
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Build package
+        run: pnpm run build
+
+      - name: Create test package
+        run: pnpm pack
+
+      - name: Verify package exports
+        run: |
+          # Ensure package can be imported
+          mkdir -p test-import
+          cd test-import
+          echo '{ "type": "module" }' > package.json
+          echo 'import * as querykit from "../dist/index.js"; console.log("Package import successful!")' > test.js
+          node test.js
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: querykit-package-${{ matrix.node-version }}
+          path: querykit-*.tgz
+
+  

@@ -1,0 +1,105 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+# TypeScript Coding Standards
+
+## Basic Principles
+
+1. Use English for all code and documentation
+2. Always declare explicit types
+3. Document public APIs with JSDoc
+4. One export per file
+5. Avoid blank lines within functions
+6. Follow SOLID principles (see `05-solid-principles.mdc`)
+
+## Naming Conventions
+
+### Case Styles
+- `PascalCase` for:
+  - Classes
+  - Interfaces
+  - Type aliases
+  - Enums
+- `camelCase` for:
+  - Variables
+  - Functions
+  - Methods
+  - Properties
+- `kebab-case` for:
+  - File names
+  - Directory names
+- `UPPERCASE` for:
+  - Constants
+  - Environment variables
+- `I` prefix for interfaces (e.g., `ITranslator`)
+
+### Naming Rules
+1. Start boolean variables with verbs:
+   - `isLoading`
+   - `hasError`
+   - `canDelete`
+2. Start functions with verbs
+3. Use complete words (no abbreviations except standard ones)
+   - Allowed: `API`, `URL`, `i` (loop), `err`, `ctx`, `req`, `res`
+4. Interface names should describe capabilities
+
+## Function Guidelines
+
+1. Keep functions short (< 20 instructions)
+2. Single responsibility principle
+3. Use early returns to avoid nesting
+4. Prefer higher-order functions (`map`, `filter`, `reduce`)
+5. Use default parameters instead of null checks
+6. Follow RO-RO (Receive Object, Return Object) pattern
+7. Maintain single level of abstraction
+8. Design for extension (OCP)
+
+## Interface and Class Design
+
+1. Program to interfaces, not implementations
+2. Keep interfaces focused and cohesive (ISP)
+3. Use composition over inheritance
+4. Implement dependency injection (DIP)
+5. Ensure proper interface segregation
+6. Make base classes substitutable (LSP)
+
+## Type Safety
+
+1. Avoid `any` type
+2. Create specific types/interfaces
+3. Use generics for reusable components
+4. Prefer `unknown` over `any` when type is uncertain
+5. Use union types for finite possibilities
+6. Leverage TypeScript's strict mode
+
+## Error Handling
+
+1. Use typed errors
+2. Prefer error objects over strings
+3. Handle async errors with try/catch
+4. Document error cases in JSDoc
+5. Create specific error types for different cases
+
+## Code Organization
+
+1. Group related types together
+2. Export types from dedicated type files
+3. Keep circular dependencies in check
+4. Use barrel exports for public APIs
+5. Separate interfaces from implementations
+6. Use dependency injection containers where appropriate
+
+## Documentation
+
+1. JSDoc for all public APIs
+2. Include example usage in docs
+3. Document generic type parameters
+4. Note any side effects
+5. Specify error cases and conditions
+6. Document interface contracts and invariants
+
+## Additional Context
+
+1. Use pnpm 
