@@ -29,6 +29,7 @@ import sqlLanguage from 'react-syntax-highlighter/dist/esm/languages/hljs/sql';
 import { toast } from 'sonner';
 import Aurora from '@/components/reactbits/blocks/Backgrounds/Aurora/Aurora';
 import { PGlite } from '@electric-sql/pglite';
+import { useViewportInfo } from './hooks/use-viewport-info';
 
 // Simple GitHub-like highlighter for key:value tokens that colors only the value
 const escapeHtml = (input: string): string =>
@@ -99,6 +100,10 @@ export default function Home(): JSX.Element {
   const cardContentRef = useRef<HTMLDivElement | null>(null);
   const [cardMaxHeightPx, setCardMaxHeightPx] = useState<number | null>(null);
   const COPY_FEEDBACK_MS = 2000;
+
+  // Viewport info for small-height detection
+  const { isShortSideLessThan } = useViewportInfo();
+  const isShortViewport = isShortSideLessThan(390);
 
   // Register languages once
   useEffect(() => {
@@ -711,54 +716,64 @@ export default function Home(): JSX.Element {
                     </div>
                   </div>
                   <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3 text-sm">
-                    <div className="rounded-md border p-3 bg-background/50">
-                      <div className="text-xs text-muted-foreground">
-                        DB time (EXPLAIN)
+                    {!isShortViewport && (
+                      <div className="rounded-md border p-3 bg-background/50">
+                        <div className="text-xs text-muted-foreground">
+                          DB time (EXPLAIN)
+                        </div>
+                        <div className="mt-1 text-base font-medium">
+                          {dbExecutionMs !== null
+                            ? `${dbExecutionMs.toFixed(3)} ms`
+                            : '-'}
+                        </div>
                       </div>
-                      <div className="mt-1 text-base font-medium">
-                        {dbExecutionMs !== null
-                          ? `${dbExecutionMs.toFixed(3)} ms`
-                          : '-'}
-                      </div>
-                    </div>
+                    )}
                     <div className="rounded-md border p-3 bg-background/50">
                       <div className="text-xs text-muted-foreground">
                         Rows returned
                       </div>
                       <div className="mt-1 text-base font-medium">{`${results.length} of ${rowsScanned ?? results.length}`}</div>
                     </div>
-                    <div className="rounded-md border p-3 bg-background/50">
-                      <div className="text-xs text-muted-foreground">
-                        Engine
-                      </div>
-                      <div className="mt-1">
-                        <span className="inline-flex items-center rounded-full border px-2 py-0.5 text-xs bg-muted">
-                          {usedQueryKit
-                            ? 'QueryKit · Drizzle'
-                            : 'Client fallback'}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                  <div className="mt-3">
-                    <div className="text-xs text-muted-foreground mb-1">
-                      Detected operators
-                    </div>
-                    {operatorsUsed.length ? (
-                      <div className="flex flex-wrap gap-2">
-                        {operatorsUsed.map(op => (
-                          <span
-                            key={op}
-                            className="inline-flex items-center rounded-full border bg-muted px-2 py-0.5 text-xs font-medium"
-                          >
-                            {op}
+                    {!isShortViewport && (
+                      <div className="rounded-md border p-3 bg-background/50">
+                        <div className="text-xs text-muted-foreground">
+                          Engine
+                        </div>
+                        <div className="mt-1">
+                          <span className="inline-flex items-center rounded-full border px-2 py-0.5 text-xs bg-muted">
+                            {usedQueryKit
+                              ? 'QueryKit · Drizzle'
+                              : 'Client fallback'}
                           </span>
-                        ))}
+                        </div>
                       </div>
-                    ) : (
-                      <div className="text-xs text-muted-foreground">-</div>
                     )}
                   </div>
+                  {!isShortViewport ? (
+                    <div className="mt-3">
+                      <div className="text-xs text-muted-foreground mb-1">
+                        Detected operators
+                      </div>
+                      {operatorsUsed.length ? (
+                        <div className="flex flex-wrap gap-2">
+                          {operatorsUsed.map(op => (
+                            <span
+                              key={op}
+                              className="inline-flex items-center rounded-full border bg-muted px-2 py-0.5 text-xs font-medium"
+                            >
+                              {op}
+                            </span>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="text-xs text-muted-foreground">-</div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="mt-3 text-xs text-muted-foreground">
+                      View on larger screen for more details
+                    </div>
+                  )}
                 </div>
                 {/* EXPLAIN has been integrated into the SQL window via the SearchCode toggle */}
               </CardContent>
