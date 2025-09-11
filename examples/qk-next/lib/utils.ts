@@ -42,7 +42,7 @@ export async function trackQueryKitUsage(event: IQueryKitUsageEvent): Promise<vo
     const props: AnalyticsEventProps = {
       usedQueryKit: event.usedQueryKit,
       operators: (event.operators || []).join(',')
-    } as unknown as AnalyticsEventProps;
+    };
     track('qk_usage', props);
   } catch {
     // no-op
