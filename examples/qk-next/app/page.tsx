@@ -30,6 +30,7 @@ import { toast } from 'sonner';
 import Aurora from '@/components/reactbits/blocks/Backgrounds/Aurora/Aurora';
 import { PGlite } from '@electric-sql/pglite';
 import { useViewportInfo } from './hooks/use-viewport-info';
+import { trackQueryKitIssue, trackQueryKitUsage } from '@/lib/utils';
 
 // Simple GitHub-like highlighter for key:value tokens that colors only the value
 const escapeHtml = (input: string): string =>
@@ -281,6 +282,12 @@ export default function Home(): JSX.Element {
               'Query execution failed, falling back to simple search:',
               error
             );
+            void trackQueryKitIssue({
+              errorName: (error as Error)?.name ?? 'UnknownError',
+              errorMessage: (error as Error)?.message ?? 'Unknown',
+              stage: 'execute',
+              query: searchQuery
+            });
             const searchTerm = searchQuery.toLowerCase();
             filteredTasks = (allTasks as Task[]).filter(
               task =>
@@ -339,7 +346,13 @@ export default function Home(): JSX.Element {
               return Array.from(found);
             };
             detectedOperators = extractOperators(whereSql);
-          } catch {
+          } catch (error) {
+            void trackQueryKitIssue({
+              errorName: (error as Error)?.name ?? 'UnknownError',
+              errorMessage: (error as Error)?.message ?? 'Unknown',
+              stage: 'translate',
+              query: searchQuery
+            });
             mockSQL += ` WHERE title ILIKE '%${searchQuery}%' OR status ILIKE '%${searchQuery}%'`;
             detectedOperators = ['ILIKE'];
           }
@@ -349,7 +362,12 @@ export default function Home(): JSX.Element {
         setLastExecutedQuery(searchQuery.trim() ? searchQuery : '(default)');
         setGeneratedSQL(mockSQL);
         setUsedQueryKit(wasQueryKitUsed);
-        setOperatorsUsed(Array.from(new Set(detectedOperators)));
+        const uniqueOperators = Array.from(new Set(detectedOperators));
+        void trackQueryKitUsage({
+          usedQueryKit: wasQueryKitUsed,
+          operators: uniqueOperators
+        });
+        setOperatorsUsed(uniqueOperators);
 
         // Try to run EXPLAIN ANALYZE to capture a plan (JSON format for easy parsing)
         try {
@@ -393,7 +411,12 @@ export default function Home(): JSX.Element {
                 : JSON.stringify(textPlan, null, 2)
             );
           }
-        } catch {
+        } catch (error) {
+          void trackQueryKitIssue({
+            errorName: (error as Error)?.name ?? 'UnknownError',
+            errorMessage: (error as Error)?.message ?? 'Unknown',
+            stage: 'explain'
+          });
           setExplainError('EXPLAIN not available');
         }
 
@@ -409,6 +432,11 @@ export default function Home(): JSX.Element {
         }
       } catch (error) {
         console.error('Search failed:', error);
+        void trackQueryKitIssue({
+          errorName: (error as Error)?.name ?? 'UnknownError',
+          errorMessage: (error as Error)?.message ?? 'Unknown',
+          stage: 'search'
+        });
         toast('Search failed');
       } finally {
         setIsSearching(false);
