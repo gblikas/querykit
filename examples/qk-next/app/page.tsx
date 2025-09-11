@@ -362,7 +362,12 @@ export default function Home(): JSX.Element {
         setLastExecutedQuery(searchQuery.trim() ? searchQuery : '(default)');
         setGeneratedSQL(mockSQL);
         setUsedQueryKit(wasQueryKitUsed);
-        setOperatorsUsed(Array.from(new Set(detectedOperators)));
+        const uniqueOperators = Array.from(new Set(detectedOperators));
+        void trackQueryKitUsage({
+          usedQueryKit: wasQueryKitUsed,
+          operators: uniqueOperators
+        });
+        setOperatorsUsed(uniqueOperators);
 
         // Try to run EXPLAIN ANALYZE to capture a plan (JSON format for easy parsing)
         try {
@@ -439,10 +444,6 @@ export default function Home(): JSX.Element {
     },
     [dbReady, db, parser, sqlTranslator, qk]
   );
-
-  useEffect(() => {
-    void trackQueryKitUsage({ usedQueryKit, operators: operatorsUsed });
-  }, [usedQueryKit, operatorsUsed]);
 
   // Handle input change (just updates query state)
   const handleSearchChange = useCallback(
