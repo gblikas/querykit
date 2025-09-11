@@ -7,6 +7,7 @@ import { ThemeProvider } from '@/components/theme-provider';
 import { GitHubStars } from '@/components/github-stars';
 import AuroraBackground from '@/components/aurora-background';
 import { JSX } from 'react';
+import { Analytics } from '@vercel/analytics/next';
 
 const geistSans = Geist({
   variable: '--font-geist-sans',
@@ -128,6 +129,7 @@ export default function RootLayout({
             </div>
             <Providers>{children}</Providers>
             <Toaster />
+            <Analytics />
           </div>
         </ThemeProvider>
       </body>
