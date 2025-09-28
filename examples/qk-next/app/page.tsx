@@ -21,16 +21,27 @@ import {
   createQueryKit,
   IDrizzleAdapterOptions
 } from '@gblikas/querykit';
-import { Copy, Check, Search, ChevronUp } from 'lucide-react';
+import { Copy, Check, Search, ChevronUp, FileCode, X } from 'lucide-react';
 import { Light as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { atomOneDarkReasonable } from 'react-syntax-highlighter/dist/esm/styles/hljs';
 import sqlLanguage from 'react-syntax-highlighter/dist/esm/languages/hljs/sql';
+import typescriptLanguage from 'react-syntax-highlighter/dist/esm/languages/hljs/typescript';
+import bashLanguage from 'react-syntax-highlighter/dist/esm/languages/hljs/bash';
 // json language no longer needed as EXPLAIN view is removed
 import { toast } from 'sonner';
 import Aurora from '@/components/reactbits/blocks/Backgrounds/Aurora/Aurora';
 import { PGlite } from '@electric-sql/pglite';
 import { useViewportInfo } from './hooks/use-viewport-info';
 import { trackQueryKitIssue, trackQueryKitUsage } from '@/lib/utils';
+import {
+  Drawer,
+  DrawerTrigger,
+  DrawerContent,
+  DrawerHeader,
+  DrawerTitle,
+  DrawerDescription,
+  DrawerClose
+} from '@/components/ui/drawer';
 
 // Simple GitHub-like highlighter for key:value tokens that colors only the value
 const escapeHtml = (input: string): string =>
@@ -58,6 +69,43 @@ const highlightQueryHtml = (input: string): string => {
     })
     .join('');
 };
+
+const INSTALL_SNIPPET = `pnpm i querykit drizzle-orm`;
+
+const SCHEMA_SNIPPET = `// schema.ts
+import { serial, text, pgTable } from 'drizzle-orm/pg-core';
+import { InferSelectModel } from 'drizzle-orm';
+
+export const users = pgTable('users', {
+  id: serial('id').primaryKey(),
+  name: text('name').notNull(),
+  status: text('status').notNull().default('draft'),
+});
+
+export type SelectUser = InferSelectModel<typeof users>;
+`;
+
+const QUERYKIT_SNIPPET = `// querykit.ts
+import { createQueryKit } from 'querykit';
+import { drizzleAdapter } from 'querykit/adapters/drizzle';
+import { users } from './schema';
+
+export const qk = createQueryKit({
+  adapter: drizzleAdapter,
+  schema: { users },
+});
+
+// example.ts
+import { qk } from './querykit';
+
+const query = qk
+  .query('users')
+  .where('status:done AND name:"John *"')
+  .orderBy('name', 'asc')
+  .limit(10);
+
+const results = await query.execute();
+`;
 
 const tasks = pgTable('tasks', {
   id: serial('id').primaryKey(),
@@ -94,6 +142,8 @@ export default function Home(): JSX.Element {
   const [, setExplainLatencyMs] = useState<number | null>(null);
   const [, setBaselineFetchMs] = useState<number | null>(null);
   const [hasCopiedSql, setHasCopiedSql] = useState(false);
+  const [copiedSnippet, setCopiedSnippet] = useState<string | null>(null);
+  const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   // EXPLAIN view removed
   const [isResultsOpen, setIsResultsOpen] = useState(false);
   const sqlCardAnchorRef = useRef<HTMLDivElement | null>(null);
@@ -102,16 +152,57 @@ export default function Home(): JSX.Element {
   const [cardMaxHeightPx, setCardMaxHeightPx] = useState<number | null>(null);
   const COPY_FEEDBACK_MS = 2000;
 
+  const quickStartSections = useMemo(
+    () => [
+      {
+        id: 'install',
+        title: 'Install QueryKit',
+        description:
+          'Pull in QueryKit and the Drizzle adapter so you can follow along locally.',
+        code: INSTALL_SNIPPET,
+        language: 'bash'
+      },
+      {
+        id: 'schema',
+        title: 'Define your schema (schema.ts)',
+        description:
+          'Describe the table you want to search—QueryKit uses this shape to parse queries.',
+        code: SCHEMA_SNIPPET,
+        language: 'typescript'
+      },
+      {
+        id: 'usage',
+        title: 'Create QueryKit and run a search',
+        description:
+          'Instantiate QueryKit, build a Lucene-style query, and execute it against your DB.',
+        code: QUERYKIT_SNIPPET,
+        language: 'typescript'
+      }
+    ],
+    []
+  );
+
   // Viewport info for small-height detection
   const { isShortSideLessThan } = useViewportInfo();
   const isShortViewport = isShortSideLessThan(390);
 
+  // Respect a ?drawer=open query param so the quick-start drawer can be shared
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const search = new URLSearchParams(window.location.search);
+    if (search.get('drawer') === 'open') {
+      setIsDrawerOpen(true);
+    }
+  }, []);
+
   // Register languages once
   useEffect(() => {
     try {
-      (
-        SyntaxHighlighter as unknown as typeof SyntaxHighlighter
-      ).registerLanguage('sql', sqlLanguage);
+      const highlighter =
+        SyntaxHighlighter as unknown as typeof SyntaxHighlighter;
+      highlighter.registerLanguage('sql', sqlLanguage);
+      highlighter.registerLanguage('typescript', typescriptLanguage);
+      highlighter.registerLanguage('bash', bashLanguage);
       // JSON language registration removed
     } catch (error) {
       console.error('Failed to register languages:', error);
@@ -530,6 +621,20 @@ export default function Home(): JSX.Element {
     }
   }, [formattedSQL, generatedSQL]);
 
+  const handleCopySnippet = useCallback(
+    async (id: string, content: string) => {
+      try {
+        await navigator.clipboard.writeText(content);
+        toast('Copied to clipboard');
+        setCopiedSnippet(id);
+        window.setTimeout(() => setCopiedSnippet(null), COPY_FEEDBACK_MS);
+      } catch {
+        toast('Failed to copy code');
+      }
+    },
+    [COPY_FEEDBACK_MS]
+  );
+
   // Add Cmd+K keyboard shortcut to focus the inline input
   useEffect(() => {
     const down = (e: KeyboardEvent): void => {
@@ -605,6 +710,114 @@ export default function Home(): JSX.Element {
             A type-safe search DSL for React apps. Filter the table and see the
             SQL it generates.
           </p>
+        </div>
+        <div className="flex justify-center">
+          <Drawer
+            direction="right"
+            open={isDrawerOpen}
+            onOpenChange={open => {
+              setIsDrawerOpen(open);
+              if (!open) {
+                setCopiedSnippet(null);
+              }
+            }}
+          >
+            <DrawerTrigger asChild>
+              <button
+                type="button"
+                className="inline-flex items-center gap-2 rounded-full bg-transparent px-5 py-2 text-sm font-medium text-foreground transition-colors hover:bg-accent/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                aria-label="Open the QueryKit getting started guide"
+              >
+                <FileCode className="h-4 w-4" />
+                Getting started
+              </button>
+            </DrawerTrigger>
+            <DrawerContent className="data-[vaul-drawer-direction=right]:h-full data-[vaul-drawer-direction=right]:w-full data-[vaul-drawer-direction=right]:max-w-full data-[vaul-drawer-direction=right]:sm:max-w-xl data-[vaul-drawer-direction=right]:rounded-l-3xl">
+              <div className="flex h-full flex-col">
+                <DrawerHeader className="relative pb-2 text-left px-4 sm:px-6">
+                  <DrawerTitle>Get started with QueryKit</DrawerTitle>
+                  <DrawerDescription>
+                    Install the packages, describe your data, and run your first
+                    QueryKit search with the snippets below.
+                  </DrawerDescription>
+                  <DrawerClose asChild>
+                    <button
+                      type="button"
+                      className="absolute right-4 top-4 inline-flex h-8 w-8 items-center justify-center rounded-md border bg-background text-muted-foreground transition-colors hover:bg-accent sm:right-6"
+                      aria-label="Close view code drawer"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  </DrawerClose>
+                </DrawerHeader>
+                <div className="flex-1 space-y-5 overflow-y-auto px-4 pb-4 sm:px-6">
+                  {quickStartSections.map(section => (
+                    <div key={section.id} className="space-y-2">
+                      <div className="space-y-1">
+                        <div className="text-sm font-medium">
+                          {section.title}
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          {section.description}
+                        </p>
+                      </div>
+                      <div className="relative overflow-hidden rounded-md border bg-muted">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleCopySnippet(section.id, section.code)
+                          }
+                          aria-label={`Copy ${section.title}`}
+                          title={`Copy ${section.title}`}
+                          className={`absolute right-2 inline-flex h-8 w-8 items-center justify-center rounded-md border border-transparent bg-transparent text-muted-foreground transition-colors hover:bg-muted/60 sm:right-3 ${
+                            section.code.includes('\n')
+                              ? 'top-2 sm:top-3'
+                              : 'top-1/2 -translate-y-1/2 sm:top-1/2 sm:-translate-y-1/2'
+                          }`}
+                        >
+                          <Copy
+                            className={`h-4 w-4 transition-all duration-200 ${
+                              copiedSnippet === section.id
+                                ? 'opacity-0 scale-90'
+                                : 'opacity-100 scale-100'
+                            }`}
+                          />
+                          <Check
+                            className={`absolute h-4 w-4 text-emerald-500 transition-all duration-200 ${
+                              copiedSnippet === section.id
+                                ? 'opacity-100 scale-100'
+                                : 'opacity-0 scale-110'
+                            }`}
+                          />
+                        </button>
+                        <div className="h-full overflow-auto">
+                          <SyntaxHighlighter
+                            language={section.language}
+                            style={atomOneDarkReasonable}
+                            customStyle={{
+                              background: 'transparent',
+                              margin: 0,
+                              padding: '12px',
+                              paddingRight: '3.25rem',
+                              fontSize: '0.75rem',
+                              lineHeight: '1.4',
+                              whiteSpace: 'pre-wrap',
+                              wordBreak: 'break-word',
+                              overflowWrap: 'anywhere'
+                            }}
+                            wrapLongLines
+                            className="text-xs font-mono sm:text-sm"
+                          >
+                            {section.code}
+                          </SyntaxHighlighter>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </DrawerContent>
+          </Drawer>
         </div>
         {/* Inline search input with recommendation popover */}
         <div className="relative z-50 w-full">
