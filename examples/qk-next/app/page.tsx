@@ -1024,19 +1024,21 @@ export default function Home(): JSX.Element {
       </div>
 
       {/* Toggle button to open results drawer */}
-      <button
-        type="button"
-        onClick={() => setIsResultsOpen(v => !v)}
-        aria-expanded={isResultsOpen}
-        aria-controls="results-drawer"
-        title={isResultsOpen ? 'Hide results' : 'Show results'}
-        className="fixed bottom-10 left-1/2 -translate-x-1/2 z-[70] inline-flex items-center justify-center rounded-full border bg-background shadow px-3 py-2 text-xs hover:bg-accent transition-colors"
-      >
-        <ChevronUp
-          className={`h-4 w-4 transition-transform ${isResultsOpen ? 'rotate-180' : ''}`}
-        />
-        <span className="ml-2">{isResultsOpen ? 'Hide' : 'Results'}</span>
-      </button>
+      {!isDrawerOpen && (
+        <button
+          type="button"
+          onClick={() => setIsResultsOpen(v => !v)}
+          aria-expanded={isResultsOpen}
+          aria-controls="results-drawer"
+          title={isResultsOpen ? 'Hide results' : 'Show results'}
+          className="fixed bottom-10 left-1/2 -translate-x-1/2 z-[70] inline-flex items-center justify-center rounded-full border bg-background shadow px-3 py-2 text-xs hover:bg-accent transition-colors"
+        >
+          <ChevronUp
+            className={`h-4 w-4 transition-transform ${isResultsOpen ? 'rotate-180' : ''}`}
+          />
+          <span className="ml-2">{isResultsOpen ? 'Hide' : 'Results'}</span>
+        </button>
+      )}
 
       {/* Bottom drawer with results table */}
       {isResultsOpen && (
