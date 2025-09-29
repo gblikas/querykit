@@ -70,7 +70,7 @@ const highlightQueryHtml = (input: string): string => {
     .join('');
 };
 
-const INSTALL_SNIPPET = `pnpm i querykit drizzle-orm`;
+const INSTALL_SNIPPET = `pnpm i @gblikas/querykit drizzle-orm`;
 
 const SCHEMA_SNIPPET = `// schema.ts
 import { serial, text, pgTable } from 'drizzle-orm/pg-core';
