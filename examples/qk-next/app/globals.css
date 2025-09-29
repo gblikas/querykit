@@ -124,6 +124,12 @@
   }
 }
 
+@layer components {
+  .quick-start-snippet {
+    @apply !m-0 !bg-transparent whitespace-pre-wrap break-words px-3 py-3 pr-14 text-xs leading-[1.4] font-mono sm:text-sm;
+  }
+}
+
 /* Prevent mobile zoom on inputs by ensuring font-size >= 16px */
 input,
 textarea,

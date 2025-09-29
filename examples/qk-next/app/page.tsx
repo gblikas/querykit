@@ -32,7 +32,7 @@ import { toast } from 'sonner';
 import Aurora from '@/components/reactbits/blocks/Backgrounds/Aurora/Aurora';
 import { PGlite } from '@electric-sql/pglite';
 import { useViewportInfo } from './hooks/use-viewport-info';
-import { trackQueryKitIssue, trackQueryKitUsage } from '@/lib/utils';
+import { cn, trackQueryKitIssue, trackQueryKitUsage } from '@/lib/utils';
 import {
   Drawer,
   DrawerTrigger,
@@ -198,12 +198,12 @@ export default function Home(): JSX.Element {
   // Register languages once
   useEffect(() => {
     try {
-      const highlighter =
-        SyntaxHighlighter as unknown as typeof SyntaxHighlighter;
+      const highlighter = SyntaxHighlighter as typeof SyntaxHighlighter & {
+        registerLanguage: (name: string, language: unknown) => void;
+      };
       highlighter.registerLanguage('sql', sqlLanguage);
       highlighter.registerLanguage('typescript', typescriptLanguage);
       highlighter.registerLanguage('bash', bashLanguage);
-      // JSON language registration removed
     } catch (error) {
       console.error('Failed to register languages:', error);
     }
@@ -769,11 +769,12 @@ export default function Home(): JSX.Element {
                           }
                           aria-label={`Copy ${section.title}`}
                           title={`Copy ${section.title}`}
-                          className={`absolute right-2 inline-flex h-8 w-8 items-center justify-center rounded-md border border-transparent bg-transparent text-muted-foreground transition-colors hover:bg-muted/60 sm:right-3 ${
+                          className={cn(
+                            'absolute right-2 inline-flex h-8 w-8 items-center justify-center rounded-md border border-transparent bg-transparent text-muted-foreground transition-colors hover:bg-muted/60 sm:right-3',
                             section.code.includes('\n')
                               ? 'top-2 sm:top-3'
                               : 'top-1/2 -translate-y-1/2 sm:top-1/2 sm:-translate-y-1/2'
-                          }`}
+                          )}
                         >
                           <Copy
                             className={`h-4 w-4 transition-all duration-200 ${
@@ -794,19 +795,8 @@ export default function Home(): JSX.Element {
                           <SyntaxHighlighter
                             language={section.language}
                             style={atomOneDarkReasonable}
-                            customStyle={{
-                              background: 'transparent',
-                              margin: 0,
-                              padding: '12px',
-                              paddingRight: '3.25rem',
-                              fontSize: '0.75rem',
-                              lineHeight: '1.4',
-                              whiteSpace: 'pre-wrap',
-                              wordBreak: 'break-word',
-                              overflowWrap: 'anywhere'
-                            }}
                             wrapLongLines
-                            className="text-xs font-mono sm:text-sm"
+                            className="quick-start-snippet"
                           >
                             {section.code}
                           </SyntaxHighlighter>
