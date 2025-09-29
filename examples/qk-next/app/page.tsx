@@ -761,7 +761,11 @@ export default function Home(): JSX.Element {
                           {section.description}
                         </p>
                       </div>
-                      <div className="relative overflow-hidden rounded-md border bg-muted">
+                      <div
+                        role="region"
+                        aria-label={`${section.title} code example`}
+                        className="relative overflow-hidden rounded-md border bg-muted"
+                      >
                         <button
                           type="button"
                           onClick={() =>
