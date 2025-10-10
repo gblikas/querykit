@@ -48,3 +48,33 @@ export async function trackQueryKitUsage(event: IQueryKitUsageEvent): Promise<vo
     // no-op
   }
 }
+
+export interface IQueryKitSpeedEvent {
+  usedQueryKit: boolean;
+  baselineMs?: number | null;
+  parseTranslateMs?: number | null;
+  explainLatencyMs?: number | null;
+  dbExecutionMs?: number | null;
+  totalMs?: number | null;
+  rowsScanned?: number | null;
+  results?: number | null;
+}
+
+export async function trackQueryKitSpeed(event: IQueryKitSpeedEvent): Promise<void> {
+  try {
+    const { track } = await import('@vercel/analytics');
+    const props: AnalyticsEventProps = {
+      usedQueryKit: event.usedQueryKit,
+      baselineMs: event.baselineMs ?? null,
+      parseTranslateMs: event.parseTranslateMs ?? null,
+      explainLatencyMs: event.explainLatencyMs ?? null,
+      dbExecutionMs: event.dbExecutionMs ?? null,
+      totalMs: event.totalMs ?? null,
+      rowsScanned: event.rowsScanned ?? null,
+      results: event.results ?? null
+    };
+    track('qk_speed', props);
+  } catch {
+    // no-op
+  }
+}
