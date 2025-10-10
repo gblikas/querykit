@@ -32,7 +32,7 @@ import { toast } from 'sonner';
 import Aurora from '@/components/reactbits/blocks/Backgrounds/Aurora/Aurora';
 import { PGlite } from '@electric-sql/pglite';
 import { useViewportInfo } from './hooks/use-viewport-info';
-import { cn, trackQueryKitIssue, trackQueryKitUsage } from '@/lib/utils';
+import { cn, trackQueryKitIssue, trackQueryKitUsage, trackQueryKitSpeed } from '@/lib/utils';
 import {
   Drawer,
   DrawerTrigger,
@@ -350,12 +350,17 @@ export default function Home(): JSX.Element {
       setExplainLatencyMs(null);
       setBaselineFetchMs(null);
       const started = performance.now();
+      let baselineMs: number | null = null;
+      let localParseTranslateMs: number | null = null;
+      let localExplainLatencyMs: number | null = null;
+      let localDbExecutionMs: number | null = null;
 
       try {
         // Get all tasks count/base for messaging
         const baselineStart = performance.now();
         const allTasks = await db.select().from(tasks);
-        setBaselineFetchMs(performance.now() - baselineStart);
+        baselineMs = performance.now() - baselineStart;
+        setBaselineFetchMs(baselineMs);
         setRowsScanned(allTasks.length);
 
         // Use QueryKit fluent API to execute the query
@@ -399,7 +404,8 @@ export default function Home(): JSX.Element {
             const translated = sqlTranslator.translate(ast) as
               | string
               | { sql: string; params: unknown[] };
-            setParseTranslateMs(performance.now() - parseStart);
+            localParseTranslateMs = performance.now() - parseStart;
+            setParseTranslateMs(localParseTranslateMs);
             whereSql =
               typeof translated === 'string' ? translated : translated.sql;
             mockSQL += ` WHERE ${whereSql}`;
@@ -467,7 +473,8 @@ export default function Home(): JSX.Element {
           const explainCmd = `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${fullSql}`;
           const explainStart = performance.now();
           const explainRows = await db.execute(sql.raw(explainCmd));
-          setExplainLatencyMs(performance.now() - explainStart);
+          localExplainLatencyMs = performance.now() - explainStart;
+          setExplainLatencyMs(localExplainLatencyMs);
           // Shape can vary. Try common Postgres JSON format: [{ "QUERY PLAN": [ { Plan: {...}, Planning Time: n, Execution Time: n } ] }]
           const firstRow = Array.isArray(explainRows)
             ? explainRows[0]
@@ -488,7 +495,10 @@ export default function Home(): JSX.Element {
                 : (jsonRoot?.ExecutionTime ?? null);
             if (typeof planning === 'number') setPlanningTimeMs(planning);
             if (typeof execution === 'number') setExecutionTimeMs(execution);
-            if (typeof execution === 'number') setDbExecutionMs(execution);
+            if (typeof execution === 'number') {
+              localDbExecutionMs = execution;
+              setDbExecutionMs(execution);
+            }
             setExplainJson(JSON.stringify(jsonRoot, null, 2));
           } else {
             // Some drivers return text rows when FORMAT JSON is not supported
@@ -513,6 +523,17 @@ export default function Home(): JSX.Element {
 
         const elapsed = performance.now() - started;
         setLastExecutionMs(elapsed);
+        // Emit speed telemetry
+        void trackQueryKitSpeed({
+          usedQueryKit: wasQueryKitUsed,
+          baselineMs,
+          parseTranslateMs: localParseTranslateMs,
+          explainLatencyMs: localExplainLatencyMs,
+          dbExecutionMs: localDbExecutionMs,
+          totalMs: elapsed,
+          rowsScanned,
+          results: filteredTasks.length
+        });
 
         if (searchQuery.trim()) {
           toast(
