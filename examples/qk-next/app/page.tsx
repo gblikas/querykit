@@ -354,6 +354,7 @@ export default function Home(): JSX.Element {
       let localParseTranslateMs: number | null = null;
       let localExplainLatencyMs: number | null = null;
       let localDbExecutionMs: number | null = null;
+      let localRowsScanned: number | null = null;
 
       try {
         // Get all tasks count/base for messaging
@@ -361,7 +362,8 @@ export default function Home(): JSX.Element {
         const allTasks = await db.select().from(tasks);
         baselineMs = performance.now() - baselineStart;
         setBaselineFetchMs(baselineMs);
-        setRowsScanned(allTasks.length);
+        localRowsScanned = allTasks.length;
+        setRowsScanned(localRowsScanned);
 
         // Use QueryKit fluent API to execute the query
         let filteredTasks: Task[] = allTasks as Task[];
@@ -531,7 +533,7 @@ export default function Home(): JSX.Element {
           explainLatencyMs: localExplainLatencyMs,
           dbExecutionMs: localDbExecutionMs,
           totalMs: elapsed,
-          rowsScanned,
+          rowsScanned: localRowsScanned,
           results: filteredTasks.length
         });
 
