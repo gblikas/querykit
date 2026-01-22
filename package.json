@@ -2,6 +2,10 @@
   "name": "@gblikas/querykit",
   "version": "0.1.0",
   "description": "A comprehensive query toolkit for TypeScript that simplifies building and executing data queries across different environments",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gblikas/querykit.git"
+  },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
