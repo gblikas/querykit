@@ -124,6 +124,13 @@ const qk = createQueryKit({
     allowedFields: ['name', 'email', 'priority', 'status'], // Only these fields can be queried
     denyFields: ['password', 'secretKey'],            // These fields can never be queried
     
+    // Value restrictions - deny specific values for fields
+    denyValues: {
+      status: ['deleted', 'banned'],      // Block queries for deleted/banned records
+      role: ['superadmin', 'system'],     // Prevent querying privileged roles
+      'user.type': ['internal', 'bot']    // Supports dot-notation for nested fields
+    },
+    
     // Query complexity limits
     maxQueryDepth: 5,          // Maximum nesting level of expressions
     maxClauseCount: 20,        // Maximum number of clauses (AND/OR operations)
@@ -150,6 +157,7 @@ const DEFAULT_SECURITY = {
   // Field restrictions - by default, all schema fields are allowed
   allowedFields: [],           // Empty means "use schema fields"
   denyFields: [],              // Empty means no denied fields
+  denyValues: {},              // Empty means no denied values for any field
   
   // Query complexity limits
   maxQueryDepth: 10,           // Maximum nesting level of expressions
@@ -174,6 +182,10 @@ Security configurations can be stored in a separate file and imported:
 // security-config.json
 {
   "allowedFields": ["name", "email", "priority", "status"],
+  "denyValues": {
+    "status": ["deleted", "banned"],
+    "role": ["superadmin", "system"]
+  },
   "maxQueryDepth": 5,
   "maxClauseCount": 20,
   "defaultLimit": 100
