@@ -58,6 +58,31 @@ export interface ISecurityOptions {
   denyFields?: string[];
 
   /**
+   * Map of field names to arrays of values that are denied for that field.
+   * This provides granular control over what values can be used in queries.
+   * Use this to protect against queries targeting specific sensitive values.
+   *
+   * The keys are field names (can include table prefixes like "user.role")
+   * and the values are arrays of denied values for that field.
+   *
+   * @example
+   * ```typescript
+   * // Prevent certain values from being queried
+   * denyValues: {
+   *   'status': ['deleted', 'banned'],
+   *   'role': ['superadmin', 'system'],
+   *   'user.type': ['internal', 'bot']
+   * }
+   *
+   * // This would block queries like:
+   * // status == "deleted"
+   * // role IN ["superadmin", "admin"]
+   * // user.type == "internal"
+   * ```
+   */
+  denyValues?: Record<string, Array<string | number | boolean | null>>;
+
+  /**
    * Maximum nesting depth of query expressions.
    * Prevents deeply nested queries that could impact performance.
    *
@@ -192,6 +217,7 @@ export const DEFAULT_SECURITY_OPTIONS: Required<ISecurityOptions> = {
   // Field restrictions - by default, all schema fields are allowed
   allowedFields: [], // Empty means "use schema fields"
   denyFields: [], // Empty means no denied fields
+  denyValues: {}, // Empty means no denied values for any field
 
   // Query complexity limits
   maxQueryDepth: 10, // Maximum nesting level of expressions

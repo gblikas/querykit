@@ -151,6 +151,9 @@ export class QuerySecurityValidator {
     // Check for field restrictions if specified
     this.validateFields(expression, schema);
 
+    // Check for denied values if specified
+    this.validateDenyValues(expression);
+
     // Check query complexity
     this.validateQueryDepth(expression, 0);
     this.validateClauseCount(expression);
@@ -208,6 +211,84 @@ export class QuerySecurityValidator {
         throw new QuerySecurityError('Invalid query parameters');
       }
     }
+  }
+
+  /**
+   * Validate that query values are not in the denied values list for their field
+   *
+   * This method checks each comparison expression to ensure the value being
+   * queried is not in the denyValues list for that field. This provides
+   * granular control over what values can be queried for specific fields.
+   *
+   * @private
+   * @param expression - The query expression to validate
+   * @throws {QuerySecurityError} If a denied value is found in the query
+   */
+  private validateDenyValues(expression: QueryExpression): void {
+    // Skip if no denyValues configured
+    if (Object.keys(this.options.denyValues).length === 0) {
+      return;
+    }
+
+    if (expression.type === 'comparison') {
+      const { field, value } = expression;
+      const deniedValues = this.options.denyValues[field];
+
+      if (deniedValues && deniedValues.length > 0) {
+        // Check if the value is an array (for IN/NOT IN operators)
+        if (Array.isArray(value)) {
+          for (const item of value) {
+            if (this.isValueDenied(item, deniedValues)) {
+              throw new QuerySecurityError('Invalid query parameters');
+            }
+          }
+        } else {
+          // Single value comparison
+          if (this.isValueDenied(value, deniedValues)) {
+            throw new QuerySecurityError('Invalid query parameters');
+          }
+        }
+      }
+    } else {
+      // Recursively validate logical expressions
+      this.validateDenyValues(expression.left);
+      if (expression.right) {
+        this.validateDenyValues(expression.right);
+      }
+    }
+  }
+
+  /**
+   * Check if a value is in the denied values list
+   *
+   * @private
+   * @param value - The value to check
+   * @param deniedValues - The list of denied values
+   * @returns true if the value is denied, false otherwise
+   */
+  private isValueDenied(
+    value: string | number | boolean | null,
+    deniedValues: Array<string | number | boolean | null>
+  ): boolean {
+    // Use strict equality to match values, handling type coercion properly
+    return deniedValues.some(deniedValue => {
+      // Handle null comparison explicitly
+      if (value === null && deniedValue === null) {
+        return true;
+      }
+      // Handle same-type comparison with strict equality
+      if (typeof value === typeof deniedValue) {
+        return value === deniedValue;
+      }
+      // Handle string/number comparison (common case)
+      if (typeof value === 'string' && typeof deniedValue === 'number') {
+        return value === String(deniedValue);
+      }
+      if (typeof value === 'number' && typeof deniedValue === 'string') {
+        return String(value) === deniedValue;
+      }
+      return false;
+    });
   }
 
   /**

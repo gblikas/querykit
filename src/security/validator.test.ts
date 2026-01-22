@@ -331,6 +331,243 @@ describe('QuerySecurityValidator', () => {
     });
   });
 
+  describe('validateDenyValues', () => {
+    it('should accept queries when no denyValues are configured', () => {
+      const validator = new QuerySecurityValidator({});
+      const query = parser.parse('status:"deleted"');
+      expect(() => validator.validate(query)).not.toThrow();
+    });
+
+    it('should accept queries when value is not in denyValues list', () => {
+      const validator = new QuerySecurityValidator({
+        denyValues: {
+          status: ['deleted', 'banned']
+        }
+      });
+      const query = parser.parse('status:"active"');
+      expect(() => validator.validate(query)).not.toThrow();
+    });
+
+    it('should reject queries with denied string values', () => {
+      const validator = new QuerySecurityValidator({
+        denyValues: {
+          status: ['deleted', 'banned']
+        }
+      });
+      const query = parser.parse('status:"deleted"');
+      expect(() => validator.validate(query)).toThrow(QuerySecurityError);
+      expect(() => validator.validate(query)).toThrow(
+        'Invalid query parameters'
+      );
+    });
+
+    it('should reject queries with denied numeric values', () => {
+      const validator = new QuerySecurityValidator({
+        denyValues: {
+          priority: [0, -1]
+        }
+      });
+      const mockQuery: QueryExpression = {
+        type: 'comparison',
+        field: 'priority',
+        operator: '==',
+        value: 0
+      };
+      expect(() => validator.validate(mockQuery)).toThrow(QuerySecurityError);
+      expect(() => validator.validate(mockQuery)).toThrow(
+        'Invalid query parameters'
+      );
+    });
+
+    it('should reject queries with denied boolean values', () => {
+      const validator = new QuerySecurityValidator({
+        denyValues: {
+          isAdmin: [true]
+        }
+      });
+      const mockQuery: QueryExpression = {
+        type: 'comparison',
+        field: 'isAdmin',
+        operator: '==',
+        value: true
+      };
+      expect(() => validator.validate(mockQuery)).toThrow(QuerySecurityError);
+      expect(() => validator.validate(mockQuery)).toThrow(
+        'Invalid query parameters'
+      );
+    });
+
+    it('should reject queries with denied null values', () => {
+      const validator = new QuerySecurityValidator({
+        denyValues: {
+          deletedAt: [null]
+        }
+      });
+      const mockQuery: QueryExpression = {
+        type: 'comparison',
+        field: 'deletedAt',
+        operator: '==',
+        value: null
+      };
+      expect(() => validator.validate(mockQuery)).toThrow(QuerySecurityError);
+      expect(() => validator.validate(mockQuery)).toThrow(
+        'Invalid query parameters'
+      );
+    });
+
+    it('should reject queries with denied values in IN operator arrays', () => {
+      const validator = new QuerySecurityValidator({
+        denyValues: {
+          role: ['superadmin', 'system']
+        }
+      });
+      const mockQuery: QueryExpression = {
+        type: 'comparison',
+        field: 'role',
+        operator: 'IN',
+        value: ['admin', 'superadmin'] // Contains 'superadmin' which is denied
+      };
+      expect(() => validator.validate(mockQuery)).toThrow(QuerySecurityError);
+      expect(() => validator.validate(mockQuery)).toThrow(
+        'Invalid query parameters'
+      );
+    });
+
+    it('should accept IN operator arrays without denied values', () => {
+      const validator = new QuerySecurityValidator({
+        denyValues: {
+          role: ['superadmin', 'system']
+        }
+      });
+      const mockQuery: QueryExpression = {
+        type: 'comparison',
+        field: 'role',
+        operator: 'IN',
+        value: ['admin', 'user', 'moderator']
+      };
+      expect(() => validator.validate(mockQuery)).not.toThrow();
+    });
+
+    it('should validate denied values in nested logical expressions', () => {
+      const validator = new QuerySecurityValidator({
+        denyValues: {
+          status: ['deleted']
+        }
+      });
+      const query = parser.parse('name:"John" AND status:"deleted"');
+      expect(() => validator.validate(query)).toThrow(QuerySecurityError);
+      expect(() => validator.validate(query)).toThrow(
+        'Invalid query parameters'
+      );
+    });
+
+    it('should validate denied values in complex nested expressions', () => {
+      const validator = new QuerySecurityValidator({
+        denyValues: {
+          role: ['superadmin']
+        }
+      });
+      const query = parser.parse(
+        '(name:"John" OR name:"Jane") AND (role:"superadmin" OR status:"active")'
+      );
+      expect(() => validator.validate(query)).toThrow(QuerySecurityError);
+      expect(() => validator.validate(query)).toThrow(
+        'Invalid query parameters'
+      );
+    });
+
+    it('should support dot-notation field names in denyValues', () => {
+      const validator = new QuerySecurityValidator({
+        denyValues: {
+          'user.role': ['superadmin', 'system']
+        }
+      });
+      const query = parser.parse('user.role:"superadmin"');
+      expect(() => validator.validate(query)).toThrow(QuerySecurityError);
+      expect(() => validator.validate(query)).toThrow(
+        'Invalid query parameters'
+      );
+    });
+
+    it('should allow same value for different fields when only one is denied', () => {
+      const validator = new QuerySecurityValidator({
+        denyValues: {
+          role: ['admin']
+        }
+      });
+      // Query for 'type' field with value 'admin' should pass since only 'role' field denies 'admin'
+      const query = parser.parse('type:"admin"');
+      expect(() => validator.validate(query)).not.toThrow();
+    });
+
+    it('should handle multiple fields with denyValues', () => {
+      const validator = new QuerySecurityValidator({
+        denyValues: {
+          status: ['deleted', 'banned'],
+          role: ['superadmin'],
+          priority: [0]
+        }
+      });
+
+      // Should reject when any denied value is used
+      const query1 = parser.parse('status:"active" AND role:"superadmin"');
+      expect(() => validator.validate(query1)).toThrow(QuerySecurityError);
+
+      // Should accept when all values are allowed
+      const query2 = parser.parse('status:"active" AND role:"admin"');
+      expect(() => validator.validate(query2)).not.toThrow();
+    });
+
+    it('should work in combination with denyFields', () => {
+      const validator = new QuerySecurityValidator({
+        denyFields: ['password'],
+        denyValues: {
+          status: ['deleted']
+        }
+      });
+
+      // Should reject due to denyFields
+      const query1 = parser.parse('password:"secret"');
+      expect(() => validator.validate(query1)).toThrow(QuerySecurityError);
+
+      // Should reject due to denyValues
+      const query2 = parser.parse('status:"deleted"');
+      expect(() => validator.validate(query2)).toThrow(QuerySecurityError);
+
+      // Should accept when both are satisfied
+      const query3 = parser.parse('status:"active" AND username:"john"');
+      expect(() => validator.validate(query3)).not.toThrow();
+    });
+
+    it('should work in combination with allowedFields', () => {
+      const validator = new QuerySecurityValidator({
+        allowedFields: ['status', 'name'],
+        denyValues: {
+          status: ['deleted']
+        }
+      });
+
+      // Should reject due to denyValues
+      const query1 = parser.parse('status:"deleted"');
+      expect(() => validator.validate(query1)).toThrow(QuerySecurityError);
+
+      // Should accept when value is allowed
+      const query2 = parser.parse('status:"active" AND name:"John"');
+      expect(() => validator.validate(query2)).not.toThrow();
+    });
+
+    it('should handle string-number type coercion for denied values', () => {
+      const validator = new QuerySecurityValidator({
+        denyValues: {
+          code: [123, 456]
+        }
+      });
+      // Query with string "123" should match numeric 123 in denyValues
+      const query = parser.parse('code:"123"');
+      expect(() => validator.validate(query)).toThrow(QuerySecurityError);
+    });
+  });
+
   describe('SQL Injection Prevention', () => {
     // Testing protection against common SQL injection patterns
 
