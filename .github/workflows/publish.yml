@@ -18,18 +18,18 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      id-token: write  # Required for NPM Trusted Publishers (OIDC)
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
-          always-auth: true
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v3
@@ -53,9 +53,7 @@ jobs:
           TAG: ${{ github.event.release.tag_name || inputs.tag }}
         run: node -e 'const v=require("./package.json").version; const tag=(process.env.TAG||"").replace(/^v/,""); if(v!==tag){console.error("package.json version "+v+" does not match tag "+tag); process.exit(1)} else {console.log("Version matches tag:", v)}'
 
-      - name: Publish package to npmjs
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: pnpm publish --no-git-checks --access public
+      - name: Publish package to npmjs with provenance
+        run: pnpm publish --no-git-checks --access public --provenance
 
 
