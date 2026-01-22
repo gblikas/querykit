@@ -568,6 +568,137 @@ describe('QuerySecurityValidator', () => {
     });
   });
 
+  describe('validateNoDotNotation (allowDotNotation)', () => {
+    it('should allow dot notation by default', () => {
+      const validator = new QuerySecurityValidator({});
+      const query = parser.parse('user.name:"John"');
+      expect(() => validator.validate(query)).not.toThrow();
+    });
+
+    it('should allow dot notation when explicitly enabled', () => {
+      const validator = new QuerySecurityValidator({
+        allowDotNotation: true
+      });
+      const query = parser.parse('user.name:"John" AND user.role:"admin"');
+      expect(() => validator.validate(query)).not.toThrow();
+    });
+
+    it('should reject dot notation when disabled', () => {
+      const validator = new QuerySecurityValidator({
+        allowDotNotation: false
+      });
+      const query = parser.parse('user.name:"John"');
+      expect(() => validator.validate(query)).toThrow(QuerySecurityError);
+      expect(() => validator.validate(query)).toThrow(
+        'Dot notation is not allowed in field names'
+      );
+    });
+
+    it('should include the field name in error message', () => {
+      const validator = new QuerySecurityValidator({
+        allowDotNotation: false
+      });
+      const query = parser.parse('metadata.secret:"value"');
+      expect(() => validator.validate(query)).toThrow('metadata.secret');
+    });
+
+    it('should suggest using simple field names in error message', () => {
+      const validator = new QuerySecurityValidator({
+        allowDotNotation: false
+      });
+      const query = parser.parse('user.email:"test@example.com"');
+      expect(() => validator.validate(query)).toThrow(
+        'use a simple field name without dots'
+      );
+    });
+
+    it('should allow simple field names when dot notation is disabled', () => {
+      const validator = new QuerySecurityValidator({
+        allowDotNotation: false
+      });
+      const query = parser.parse('name:"John" AND email:"john@example.com"');
+      expect(() => validator.validate(query)).not.toThrow();
+    });
+
+    it('should reject deeply nested dot notation', () => {
+      const validator = new QuerySecurityValidator({
+        allowDotNotation: false
+      });
+      const query = parser.parse('user.profile.settings.theme:"dark"');
+      expect(() => validator.validate(query)).toThrow(QuerySecurityError);
+      expect(() => validator.validate(query)).toThrow(
+        'user.profile.settings.theme'
+      );
+    });
+
+    it('should validate dot notation in nested logical expressions', () => {
+      const validator = new QuerySecurityValidator({
+        allowDotNotation: false
+      });
+      const query = parser.parse('name:"John" AND user.role:"admin"');
+      expect(() => validator.validate(query)).toThrow(QuerySecurityError);
+      expect(() => validator.validate(query)).toThrow('user.role');
+    });
+
+    it('should validate dot notation in complex nested expressions', () => {
+      const validator = new QuerySecurityValidator({
+        allowDotNotation: false
+      });
+      const query = parser.parse(
+        '(name:"John" OR name:"Jane") AND (status:"active" OR user.type:"premium")'
+      );
+      expect(() => validator.validate(query)).toThrow(QuerySecurityError);
+      expect(() => validator.validate(query)).toThrow('user.type');
+    });
+
+    it('should validate dot notation in OR branches', () => {
+      const validator = new QuerySecurityValidator({
+        allowDotNotation: false
+      });
+      const query = parser.parse('name:"John" OR metadata.tags:"vip"');
+      expect(() => validator.validate(query)).toThrow(QuerySecurityError);
+    });
+
+    it('should work with other security options when dot notation is disabled', () => {
+      const validator = new QuerySecurityValidator({
+        allowDotNotation: false,
+        allowedFields: ['name', 'email', 'status'],
+        maxQueryDepth: 3
+      });
+
+      // Should pass - simple fields, within depth
+      const validQuery = parser.parse('name:"John" AND status:"active"');
+      expect(() => validator.validate(validQuery)).not.toThrow();
+
+      // Should fail - dot notation
+      const dotQuery = parser.parse('user.name:"John"');
+      expect(() => validator.validate(dotQuery)).toThrow(
+        'Dot notation is not allowed'
+      );
+    });
+
+    it('should reject table-qualified column access when disabled', () => {
+      const validator = new QuerySecurityValidator({
+        allowDotNotation: false
+      });
+      // Simulating attempt to access another table's column
+      const query = parser.parse('users.password:"secret"');
+      expect(() => validator.validate(query)).toThrow(QuerySecurityError);
+      expect(() => validator.validate(query)).toThrow('users.password');
+    });
+
+    it('should reject JSON path access when disabled', () => {
+      const validator = new QuerySecurityValidator({
+        allowDotNotation: false
+      });
+      // Simulating attempt to access JSON/JSONB nested field
+      const query = parser.parse(
+        'config.database.connectionString:"postgres://"'
+      );
+      expect(() => validator.validate(query)).toThrow(QuerySecurityError);
+    });
+  });
+
   describe('SQL Injection Prevention', () => {
     // Testing protection against common SQL injection patterns
 

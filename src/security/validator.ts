@@ -148,6 +148,11 @@ export class QuerySecurityValidator {
     expression: QueryExpression,
     schema?: Record<string, Record<string, unknown>>
   ): void {
+    // Check for dot notation if disabled
+    if (!this.options.allowDotNotation) {
+      this.validateNoDotNotation(expression);
+    }
+
     // Check for field restrictions if specified
     this.validateFields(expression, schema);
 
@@ -209,6 +214,37 @@ export class QuerySecurityValidator {
         (allowedFields.size > 0 && !allowedFields.has(field))
       ) {
         throw new QuerySecurityError('Invalid query parameters');
+      }
+    }
+  }
+
+  /**
+   * Validate that field names do not contain dot notation
+   *
+   * When allowDotNotation is disabled, this method ensures no field names
+   * contain dots, which could be used for:
+   * - Table-qualified column access (e.g., "users.password")
+   * - Nested JSON/JSONB field access (e.g., "metadata.secret")
+   * - Probing internal table structures
+   *
+   * @private
+   * @param expression - The query expression to validate
+   * @throws {QuerySecurityError} If a field name contains dot notation
+   */
+  private validateNoDotNotation(expression: QueryExpression): void {
+    if (expression.type === 'comparison') {
+      const { field } = expression;
+      if (field.includes('.')) {
+        throw new QuerySecurityError(
+          `Dot notation is not allowed in field names. ` +
+            `Found "${field}" - use a simple field name without dots instead.`
+        );
+      }
+    } else {
+      // Recursively validate logical expressions
+      this.validateNoDotNotation(expression.left);
+      if (expression.right) {
+        this.validateNoDotNotation(expression.right);
       }
     }
   }

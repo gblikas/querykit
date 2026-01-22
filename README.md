@@ -131,6 +131,9 @@ const qk = createQueryKit({
       'user.type': ['internal', 'bot']    // Supports dot-notation for nested fields
     },
     
+    // Field name restrictions
+    allowDotNotation: true,    // Set to false to block "table.field" or "json.path" queries
+    
     // Query complexity limits
     maxQueryDepth: 5,          // Maximum nesting level of expressions
     maxClauseCount: 20,        // Maximum number of clauses (AND/OR operations)
@@ -158,6 +161,7 @@ const DEFAULT_SECURITY = {
   allowedFields: [],           // Empty means "use schema fields"
   denyFields: [],              // Empty means no denied fields
   denyValues: {},              // Empty means no denied values for any field
+  allowDotNotation: true,      // Allow "table.field" and "json.path" notation
   
   // Query complexity limits
   maxQueryDepth: 10,           // Maximum nesting level of expressions
@@ -210,6 +214,66 @@ When using QueryKit in production, consider these additional security practices:
 3. **Audit Logging**: Log all queries for security monitoring and debugging.
 4. **Field-Level Access Control**: Use dynamic allowedFields based on user roles/permissions.
 5. **Separate Query Context**: Consider separate QueryKit instances with different security settings for different contexts (admin vs. user).
+
+### Controlling Dot Notation in Field Names
+
+QueryKit supports dot notation in field names (e.g., `user.name`, `metadata.tags`) which is useful for:
+
+- **Table-qualified columns**: When joining tables with overlapping column names (`users.id` vs `orders.id`)
+- **JSON/JSONB fields**: Querying nested data in PostgreSQL JSON columns (`metadata.dimensions.width`)
+- **Related data**: Accessing data through ORM relations (`order.customer.name`)
+
+However, you may want to **disable dot notation** for public-facing APIs:
+
+```typescript
+const qk = createQueryKit({
+  adapter: drizzleAdapter,
+  schema: { products },
+  security: {
+    allowDotNotation: false,  // Reject queries like "user.password" or "config.secret"
+    allowedFields: ['name', 'price', 'category', 'inStock']
+  }
+});
+
+// ✅ Allowed: Simple field names
+qk.query('products').where('name:"Widget" AND price:<100');
+
+// ❌ Rejected: Dot notation
+qk.query('products').where('user.password:"secret"');
+// Error: Dot notation is not allowed in field names. Found "user.password" - use a simple field name without dots instead.
+```
+
+**When to disable dot notation:**
+
+| Scenario | Recommendation |
+|----------|---------------|
+| Public search API | Disable - prevents probing internal table structures |
+| Admin dashboard | Enable - admins may need cross-table queries |
+| Simple flat schema | Disable - simplifies security model |
+| JSON/JSONB columns | Enable - needed for nested data access |
+| Multi-tenant app | Disable - prevents `tenant.secret` style access |
+
+**Concrete example - Public e-commerce search:**
+
+```typescript
+// For a public product search endpoint, disable dot notation
+// to prevent users from attempting queries like:
+// - "orders.creditCard" (accessing other tables)
+// - "internal.costPrice" (accessing internal JSON fields)
+// - "admin.notes" (accessing admin-only data)
+
+const publicSearchKit = createQueryKit({
+  adapter: drizzleAdapter,
+  schema: { products },
+  security: {
+    allowDotNotation: false,
+    allowedFields: ['name', 'description', 'price', 'category'],
+    denyValues: {
+      category: ['internal', 'discontinued']
+    }
+  }
+});
+```
 
 ## Roadmap
 

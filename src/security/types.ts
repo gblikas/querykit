@@ -83,6 +83,31 @@ export interface ISecurityOptions {
   denyValues?: Record<string, Array<string | number | boolean | null>>;
 
   /**
+   * Whether to allow dot notation in field names (e.g., "user.name", "metadata.tags").
+   * When disabled, queries with dots in field names will be rejected.
+   *
+   * Use cases for DISABLING dot notation:
+   * - Public-facing search APIs where users should only query flat, top-level fields
+   * - Preventing access to table-qualified columns in SQL joins (e.g., "users.password")
+   * - Simpler security model when your schema doesn't have nested/JSON data
+   * - Preventing users from probing internal table structures
+   *
+   * @default true
+   *
+   * @example
+   * ```typescript
+   * // Disable dot notation for a public search API
+   * allowDotNotation: false
+   *
+   * // This would block queries like:
+   * // user.email == "test@example.com"  // Rejected
+   * // metadata.tags == "sale"           // Rejected
+   * // email == "test@example.com"       // Allowed
+   * ```
+   */
+  allowDotNotation?: boolean;
+
+  /**
    * Maximum nesting depth of query expressions.
    * Prevents deeply nested queries that could impact performance.
    *
@@ -218,6 +243,7 @@ export const DEFAULT_SECURITY_OPTIONS: Required<ISecurityOptions> = {
   allowedFields: [], // Empty means "use schema fields"
   denyFields: [], // Empty means no denied fields
   denyValues: {}, // Empty means no denied values for any field
+  allowDotNotation: true, // Allow dot notation by default for backward compatibility
 
   // Query complexity limits
   maxQueryDepth: 10, // Maximum nesting level of expressions
