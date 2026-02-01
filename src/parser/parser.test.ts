@@ -1,5 +1,9 @@
 import { QueryParser, QueryParseError } from './parser';
-import { QueryExpression } from './types';
+import {
+  IComparisonExpression,
+  ILogicalExpression,
+  QueryExpression
+} from './types';
 
 // Replace the type definition with this approach
 type QueryParserPrivate = {
@@ -862,6 +866,159 @@ describe('QueryParser', () => {
       };
 
       expect(parser.parse(query)).toEqual(expected);
+    });
+
+    // IN operator syntax tests
+    describe('IN operator syntax', () => {
+      it('should parse "field in (val1, val2, val3)" syntax', () => {
+        const query = 'status in (todo, doing, done)';
+        const expected: QueryExpression = {
+          type: 'logical',
+          operator: 'OR',
+          left: {
+            type: 'logical',
+            operator: 'OR',
+            left: {
+              type: 'comparison',
+              field: 'status',
+              operator: '==',
+              value: 'todo'
+            },
+            right: {
+              type: 'comparison',
+              field: 'status',
+              operator: '==',
+              value: 'doing'
+            }
+          },
+          right: {
+            type: 'comparison',
+            field: 'status',
+            operator: '==',
+            value: 'done'
+          }
+        };
+
+        expect(parser.parse(query)).toEqual(expected);
+      });
+
+      it('should parse "field:[val1, val2]" bracket array syntax', () => {
+        const query = 'id:[2, 3]';
+        const expected: QueryExpression = {
+          type: 'logical',
+          operator: 'OR',
+          left: {
+            type: 'comparison',
+            field: 'id',
+            operator: '==',
+            value: 2
+          },
+          right: {
+            type: 'comparison',
+            field: 'id',
+            operator: '==',
+            value: 3
+          }
+        };
+
+        expect(parser.parse(query)).toEqual(expected);
+      });
+
+      it('should parse "field in (val)" with single value', () => {
+        const query = 'status in (active)';
+        const expected: QueryExpression = {
+          type: 'comparison',
+          field: 'status',
+          operator: '==',
+          value: 'active'
+        };
+
+        expect(parser.parse(query)).toEqual(expected);
+      });
+
+      it('should preserve range syntax "field:[min TO max]"', () => {
+        const query = 'id:[2 TO 5]';
+        const expected: QueryExpression = {
+          type: 'logical',
+          operator: 'AND',
+          left: {
+            type: 'comparison',
+            field: 'id',
+            operator: '>=',
+            value: 2
+          },
+          right: {
+            type: 'comparison',
+            field: 'id',
+            operator: '<=',
+            value: 5
+          }
+        };
+
+        expect(parser.parse(query)).toEqual(expected);
+      });
+
+      it('should parse exclusive range syntax "field:{min TO max}"', () => {
+        const query = 'id:{2 TO 5}';
+        const expected: QueryExpression = {
+          type: 'logical',
+          operator: 'AND',
+          left: {
+            type: 'comparison',
+            field: 'id',
+            operator: '>',
+            value: 2
+          },
+          right: {
+            type: 'comparison',
+            field: 'id',
+            operator: '<',
+            value: 5
+          }
+        };
+
+        expect(parser.parse(query)).toEqual(expected);
+      });
+
+      it('should parse IN syntax combined with other expressions', () => {
+        const query = 'status in (todo, doing) AND priority:>2';
+        const parsed = parser.parse(query);
+
+        // Verify it's a logical AND at the top level
+        expect(parsed.type).toBe('logical');
+        expect((parsed as ILogicalExpression).operator).toBe('AND');
+
+        // Left side should be OR of status values
+        const left = (parsed as ILogicalExpression).left as ILogicalExpression;
+        expect(left.type).toBe('logical');
+        expect(left.operator).toBe('OR');
+      });
+
+      it('should parse case-insensitive IN keyword', () => {
+        const query = 'status IN (todo, done)';
+        const parsed = parser.parse(query);
+
+        expect(parsed.type).toBe('logical');
+        expect((parsed as ILogicalExpression).operator).toBe('OR');
+      });
+
+      it('should handle values with spaces in IN syntax using quotes', () => {
+        const query = 'name in (John, "Jane Doe")';
+        const parsed = parser.parse(query);
+
+        expect(parsed.type).toBe('logical');
+        expect((parsed as ILogicalExpression).operator).toBe('OR');
+
+        const right = (parsed as ILogicalExpression)
+          .right as IComparisonExpression;
+        expect(right.value).toBe('Jane Doe');
+      });
+
+      it('should validate IN syntax queries', () => {
+        expect(parser.validate('status in (todo, doing, done)')).toBe(true);
+        expect(parser.validate('id:[1, 2, 3]')).toBe(true);
+        expect(parser.validate('id:[1 TO 10]')).toBe(true);
+      });
     });
   });
 

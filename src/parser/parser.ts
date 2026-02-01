@@ -7,6 +7,7 @@ import type {
   LiqeQuery,
   LogicalExpressionToken,
   ParenthesizedExpressionToken,
+  RangeExpressionToken,
   TagToken,
   UnaryOperatorToken
 } from 'liqe';
@@ -48,7 +49,9 @@ export class QueryParser implements IQueryParser {
    */
   public parse(query: string): QueryExpression {
     try {
-      const liqeAst = liqeParse(query);
+      // Pre-process the query to handle IN operator syntax
+      const preprocessedQuery = this.preprocessQuery(query);
+      const liqeAst = liqeParse(preprocessedQuery);
       return this.convertLiqeAst(liqeAst);
     } catch (error) {
       throw new QueryParseError(
@@ -58,11 +61,91 @@ export class QueryParser implements IQueryParser {
   }
 
   /**
+   * Pre-process a query string to convert non-standard syntax to Liqe-compatible syntax.
+   * Supports:
+   * - `field in (val1, val2, val3)` → `(field:val1 OR field:val2 OR field:val3)`
+   * - `field:[val1, val2, val3]` → `(field:val1 OR field:val2 OR field:val3)`
+   */
+  private preprocessQuery(query: string): string {
+    let result = query;
+
+    // Handle `field in (val1, val2, ...)` syntax
+    // Pattern: fieldName in (value1, value2, ...)
+    const inParenPattern = /(\w+)\s+in\s*\(([^)]+)\)/gi;
+    result = result.replace(inParenPattern, (_match, field, values) => {
+      return this.convertToOrExpression(field, values);
+    });
+
+    // Handle `field:[val1, val2, ...]` syntax (array-like, not range)
+    // Pattern: fieldName:[value1, value2, ...]
+    // We distinguish from range by checking for commas without "TO"
+    const bracketArrayPattern = /(\w+):\[([^\]]+)\]/g;
+    result = result.replace(bracketArrayPattern, (fullMatch, field, values) => {
+      // Check if this looks like a range expression (contains " TO ")
+      if (/\s+TO\s+/i.test(values)) {
+        // This is a range expression, keep as-is
+        return fullMatch;
+      }
+      // This is an array-like expression, convert to OR
+      return this.convertToOrExpression(field, values);
+    });
+
+    return result;
+  }
+
+  /**
+   * Convert a field and comma-separated values to an OR expression string
+   */
+  private convertToOrExpression(field: string, valuesStr: string): string {
+    // Split by comma and trim whitespace
+    const values = valuesStr
+      .split(',')
+      .map((v: string) => v.trim())
+      .filter((v: string) => v.length > 0);
+
+    if (values.length === 0) {
+      return `${field}:""`;
+    }
+
+    if (values.length === 1) {
+      return this.formatFieldValue(field, values[0]);
+    }
+
+    // Build OR expression: (field:val1 OR field:val2 OR ...)
+    const orClauses = values.map((v: string) =>
+      this.formatFieldValue(field, v)
+    );
+    return `(${orClauses.join(' OR ')})`;
+  }
+
+  /**
+   * Format a field:value pair, quoting the value if necessary
+   */
+  private formatFieldValue(field: string, value: string): string {
+    // If the value is already quoted, use it as-is
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      return `${field}:${value}`;
+    }
+
+    // If value contains spaces or special characters, quote it
+    if (/\s|[():]/.test(value)) {
+      // Escape quotes within the value
+      const escapedValue = value.replace(/"/g, '\\"');
+      return `${field}:"${escapedValue}"`;
+    }
+    return `${field}:${value}`;
+  }
+
+  /**
    * Validate a query string
    */
   public validate(query: string): boolean {
     try {
-      const ast = liqeParse(query);
+      const preprocessedQuery = this.preprocessQuery(query);
+      const ast = liqeParse(preprocessedQuery);
       this.convertLiqeAst(ast);
       return true;
     } catch {
@@ -81,7 +164,11 @@ export class QueryParser implements IQueryParser {
     switch (node.type) {
       case 'LogicalExpression': {
         const logicalNode = node as LogicalExpressionToken;
-        const operator = (logicalNode.operator as BooleanOperatorToken | ImplicitBooleanOperatorToken).operator;
+        const operator = (
+          logicalNode.operator as
+            | BooleanOperatorToken
+            | ImplicitBooleanOperatorToken
+        ).operator;
         return this.createLogicalExpression(
           this.convertLogicalOperator(operator),
           logicalNode.left,
@@ -97,30 +184,37 @@ export class QueryParser implements IQueryParser {
       case 'Tag': {
         const tagNode = node as TagToken;
         const field = tagNode.field as FieldToken;
-        const expression = tagNode.expression as ExpressionToken & { value: QueryValue };
-        
+        const expression = tagNode.expression as ExpressionToken & {
+          value: QueryValue;
+        };
+
         if (!field || !expression) {
           throw new QueryParseError('Invalid field or expression in Tag node');
         }
 
         const fieldName = this.normalizeFieldName(field.name);
+
+        // Handle RangeExpression (e.g., field:[min TO max])
+        if (expression.type === 'RangeExpression') {
+          return this.convertRangeExpression(
+            fieldName,
+            expression as unknown as RangeExpressionToken
+          );
+        }
+
         const operator = this.convertLiqeOperator(tagNode.operator.operator);
         const value = this.convertLiqeValue(expression.value);
 
         // Check for wildcard patterns in string values
-        if (operator === '==' && typeof value === 'string' && (value.includes('*') || value.includes('?'))) {
-          return this.createComparisonExpression(
-            fieldName,
-            'LIKE',
-            value
-          );
+        if (
+          operator === '==' &&
+          typeof value === 'string' &&
+          (value.includes('*') || value.includes('?'))
+        ) {
+          return this.createComparisonExpression(fieldName, 'LIKE', value);
         }
 
-        return this.createComparisonExpression(
-          fieldName,
-          operator,
-          value
-        );
+        return this.createComparisonExpression(fieldName, operator, value);
       }
 
       case 'EmptyExpression':
@@ -138,7 +232,9 @@ export class QueryParser implements IQueryParser {
       }
 
       default:
-        throw new QueryParseError(`Unsupported node type: ${(node as { type: string }).type}`);
+        throw new QueryParseError(
+          `Unsupported node type: ${(node as { type: string }).type}`
+        );
     }
   }
 
@@ -191,6 +287,48 @@ export class QueryParser implements IQueryParser {
   }
 
   /**
+   * Convert a Liqe RangeExpression to a QueryKit logical AND expression
+   * E.g., `field:[2 TO 5]` becomes `(field >= 2 AND field <= 5)`
+   */
+  private convertRangeExpression(
+    fieldName: string,
+    expression: RangeExpressionToken
+  ): QueryExpression {
+    const range = expression.range;
+
+    // Handle null/undefined range values
+    if (range === null || range === undefined) {
+      throw new QueryParseError('Invalid range expression: missing range data');
+    }
+
+    const { min, max, minInclusive, maxInclusive } = range;
+
+    // Determine the operators based on inclusivity
+    const minOperator: ComparisonOperator = minInclusive ? '>=' : '>';
+    const maxOperator: ComparisonOperator = maxInclusive ? '<=' : '<';
+
+    // Create comparison expressions for min and max
+    const minComparison = this.createComparisonExpression(
+      fieldName,
+      minOperator,
+      min
+    );
+    const maxComparison = this.createComparisonExpression(
+      fieldName,
+      maxOperator,
+      max
+    );
+
+    // Combine with AND
+    return {
+      type: 'logical',
+      operator: 'AND',
+      left: minComparison,
+      right: maxComparison
+    };
+  }
+
+  /**
    * Convert a Liqe operator to a QueryKit operator
    */
   private convertLiqeOperator(operator: string): ComparisonOperator {
@@ -200,7 +338,9 @@ export class QueryParser implements IQueryParser {
     }
 
     // Check if the operator is prefixed with a colon
-    const actualOperator = operator.startsWith(':') ? operator.substring(1) : operator;
+    const actualOperator = operator.startsWith(':')
+      ? operator.substring(1)
+      : operator;
 
     // Map Liqe operators to QueryKit operators
     const operatorMap: Record<string, ComparisonOperator> = {
@@ -210,7 +350,7 @@ export class QueryParser implements IQueryParser {
       '>=': '>=',
       '<': '<',
       '<=': '<=',
-      'in': 'IN',
+      in: 'IN',
       'not in': 'NOT IN'
     };
 
@@ -231,11 +371,15 @@ export class QueryParser implements IQueryParser {
     if (value === null) {
       return null;
     }
-    
-    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+
+    if (
+      typeof value === 'string' ||
+      typeof value === 'number' ||
+      typeof value === 'boolean'
+    ) {
       return value as QueryValue;
     }
-    
+
     if (Array.isArray(value)) {
       // Security fix: Recursively validate array elements
       const validatedArray = value.map(item => {
@@ -246,10 +390,12 @@ export class QueryParser implements IQueryParser {
       });
       return validatedArray as QueryValue;
     }
-    
+
     // Security fix: Reject all object types to prevent NoSQL injection
     if (typeof value === 'object') {
-      throw new QueryParseError('Object values are not supported for security reasons');
+      throw new QueryParseError(
+        'Object values are not supported for security reasons'
+      );
     }
 
     throw new QueryParseError(`Unsupported value type: ${typeof value}`);
@@ -265,4 +411,4 @@ export class QueryParser implements IQueryParser {
 
     return this.options.fieldMappings[normalizedField] ?? normalizedField;
   }
-} 
+}
