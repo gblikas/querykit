@@ -1,5 +1,9 @@
 import { QueryParser, QueryParseError } from './parser';
-import { QueryExpression } from './types';
+import {
+  IComparisonExpression,
+  ILogicalExpression,
+  QueryExpression
+} from './types';
 
 // Replace the type definition with this approach
 type QueryParserPrivate = {
@@ -862,6 +866,210 @@ describe('QueryParser', () => {
       };
 
       expect(parser.parse(query)).toEqual(expected);
+    });
+
+    // IN operator syntax tests using consistent key:[values] pattern
+    describe('IN operator syntax (key:[values])', () => {
+      it('should parse "field:[val1, val2, val3]" bracket array syntax', () => {
+        const query = 'status:[todo, doing, done]';
+        const expected: QueryExpression = {
+          type: 'logical',
+          operator: 'OR',
+          left: {
+            type: 'logical',
+            operator: 'OR',
+            left: {
+              type: 'comparison',
+              field: 'status',
+              operator: '==',
+              value: 'todo'
+            },
+            right: {
+              type: 'comparison',
+              field: 'status',
+              operator: '==',
+              value: 'doing'
+            }
+          },
+          right: {
+            type: 'comparison',
+            field: 'status',
+            operator: '==',
+            value: 'done'
+          }
+        };
+
+        expect(parser.parse(query)).toEqual(expected);
+      });
+
+      it('should parse numeric values in bracket syntax', () => {
+        const query = 'id:[2, 3]';
+        const expected: QueryExpression = {
+          type: 'logical',
+          operator: 'OR',
+          left: {
+            type: 'comparison',
+            field: 'id',
+            operator: '==',
+            value: 2
+          },
+          right: {
+            type: 'comparison',
+            field: 'id',
+            operator: '==',
+            value: 3
+          }
+        };
+
+        expect(parser.parse(query)).toEqual(expected);
+      });
+
+      it('should parse single value in bracket syntax', () => {
+        const query = 'status:[active]';
+        const expected: QueryExpression = {
+          type: 'comparison',
+          field: 'status',
+          operator: '==',
+          value: 'active'
+        };
+
+        expect(parser.parse(query)).toEqual(expected);
+      });
+
+      it('should preserve range syntax "field:[min TO max]"', () => {
+        const query = 'id:[2 TO 5]';
+        const expected: QueryExpression = {
+          type: 'logical',
+          operator: 'AND',
+          left: {
+            type: 'comparison',
+            field: 'id',
+            operator: '>=',
+            value: 2
+          },
+          right: {
+            type: 'comparison',
+            field: 'id',
+            operator: '<=',
+            value: 5
+          }
+        };
+
+        expect(parser.parse(query)).toEqual(expected);
+      });
+
+      it('should parse exclusive range syntax "field:{min TO max}"', () => {
+        const query = 'id:{2 TO 5}';
+        const expected: QueryExpression = {
+          type: 'logical',
+          operator: 'AND',
+          left: {
+            type: 'comparison',
+            field: 'id',
+            operator: '>',
+            value: 2
+          },
+          right: {
+            type: 'comparison',
+            field: 'id',
+            operator: '<',
+            value: 5
+          }
+        };
+
+        expect(parser.parse(query)).toEqual(expected);
+      });
+
+      it('should parse bracket syntax combined with other expressions', () => {
+        const query = 'status:[todo, doing] AND priority:>2';
+        const parsed = parser.parse(query);
+
+        // Verify it's a logical AND at the top level
+        expect(parsed.type).toBe('logical');
+        expect((parsed as ILogicalExpression).operator).toBe('AND');
+
+        // Left side should be OR of status values
+        const left = (parsed as ILogicalExpression).left as ILogicalExpression;
+        expect(left.type).toBe('logical');
+        expect(left.operator).toBe('OR');
+      });
+
+      it('should handle values with spaces using quotes', () => {
+        const query = 'name:[John, "Jane Doe"]';
+        const parsed = parser.parse(query);
+
+        expect(parsed.type).toBe('logical');
+        expect((parsed as ILogicalExpression).operator).toBe('OR');
+
+        const right = (parsed as ILogicalExpression)
+          .right as IComparisonExpression;
+        expect(right.value).toBe('Jane Doe');
+      });
+
+      it('should validate bracket syntax queries', () => {
+        expect(parser.validate('status:[todo, doing, done]')).toBe(true);
+        expect(parser.validate('id:[1, 2, 3]')).toBe(true);
+        expect(parser.validate('id:[1 TO 10]')).toBe(true);
+      });
+
+      it('should handle mixed types in bracket syntax', () => {
+        const query = 'priority:[1, 2, 3]';
+        const parsed = parser.parse(query);
+
+        expect(parsed.type).toBe('logical');
+        // All values should be numbers
+        const getLeftmost = (expr: QueryExpression): IComparisonExpression => {
+          if (expr.type === 'comparison') return expr;
+          return getLeftmost((expr as ILogicalExpression).left);
+        };
+        expect(typeof getLeftmost(parsed).value).toBe('number');
+      });
+
+      it('should handle quoted values with commas inside', () => {
+        const query = 'name:["John, Jr.", "Jane"]';
+        const parsed = parser.parse(query);
+
+        expect(parsed.type).toBe('logical');
+        expect((parsed as ILogicalExpression).operator).toBe('OR');
+
+        const left = (parsed as ILogicalExpression)
+          .left as IComparisonExpression;
+        const right = (parsed as ILogicalExpression)
+          .right as IComparisonExpression;
+
+        expect(left.value).toBe('John, Jr.');
+        expect(right.value).toBe('Jane');
+      });
+
+      it('should handle single-quoted values with commas inside', () => {
+        const query = "name:['Hello, World', 'test']";
+        const parsed = parser.parse(query);
+
+        expect(parsed.type).toBe('logical');
+        const left = (parsed as ILogicalExpression)
+          .left as IComparisonExpression;
+        expect(left.value).toBe('Hello, World');
+      });
+
+      it('should handle mixed quoted and unquoted values with commas', () => {
+        const query = 'tags:["a,b,c", simple, "x,y"]';
+        const parsed = parser.parse(query);
+
+        expect(parsed.type).toBe('logical');
+        // Should have 3 values: "a,b,c", "simple", "x,y"
+        const getValues = (expr: QueryExpression): string[] => {
+          if (expr.type === 'comparison') {
+            return [String(expr.value)];
+          }
+          const logical = expr as ILogicalExpression;
+          return [...getValues(logical.left), ...getValues(logical.right!)];
+        };
+
+        const values = getValues(parsed);
+        expect(values).toContain('a,b,c');
+        expect(values).toContain('simple');
+        expect(values).toContain('x,y');
+      });
     });
   });
 
