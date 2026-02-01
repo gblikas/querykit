@@ -541,3 +541,177 @@ export function extractKeyValue(
     value: term.value
   };
 }
+
+/**
+ * Represents a term token in the interleaved sequence
+ */
+export interface IQueryTermToken {
+  type: 'term';
+  key: string | null;
+  operator: string | null;
+  value: string | null;
+  startPosition: number;
+  endPosition: number;
+  raw: string;
+}
+
+/**
+ * Represents a logical operator token in the interleaved sequence
+ */
+export interface IQueryOperatorToken {
+  type: 'operator';
+  operator: 'AND' | 'OR' | 'NOT';
+  startPosition: number;
+  endPosition: number;
+  raw: string;
+}
+
+/**
+ * A token in the query sequence - either a term or a logical operator
+ */
+export type QueryToken = IQueryTermToken | IQueryOperatorToken;
+
+/**
+ * Result of parsing query input into an interleaved token sequence
+ */
+export interface IQueryTokenSequence {
+  /**
+   * Ordered sequence of tokens (terms and operators interleaved)
+   */
+  tokens: QueryToken[];
+
+  /**
+   * The original input string
+   */
+  input: string;
+
+  /**
+   * The token where the cursor is currently positioned (if cursorPosition was provided)
+   */
+  activeToken: QueryToken | null;
+
+  /**
+   * Index of the active token in the tokens array (-1 if none)
+   */
+  activeTokenIndex: number;
+}
+
+/**
+ * Parse query input into an interleaved sequence of terms and operators.
+ *
+ * This provides a flat, ordered representation ideal for:
+ * - Rendering query tokens as UI chips/tags
+ * - Building visual query builders
+ * - Syntax highlighting with proper ordering
+ *
+ * @param input The query input string
+ * @param cursorPosition Optional cursor position to identify active token
+ * @returns Ordered sequence of term and operator tokens
+ *
+ * @example
+ * ```typescript
+ * const result = parseQueryTokens('status:done AND priority:high');
+ * // result.tokens = [
+ * //   { type: 'term', key: 'status', value: 'done', ... },
+ * //   { type: 'operator', operator: 'AND', ... },
+ * //   { type: 'term', key: 'priority', value: 'high', ... }
+ * // ]
+ *
+ * // For incomplete input like 'status:d'
+ * const result = parseQueryTokens('status:d');
+ * // result.tokens = [
+ * //   { type: 'term', key: 'status', value: 'd', ... }
+ * // ]
+ * ```
+ */
+export function parseQueryTokens(
+  input: string,
+  cursorPosition?: number
+): IQueryTokenSequence {
+  if (!input || input.trim().length === 0) {
+    return {
+      tokens: [],
+      input,
+      activeToken: null,
+      activeTokenIndex: -1
+    };
+  }
+
+  const context = parseQueryInput(input, cursorPosition);
+
+  // Build a combined list of all tokens with their positions
+  const allTokens: Array<{
+    token: QueryToken;
+    position: number;
+  }> = [];
+
+  // Add terms
+  for (const term of context.terms) {
+    allTokens.push({
+      position: term.startPosition,
+      token: {
+        type: 'term',
+        key: term.key,
+        operator: term.operator,
+        value: term.value,
+        startPosition: term.startPosition,
+        endPosition: term.endPosition,
+        raw: term.raw
+      }
+    });
+  }
+
+  // Add operators
+  for (const op of context.logicalOperators) {
+    const opLength = op.operator.length;
+    allTokens.push({
+      position: op.position,
+      token: {
+        type: 'operator',
+        operator: op.operator as 'AND' | 'OR' | 'NOT',
+        startPosition: op.position,
+        endPosition: op.position + opLength,
+        raw: op.operator
+      }
+    });
+  }
+
+  // Sort by position to get the interleaved order
+  allTokens.sort((a, b) => a.position - b.position);
+
+  const tokens = allTokens.map(t => t.token);
+
+  // Find active token based on cursor position
+  let activeToken: QueryToken | null = null;
+  let activeTokenIndex = -1;
+
+  if (cursorPosition !== undefined) {
+    for (let i = 0; i < tokens.length; i++) {
+      const token = tokens[i];
+      if (
+        cursorPosition >= token.startPosition &&
+        cursorPosition <= token.endPosition
+      ) {
+        activeToken = token;
+        activeTokenIndex = i;
+        break;
+      }
+    }
+
+    // If cursor is at the end and right after the last token
+    if (activeToken === null && tokens.length > 0) {
+      const lastToken = tokens[tokens.length - 1];
+      if (cursorPosition === lastToken.endPosition) {
+        activeToken = lastToken;
+        activeTokenIndex = tokens.length - 1;
+      }
+    }
+  }
+
+  return {
+    tokens,
+    input,
+    activeToken,
+    activeTokenIndex
+  };
+}

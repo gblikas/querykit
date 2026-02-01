@@ -2,7 +2,8 @@ import {
   parseQueryInput,
   getTermAtPosition,
   isInputComplete,
-  extractKeyValue
+  extractKeyValue,
+  parseQueryTokens
 } from './input-parser';
 
 describe('Input Parser', () => {
@@ -439,6 +440,250 @@ describe('Input Parser', () => {
       const result = extractKeyValue('priority:>5');
 
       expect(result).toEqual({ key: 'priority', value: '5' });
+    });
+  });
+
+  describe('parseQueryTokens - interleaved sequence', () => {
+    it('should return empty array for empty input', () => {
+      const result = parseQueryTokens('');
+
+      expect(result.tokens).toHaveLength(0);
+      expect(result.activeToken).toBeNull();
+      expect(result.activeTokenIndex).toBe(-1);
+    });
+
+    it('should parse a single term', () => {
+      const result = parseQueryTokens('status:done');
+
+      expect(result.tokens).toHaveLength(1);
+      expect(result.tokens[0]).toMatchObject({
+        type: 'term',
+        key: 'status',
+        value: 'done'
+      });
+    });
+
+    it('should parse compound expression with AND', () => {
+      const result = parseQueryTokens('keyVal1:val1 AND keyVal2:val2');
+
+      expect(result.tokens).toHaveLength(3);
+
+      // First term
+      expect(result.tokens[0]).toMatchObject({
+        type: 'term',
+        key: 'keyVal1',
+        value: 'val1'
+      });
+
+      // AND operator
+      expect(result.tokens[1]).toMatchObject({
+        type: 'operator',
+        operator: 'AND'
+      });
+
+      // Second term
+      expect(result.tokens[2]).toMatchObject({
+        type: 'term',
+        key: 'keyVal2',
+        value: 'val2'
+      });
+    });
+
+    it('should parse compound expression with OR', () => {
+      const result = parseQueryTokens(
+        'status:todo OR status:doing OR status:done'
+      );
+
+      expect(result.tokens).toHaveLength(5);
+      expect(result.tokens[0].type).toBe('term');
+      expect(result.tokens[1]).toMatchObject({
+        type: 'operator',
+        operator: 'OR'
+      });
+      expect(result.tokens[2].type).toBe('term');
+      expect(result.tokens[3]).toMatchObject({
+        type: 'operator',
+        operator: 'OR'
+      });
+      expect(result.tokens[4].type).toBe('term');
+    });
+
+    it('should parse expression with NOT', () => {
+      const result = parseQueryTokens('status:active NOT priority:low');
+
+      expect(result.tokens).toHaveLength(3);
+      expect(result.tokens[0]).toMatchObject({
+        type: 'term',
+        key: 'status',
+        value: 'active'
+      });
+      expect(result.tokens[1]).toMatchObject({
+        type: 'operator',
+        operator: 'NOT'
+      });
+      expect(result.tokens[2]).toMatchObject({
+        type: 'term',
+        key: 'priority',
+        value: 'low'
+      });
+    });
+
+    it('should include position information for all tokens', () => {
+      const input = 'a:1 AND b:2';
+      const result = parseQueryTokens(input);
+
+      expect(result.tokens).toHaveLength(3);
+
+      // First term: 'a:1' at positions 0-3
+      expect(result.tokens[0]).toMatchObject({
+        type: 'term',
+        startPosition: 0,
+        endPosition: 3,
+        raw: 'a:1'
+      });
+
+      // AND operator at positions 4-7
+      expect(result.tokens[1]).toMatchObject({
+        type: 'operator',
+        operator: 'AND',
+        startPosition: 4,
+        endPosition: 7,
+        raw: 'AND'
+      });
+
+      // Second term: 'b:2' at positions 8-11
+      expect(result.tokens[2]).toMatchObject({
+        type: 'term',
+        startPosition: 8,
+        endPosition: 11,
+        raw: 'b:2'
+      });
+    });
+
+    it('should identify active token based on cursor position', () => {
+      const input = 'status:done AND priority:high';
+
+      // Cursor in first term
+      let result = parseQueryTokens(input, 5);
+      expect(result.activeToken?.type).toBe('term');
+      expect(result.activeTokenIndex).toBe(0);
+
+      // Cursor in AND operator
+      result = parseQueryTokens(input, 13);
+      expect(result.activeToken?.type).toBe('operator');
+      expect(result.activeTokenIndex).toBe(1);
+
+      // Cursor in second term
+      result = parseQueryTokens(input, 20);
+      expect(result.activeToken?.type).toBe('term');
+      expect(result.activeTokenIndex).toBe(2);
+    });
+
+    it('should handle incomplete expressions', () => {
+      const result = parseQueryTokens('status:done AND');
+
+      expect(result.tokens).toHaveLength(2);
+      expect(result.tokens[0]).toMatchObject({
+        type: 'term',
+        key: 'status',
+        value: 'done'
+      });
+      expect(result.tokens[1]).toMatchObject({
+        type: 'operator',
+        operator: 'AND'
+      });
+    });
+
+    it('should handle partial value in term', () => {
+      const result = parseQueryTokens('status:d');
+
+      expect(result.tokens).toHaveLength(1);
+      expect(result.tokens[0]).toMatchObject({
+        type: 'term',
+        key: 'status',
+        value: 'd'
+      });
+    });
+
+    it('should handle term with no value yet', () => {
+      const result = parseQueryTokens('status:');
+
+      expect(result.tokens).toHaveLength(1);
+      expect(result.tokens[0]).toMatchObject({
+        type: 'term',
+        key: 'status',
+        value: null
+      });
+    });
+
+    it('should handle mixed operators', () => {
+      const result = parseQueryTokens('a:1 AND b:2 OR c:3');
+
+      expect(result.tokens).toHaveLength(5);
+      expect(result.tokens[0].type).toBe('term');
+      expect(result.tokens[1]).toMatchObject({
+        type: 'operator',
+        operator: 'AND'
+      });
+      expect(result.tokens[2].type).toBe('term');
+      expect(result.tokens[3]).toMatchObject({
+        type: 'operator',
+        operator: 'OR'
+      });
+      expect(result.tokens[4].type).toBe('term');
+    });
+
+    it('should handle bare values mixed with key:value terms', () => {
+      const result = parseQueryTokens('hello AND status:active');
+
+      expect(result.tokens).toHaveLength(3);
+      expect(result.tokens[0]).toMatchObject({
+        type: 'term',
+        key: null,
+        value: 'hello'
+      });
+      expect(result.tokens[1]).toMatchObject({
+        type: 'operator',
+        operator: 'AND'
+      });
+      expect(result.tokens[2]).toMatchObject({
+        type: 'term',
+        key: 'status',
+        value: 'active'
+      });
+    });
+
+    it('should handle complex real-world query', () => {
+      const result = parseQueryTokens(
+        'status:open AND priority:high OR assigned:me'
+      );
+
+      expect(result.tokens).toHaveLength(5);
+
+      // Verify order: term, AND, term, OR, term
+      expect(result.tokens.map(t => t.type)).toEqual([
+        'term',
+        'operator',
+        'term',
+        'operator',
+        'term'
+      ]);
+
+      const operators = result.tokens
+        .filter(
+          (t): t is import('./input-parser').IQueryOperatorToken =>
+            t.type === 'operator'
+        )
+        .map(t => t.operator);
+      expect(operators).toEqual(['AND', 'OR']);
+    });
+
+    it('should find active token at end of input', () => {
+      const input = 'status:done';
+      const result = parseQueryTokens(input, input.length);
+
+      expect(result.activeToken).not.toBeNull();
+      expect(result.activeTokenIndex).toBe(0);
     });
   });
 
