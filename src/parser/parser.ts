@@ -63,18 +63,15 @@ export class QueryParser implements IQueryParser {
   /**
    * Pre-process a query string to convert non-standard syntax to Liqe-compatible syntax.
    * Supports:
-   * - `field in (val1, val2, val3)` → `(field:val1 OR field:val2 OR field:val3)`
    * - `field:[val1, val2, val3]` → `(field:val1 OR field:val2 OR field:val3)`
+   *
+   * This keeps the syntax consistent with the `key:value` pattern used throughout QueryKit:
+   * - `priority:>2` (comparison)
+   * - `status:active` (equality)
+   * - `status:[todo, doing, done]` (IN / multiple values)
    */
   private preprocessQuery(query: string): string {
     let result = query;
-
-    // Handle `field in (val1, val2, ...)` syntax
-    // Pattern: fieldName in (value1, value2, ...)
-    const inParenPattern = /(\w+)\s+in\s*\(([^)]+)\)/gi;
-    result = result.replace(inParenPattern, (_match, field, values) => {
-      return this.convertToOrExpression(field, values);
-    });
 
     // Handle `field:[val1, val2, ...]` syntax (array-like, not range)
     // Pattern: fieldName:[value1, value2, ...]

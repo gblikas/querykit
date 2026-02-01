@@ -868,10 +868,10 @@ describe('QueryParser', () => {
       expect(parser.parse(query)).toEqual(expected);
     });
 
-    // IN operator syntax tests
-    describe('IN operator syntax', () => {
-      it('should parse "field in (val1, val2, val3)" syntax', () => {
-        const query = 'status in (todo, doing, done)';
+    // IN operator syntax tests using consistent key:[values] pattern
+    describe('IN operator syntax (key:[values])', () => {
+      it('should parse "field:[val1, val2, val3]" bracket array syntax', () => {
+        const query = 'status:[todo, doing, done]';
         const expected: QueryExpression = {
           type: 'logical',
           operator: 'OR',
@@ -902,7 +902,7 @@ describe('QueryParser', () => {
         expect(parser.parse(query)).toEqual(expected);
       });
 
-      it('should parse "field:[val1, val2]" bracket array syntax', () => {
+      it('should parse numeric values in bracket syntax', () => {
         const query = 'id:[2, 3]';
         const expected: QueryExpression = {
           type: 'logical',
@@ -924,8 +924,8 @@ describe('QueryParser', () => {
         expect(parser.parse(query)).toEqual(expected);
       });
 
-      it('should parse "field in (val)" with single value', () => {
-        const query = 'status in (active)';
+      it('should parse single value in bracket syntax', () => {
+        const query = 'status:[active]';
         const expected: QueryExpression = {
           type: 'comparison',
           field: 'status',
@@ -980,8 +980,8 @@ describe('QueryParser', () => {
         expect(parser.parse(query)).toEqual(expected);
       });
 
-      it('should parse IN syntax combined with other expressions', () => {
-        const query = 'status in (todo, doing) AND priority:>2';
+      it('should parse bracket syntax combined with other expressions', () => {
+        const query = 'status:[todo, doing] AND priority:>2';
         const parsed = parser.parse(query);
 
         // Verify it's a logical AND at the top level
@@ -994,16 +994,8 @@ describe('QueryParser', () => {
         expect(left.operator).toBe('OR');
       });
 
-      it('should parse case-insensitive IN keyword', () => {
-        const query = 'status IN (todo, done)';
-        const parsed = parser.parse(query);
-
-        expect(parsed.type).toBe('logical');
-        expect((parsed as ILogicalExpression).operator).toBe('OR');
-      });
-
-      it('should handle values with spaces in IN syntax using quotes', () => {
-        const query = 'name in (John, "Jane Doe")';
+      it('should handle values with spaces using quotes', () => {
+        const query = 'name:[John, "Jane Doe"]';
         const parsed = parser.parse(query);
 
         expect(parsed.type).toBe('logical');
@@ -1014,10 +1006,23 @@ describe('QueryParser', () => {
         expect(right.value).toBe('Jane Doe');
       });
 
-      it('should validate IN syntax queries', () => {
-        expect(parser.validate('status in (todo, doing, done)')).toBe(true);
+      it('should validate bracket syntax queries', () => {
+        expect(parser.validate('status:[todo, doing, done]')).toBe(true);
         expect(parser.validate('id:[1, 2, 3]')).toBe(true);
         expect(parser.validate('id:[1 TO 10]')).toBe(true);
+      });
+
+      it('should handle mixed types in bracket syntax', () => {
+        const query = 'priority:[1, 2, 3]';
+        const parsed = parser.parse(query);
+
+        expect(parsed.type).toBe('logical');
+        // All values should be numbers
+        const getLeftmost = (expr: QueryExpression): IComparisonExpression => {
+          if (expr.type === 'comparison') return expr;
+          return getLeftmost((expr as ILogicalExpression).left);
+        };
+        expect(typeof getLeftmost(parsed).value).toBe('number');
       });
     });
   });
