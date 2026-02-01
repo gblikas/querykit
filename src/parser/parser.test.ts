@@ -1024,6 +1024,52 @@ describe('QueryParser', () => {
         };
         expect(typeof getLeftmost(parsed).value).toBe('number');
       });
+
+      it('should handle quoted values with commas inside', () => {
+        const query = 'name:["John, Jr.", "Jane"]';
+        const parsed = parser.parse(query);
+
+        expect(parsed.type).toBe('logical');
+        expect((parsed as ILogicalExpression).operator).toBe('OR');
+
+        const left = (parsed as ILogicalExpression)
+          .left as IComparisonExpression;
+        const right = (parsed as ILogicalExpression)
+          .right as IComparisonExpression;
+
+        expect(left.value).toBe('John, Jr.');
+        expect(right.value).toBe('Jane');
+      });
+
+      it('should handle single-quoted values with commas inside', () => {
+        const query = "name:['Hello, World', 'test']";
+        const parsed = parser.parse(query);
+
+        expect(parsed.type).toBe('logical');
+        const left = (parsed as ILogicalExpression)
+          .left as IComparisonExpression;
+        expect(left.value).toBe('Hello, World');
+      });
+
+      it('should handle mixed quoted and unquoted values with commas', () => {
+        const query = 'tags:["a,b,c", simple, "x,y"]';
+        const parsed = parser.parse(query);
+
+        expect(parsed.type).toBe('logical');
+        // Should have 3 values: "a,b,c", "simple", "x,y"
+        const getValues = (expr: QueryExpression): string[] => {
+          if (expr.type === 'comparison') {
+            return [String(expr.value)];
+          }
+          const logical = expr as ILogicalExpression;
+          return [...getValues(logical.left), ...getValues(logical.right!)];
+        };
+
+        const values = getValues(parsed);
+        expect(values).toContain('a,b,c');
+        expect(values).toContain('simple');
+        expect(values).toContain('x,y');
+      });
     });
   });
 

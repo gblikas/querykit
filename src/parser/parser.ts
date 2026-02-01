@@ -94,11 +94,8 @@ export class QueryParser implements IQueryParser {
    * Convert a field and comma-separated values to an OR expression string
    */
   private convertToOrExpression(field: string, valuesStr: string): string {
-    // Split by comma and trim whitespace
-    const values = valuesStr
-      .split(',')
-      .map((v: string) => v.trim())
-      .filter((v: string) => v.length > 0);
+    // Parse values respecting quoted strings (commas inside quotes are preserved)
+    const values = this.parseCommaSeparatedValues(valuesStr);
 
     if (values.length === 0) {
       return `${field}:""`;
@@ -113,6 +110,75 @@ export class QueryParser implements IQueryParser {
       this.formatFieldValue(field, v)
     );
     return `(${orClauses.join(' OR ')})`;
+  }
+
+  /**
+   * Parse a comma-separated string into values, respecting quoted strings.
+   * Commas inside quoted strings are preserved as part of the value.
+   *
+   * Examples:
+   * - `a, b, c` → ['a', 'b', 'c']
+   * - `"John, Jr.", Jane` → ['"John, Jr."', 'Jane']
+   * - `'hello, world', test` → ["'hello, world'", 'test']
+   */
+  private parseCommaSeparatedValues(input: string): string[] {
+    const values: string[] = [];
+    let current = '';
+    let inDoubleQuotes = false;
+    let inSingleQuotes = false;
+    let i = 0;
+
+    while (i < input.length) {
+      const char = input[i];
+      const nextChar = input[i + 1];
+
+      // Handle escape sequences inside quotes
+      if ((inDoubleQuotes || inSingleQuotes) && char === '\\' && nextChar) {
+        // Include both the backslash and the escaped character
+        current += char + nextChar;
+        i += 2;
+        continue;
+      }
+
+      // Toggle double quote state
+      if (char === '"' && !inSingleQuotes) {
+        inDoubleQuotes = !inDoubleQuotes;
+        current += char;
+        i++;
+        continue;
+      }
+
+      // Toggle single quote state
+      if (char === "'" && !inDoubleQuotes) {
+        inSingleQuotes = !inSingleQuotes;
+        current += char;
+        i++;
+        continue;
+      }
+
+      // Handle comma as separator (only when not inside quotes)
+      if (char === ',' && !inDoubleQuotes && !inSingleQuotes) {
+        const trimmed = current.trim();
+        if (trimmed.length > 0) {
+          values.push(trimmed);
+        }
+        current = '';
+        i++;
+        continue;
+      }
+
+      // Regular character
+      current += char;
+      i++;
+    }
+
+    // Don't forget the last value
+    const trimmed = current.trim();
+    if (trimmed.length > 0) {
+      values.push(trimmed);
+    }
+
+    return values;
   }
 
   /**
