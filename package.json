@@ -6,36 +6,8 @@
     "type": "git",
     "url": "git+https://github.com/gblikas/querykit.git"
   },
-  "packageManager": "pnpm@10.26.0",
   "main": "dist/index.js",
-  "module": "dist/index.js",
   "types": "dist/index.d.ts",
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "require": "./dist/index.js",
-      "default": "./dist/index.js"
-    },
-    "./parser": {
-      "types": "./dist/parser/index.d.ts",
-      "import": "./dist/parser/index.js",
-      "require": "./dist/parser/index.js",
-      "default": "./dist/parser/index.js"
-    },
-    "./adapters/*": {
-      "types": "./dist/adapters/*.d.ts",
-      "import": "./dist/adapters/*.js",
-      "require": "./dist/adapters/*.js",
-      "default": "./dist/adapters/*.js"
-    },
-    "./translators/*": {
-      "types": "./dist/translators/*.d.ts",
-      "import": "./dist/translators/*.js",
-      "require": "./dist/translators/*.js",
-      "default": "./dist/translators/*.js"
-    }
-  },
   "scripts": {
     "build": "tsc --outDir dist",
     "test": "jest",
