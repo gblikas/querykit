@@ -671,7 +671,7 @@ describe('Input Parser', () => {
 
       const operators = result.tokens
         .filter(
-          (t): t is import('./input-parser').IQueryOperatorToken =>
+          (t): t is import('./types').IQueryOperatorToken =>
             t.type === 'operator'
         )
         .map(t => t.operator);

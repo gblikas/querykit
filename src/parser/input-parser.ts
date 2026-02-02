@@ -542,34 +542,14 @@ export function extractKeyValue(
   };
 }
 
-/**
- * Represents a term token in the interleaved sequence
- */
-export interface IQueryTermToken {
-  type: 'term';
-  key: string | null;
-  operator: string | null;
-  value: string | null;
-  startPosition: number;
-  endPosition: number;
-  raw: string;
-}
-
-/**
- * Represents a logical operator token in the interleaved sequence
- */
-export interface IQueryOperatorToken {
-  type: 'operator';
-  operator: 'AND' | 'OR' | 'NOT';
-  startPosition: number;
-  endPosition: number;
-  raw: string;
-}
+// Import token types from types.ts (canonical location)
+import type { IQueryToken } from './types';
 
 /**
  * A token in the query sequence - either a term or a logical operator
+ * This is an alias for IQueryToken from types.ts
  */
-export type QueryToken = IQueryTermToken | IQueryOperatorToken;
+export type QueryToken = IQueryToken;
 
 /**
  * Result of parsing query input into an interleaved token sequence

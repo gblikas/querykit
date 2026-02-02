@@ -16,10 +16,15 @@ import {
   IComparisonExpression,
   ILogicalExpression,
   IParserOptions,
+  IParseWithContextOptions,
   IQueryParser,
+  IQueryParseResult,
+  IQueryStructure,
+  IQueryToken,
   QueryExpression,
   QueryValue
 } from './types';
+import { parseQueryTokens, isInputComplete, QueryToken } from './input-parser';
 
 /**
  * Error thrown when query parsing fails
@@ -473,5 +478,250 @@ export class QueryParser implements IQueryParser {
       : field;
 
     return this.options.fieldMappings[normalizedField] ?? normalizedField;
+  }
+
+  /**
+   * Parse a query string with full context information.
+   *
+   * Unlike `parse()`, this method never throws. Instead, it returns a result object
+   * that indicates success or failure along with rich contextual information useful
+   * for building search UIs.
+   *
+   * @param query The query string to parse
+   * @param options Optional configuration (cursor position, etc.)
+   * @returns Rich parse result with tokens, AST/error, and structural analysis
+   *
+   * @example
+   * ```typescript
+   * const result = parser.parseWithContext('status:done AND priority:high');
+   *
+   * if (result.success) {
+   *   // Use result.ast for query execution
+   *   console.log('Valid query:', result.ast);
+   * } else {
+   *   // Show error to user
+   *   console.log('Error:', result.error?.message);
+   * }
+   *
+   * // Always available for UI rendering
+   * console.log('Tokens:', result.tokens);
+   * console.log('Structure:', result.structure);
+   * ```
+   */
+  public parseWithContext(
+    query: string,
+    options: IParseWithContextOptions = {}
+  ): IQueryParseResult {
+    // Get tokens from input parser (always works, even for invalid input)
+    const tokenResult = parseQueryTokens(query, options.cursorPosition);
+    const tokens = this.convertTokens(tokenResult.tokens);
+
+    // Analyze structure
+    const structure = this.analyzeStructure(query, tokens);
+
+    // Attempt full parse
+    let ast: QueryExpression | undefined;
+    let error:
+      | { message: string; position?: number; problematicText?: string }
+      | undefined;
+    let success = false;
+
+    try {
+      ast = this.parse(query);
+      success = true;
+    } catch (e) {
+      const errorMessage = e instanceof Error ? e.message : String(e);
+      error = {
+        message: errorMessage,
+        // Try to extract position from error message if available
+        position: this.extractErrorPosition(errorMessage),
+        problematicText: this.extractProblematicText(query, errorMessage)
+      };
+    }
+
+    // Determine active token
+    const activeToken = tokenResult.activeToken
+      ? this.convertSingleToken(tokenResult.activeToken)
+      : undefined;
+
+    return {
+      success,
+      input: query,
+      ast,
+      error,
+      tokens,
+      activeToken,
+      activeTokenIndex: tokenResult.activeTokenIndex,
+      structure
+    };
+  }
+
+  /**
+   * Convert tokens from input parser format to IQueryToken format
+   */
+  private convertTokens(tokens: QueryToken[]): IQueryToken[] {
+    return tokens.map(token => this.convertSingleToken(token));
+  }
+
+  /**
+   * Convert a single token from input parser format
+   */
+  private convertSingleToken(token: QueryToken): IQueryToken {
+    if (token.type === 'term') {
+      return {
+        type: 'term',
+        key: token.key,
+        operator: token.operator,
+        value: token.value,
+        startPosition: token.startPosition,
+        endPosition: token.endPosition,
+        raw: token.raw
+      };
+    } else {
+      return {
+        type: 'operator',
+        operator: token.operator,
+        startPosition: token.startPosition,
+        endPosition: token.endPosition,
+        raw: token.raw
+      };
+    }
+  }
+
+  /**
+   * Analyze the structure of a query
+   */
+  private analyzeStructure(
+    query: string,
+    tokens: IQueryToken[]
+  ): IQueryStructure {
+    // Count parentheses
+    const openParens = (query.match(/\(/g) || []).length;
+    const closeParens = (query.match(/\)/g) || []).length;
+    const hasBalancedParentheses = openParens === closeParens;
+
+    // Count quotes
+    const singleQuotes = (query.match(/'/g) || []).length;
+    const doubleQuotes = (query.match(/"/g) || []).length;
+    const hasBalancedQuotes = singleQuotes % 2 === 0 && doubleQuotes % 2 === 0;
+
+    // Count terms and operators
+    const termTokens = tokens.filter(t => t.type === 'term');
+    const operatorTokens = tokens.filter(t => t.type === 'operator');
+
+    const clauseCount = termTokens.length;
+    const operatorCount = operatorTokens.length;
+
+    // Extract referenced fields
+    const referencedFields: string[] = [];
+    for (const token of termTokens) {
+      if (token.type === 'term' && token.key !== null) {
+        if (!referencedFields.includes(token.key)) {
+          referencedFields.push(token.key);
+        }
+      }
+    }
+
+    // Calculate depth (by counting max nesting in parentheses)
+    const depth = this.calculateDepth(query);
+
+    // Check if complete
+    const isComplete = isInputComplete(query);
+
+    // Determine complexity
+    const complexity = this.determineComplexity(
+      clauseCount,
+      operatorCount,
+      depth
+    );
+
+    return {
+      depth,
+      clauseCount,
+      operatorCount,
+      hasBalancedParentheses,
+      hasBalancedQuotes,
+      isComplete,
+      referencedFields,
+      complexity
+    };
+  }
+
+  /**
+   * Calculate the maximum nesting depth of parentheses
+   */
+  private calculateDepth(query: string): number {
+    let maxDepth = 0;
+    let currentDepth = 0;
+
+    for (const char of query) {
+      if (char === '(') {
+        currentDepth++;
+        maxDepth = Math.max(maxDepth, currentDepth);
+      } else if (char === ')') {
+        currentDepth = Math.max(0, currentDepth - 1);
+      }
+    }
+
+    // Base depth is 1 if there's any content
+    return query.trim().length > 0 ? Math.max(1, maxDepth) : 0;
+  }
+
+  /**
+   * Determine query complexity classification
+   */
+  private determineComplexity(
+    clauseCount: number,
+    operatorCount: number,
+    depth: number
+  ): 'simple' | 'moderate' | 'complex' {
+    // Simple: 1-2 clauses, no nesting
+    if (clauseCount <= 2 && depth <= 1) {
+      return 'simple';
+    }
+
+    // Complex: many clauses, deep nesting, or many operators
+    if (clauseCount > 5 || depth > 3 || operatorCount > 4) {
+      return 'complex';
+    }
+
+    return 'moderate';
+  }
+
+  /**
+   * Try to extract error position from error message
+   */
+  private extractErrorPosition(errorMessage: string): number | undefined {
+    // Try to find position indicators in error messages
+    // e.g., "at position 15" or "column 15"
+    const posMatch = errorMessage.match(/(?:position|column|offset)\s*(\d+)/i);
+    if (posMatch) {
+      return parseInt(posMatch[1], 10);
+    }
+    return undefined;
+  }
+
+  /**
+   * Try to extract the problematic text from the query based on error
+   */
+  private extractProblematicText(
+    query: string,
+    errorMessage: string
+  ): string | undefined {
+    // If we found a position, extract surrounding text
+    const position = this.extractErrorPosition(errorMessage);
+    if (position !== undefined && position < query.length) {
+      const start = Math.max(0, position - 10);
+      const end = Math.min(query.length, position + 10);
+      return query.substring(start, end);
+    }
+
+    // Try to find quoted text in error message
+    const quotedMatch = errorMessage.match(/"([^"]+)"/);
+    if (quotedMatch) {
+      return quotedMatch[1];
+    }
+
+    return undefined;
   }
 }
