@@ -92,26 +92,31 @@ const highlightQueryHtml = (input: string): string => {
       // Term token - check if it has key:value structure
       if (token.key !== null && token.operator !== null) {
         // Key:value term
+        // Detect negation from key prefix (e.g., "-status" means negated)
+        const isNegated = token.key.startsWith('-');
+        const displayKey = isNegated ? token.key.slice(1) : token.key;
         const opPart = token.operator;
         const valuePart = token.value !== null ? String(token.value) : '';
 
         // Build the highlighted term
-        if (token.isNegated) {
+        if (isNegated) {
           html += `<span class="text-red-400">-</span>`;
         }
-        html += `<span class="text-orange-400">${escapeHtml(token.key)}</span>`;
+        html += `<span class="text-orange-400">${escapeHtml(displayKey)}</span>`;
         html += `<span class="text-gray-500">${escapeHtml(opPart)}</span>`;
         if (valuePart) {
           // Check if it was quoted in original input
           const rawValue = token.raw.slice(
-            (token.isNegated ? 1 : 0) + token.key.length + opPart.length
+            (isNegated ? 1 : 0) + displayKey.length + opPart.length
           );
           html += `<span class="text-blue-400 bg-blue-500/20 rounded">${escapeHtml(rawValue)}</span>`;
         }
       } else {
         // Bare value (no key)
         const text = token.raw;
-        if (token.isNegated) {
+        // Detect negation from raw text prefix
+        const isNegated = text.startsWith('-');
+        if (isNegated) {
           html += `<span class="text-red-400">-</span>${escapeHtml(text.slice(1))}`;
         } else {
           html += escapeHtml(text);
