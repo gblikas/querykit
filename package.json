@@ -6,10 +6,12 @@
     "type": "git",
     "url": "git+https://github.com/gblikas/querykit.git"
   },
+  "packageManager": "pnpm@10.26.0",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc --outDir dist",
+    "build:example": "pnpm build && cd examples/qk-next && pnpm build",
     "test": "jest",
     "lint": "eslint src --ext .ts",
     "format": "prettier --write \"src/**/*.ts\"",
