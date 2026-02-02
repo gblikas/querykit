@@ -19,7 +19,8 @@ import {
   SqlTranslator,
   DrizzleAdapter,
   createQueryKit,
-  IDrizzleAdapterOptions
+  IDrizzleAdapterOptions,
+  parseQueryTokens
 } from '@gblikas/querykit';
 import { Copy, Check, Search, ChevronUp, FileCode, X } from 'lucide-react';
 import { Light as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -32,7 +33,12 @@ import { toast } from 'sonner';
 import Aurora from '@/components/reactbits/blocks/Backgrounds/Aurora/Aurora';
 import { PGlite } from '@electric-sql/pglite';
 import { useViewportInfo } from './hooks/use-viewport-info';
-import { cn, trackQueryKitIssue, trackQueryKitUsage, trackQueryKitSpeed } from '@/lib/utils';
+import {
+  cn,
+  trackQueryKitIssue,
+  trackQueryKitUsage,
+  trackQueryKitSpeed
+} from '@/lib/utils';
 import {
   Drawer,
   DrawerTrigger,
@@ -43,7 +49,7 @@ import {
   DrawerClose
 } from '@/components/ui/drawer';
 
-// Simple GitHub-like highlighter for key:value tokens that colors only the value
+// Escape HTML entities for safe rendering
 const escapeHtml = (input: string): string =>
   input
     .replace(/&/g, '&amp;')
@@ -52,22 +58,76 @@ const escapeHtml = (input: string): string =>
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
 
+/**
+ * Highlight query input using QueryKit's parseQueryTokens for accurate tokenization.
+ * This provides robust key:value highlighting that handles:
+ * - Comparison operators (:, :>, :>=, :<, :<=, :!=)
+ * - Logical operators (AND, OR, NOT)
+ * - Quoted values
+ * - Negation prefixes
+ */
 const highlightQueryHtml = (input: string): string => {
   if (!input) return '';
-  const parts = input.split(/(\s+)/); // keep spaces
-  return parts
-    .map(part => {
-      if (/^\s+$/.test(part)) return part; // preserve spaces, rely on whitespace-pre-wrap
-      const idx = part.indexOf(':');
-      if (idx > 0) {
-        const key = escapeHtml(part.slice(0, idx));
-        const value = escapeHtml(part.slice(idx + 1));
-        // Note: no horizontal padding to keep overlay width identical to input text for caret alignment
-        return `${key}:<span class="text-blue-400 bg-blue-500/20 rounded">${value}</span>`;
+
+  const result = parseQueryTokens(input);
+  const tokens = result.tokens;
+
+  if (tokens.length === 0) {
+    return escapeHtml(input);
+  }
+
+  let html = '';
+  let lastEnd = 0;
+
+  for (const token of tokens) {
+    // Add any whitespace/text between tokens
+    if (token.startPosition > lastEnd) {
+      html += escapeHtml(input.slice(lastEnd, token.startPosition));
+    }
+
+    if (token.type === 'operator') {
+      // Logical operator (AND, OR, NOT) - style in purple
+      html += `<span class="text-purple-400 font-medium">${escapeHtml(token.operator)}</span>`;
+    } else if (token.type === 'term') {
+      // Term token - check if it has key:value structure
+      if (token.key !== null && token.operator !== null) {
+        // Key:value term
+        const opPart = token.operator;
+        const valuePart = token.value !== null ? String(token.value) : '';
+
+        // Build the highlighted term
+        if (token.isNegated) {
+          html += `<span class="text-red-400">-</span>`;
+        }
+        html += `<span class="text-orange-400">${escapeHtml(token.key)}</span>`;
+        html += `<span class="text-gray-500">${escapeHtml(opPart)}</span>`;
+        if (valuePart) {
+          // Check if it was quoted in original input
+          const rawValue = token.raw.slice(
+            (token.isNegated ? 1 : 0) + token.key.length + opPart.length
+          );
+          html += `<span class="text-blue-400 bg-blue-500/20 rounded">${escapeHtml(rawValue)}</span>`;
+        }
+      } else {
+        // Bare value (no key)
+        const text = token.raw;
+        if (token.isNegated) {
+          html += `<span class="text-red-400">-</span>${escapeHtml(text.slice(1))}`;
+        } else {
+          html += escapeHtml(text);
+        }
       }
-      return escapeHtml(part);
-    })
-    .join('');
+    }
+
+    lastEnd = token.endPosition;
+  }
+
+  // Add any trailing text
+  if (lastEnd < input.length) {
+    html += escapeHtml(input.slice(lastEnd));
+  }
+
+  return html;
 };
 
 const INSTALL_SNIPPET = `pnpm i @gblikas/querykit drizzle-orm`;
