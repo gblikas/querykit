@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState, useCallback, useRef, JSX } from 'react';
 import { drizzle } from 'drizzle-orm/pglite';
 import { usePGlite } from '@electric-sql/pglite-react';
 import { pgTable, serial, text, integer, boolean } from 'drizzle-orm/pg-core';
-import { InferSelectModel, sql, SQLWrapper } from 'drizzle-orm';
+import { InferSelectModel, sql } from 'drizzle-orm';
 import { Card, CardContent } from '@/components/ui/card';
 import {
   Table,
@@ -17,9 +17,9 @@ import {
 import {
   QueryParser,
   SqlTranslator,
-  DrizzleAdapter,
-  createQueryKit,
-  IDrizzleAdapterOptions
+  createDrizzleQueryKit,
+  ISecurityOptions,
+  IQueryStructure
 } from '@gblikas/querykit';
 import { Copy, Check, Search, ChevronUp, FileCode, X } from 'lucide-react';
 import { Light as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -75,7 +75,7 @@ const highlightQueryHtml = (input: string): string => {
     .join('');
 };
 
-const INSTALL_SNIPPET = `pnpm i @gblikas/querykit drizzle-orm`;
+const INSTALL_SNIPPET = `pnpm i @gblikas/querykit@0.3.0 drizzle-orm`;
 
 const SCHEMA_SNIPPET = `// schema.ts
 import { serial, text, pgTable } from 'drizzle-orm/pg-core';
@@ -91,25 +91,30 @@ export type SelectUser = InferSelectModel<typeof users>;
 `;
 
 const QUERYKIT_SNIPPET = `// querykit.ts
-import { createQueryKit } from 'querykit';
-import { drizzleAdapter } from 'querykit/adapters/drizzle';
+import { createDrizzleQueryKit } from '@gblikas/querykit';
+import { db } from './db';
 import { users } from './schema';
 
-export const qk = createQueryKit({
-  adapter: drizzleAdapter,
+// New 0.3.0: createDrizzleQueryKit combines adapter & security config
+export const qk = createDrizzleQueryKit({
+  db,
   schema: { users },
+  security: {
+    maxQueryDepth: 5,
+    maxClauseCount: 20,
+    sanitizeWildcards: true,
+  },
 });
 
 // example.ts
 import { qk } from './querykit';
 
-const query = qk
+const results = await qk
   .query('users')
   .where('status:done AND name:"John *"')
   .orderBy('name', 'asc')
-  .limit(10);
-
-const results = await query.execute();
+  .limit(10)
+  .execute();
 `;
 
 const tasks = pgTable('tasks', {
@@ -137,6 +142,9 @@ export default function Home(): JSX.Element {
   const [, setLastExecutionMs] = useState<number | null>(null);
   const [rowsScanned, setRowsScanned] = useState<number | null>(null);
   const [operatorsUsed, setOperatorsUsed] = useState<string[]>([]);
+  const [queryStructure, setQueryStructure] = useState<IQueryStructure | null>(
+    null
+  );
   const [usedQueryKit, setUsedQueryKit] = useState<boolean>(false);
   const [, setExplainJson] = useState<string | null>(null);
   const [, setPlanningTimeMs] = useState<number | null>(null);
@@ -314,23 +322,33 @@ export default function Home(): JSX.Element {
     void seed();
   }, [db]);
 
+  // Security configuration for QueryKit 0.3.0
+  const securityOptions: ISecurityOptions = useMemo(
+    () => ({
+      maxQueryDepth: 5,
+      maxClauseCount: 20,
+      allowDotNotation: false, // Disable dot notation for simple flat schema
+      sanitizeWildcards: true
+    }),
+    []
+  );
+
   const parser = useMemo(() => new QueryParser(), []);
   const sqlTranslator = useMemo(
     () => new SqlTranslator({ useParameters: false }),
     []
   );
-  const qk = useMemo(() => {
-    const adapter = new DrizzleAdapter();
-    const iDrizzleAdataperOptions: IDrizzleAdapterOptions = {
-      db: db as unknown as PGlite,
-      schema: { tasks } as unknown as Record<string, Record<string, SQLWrapper>>
-    };
-    adapter.initialize(iDrizzleAdataperOptions);
-    return createQueryKit({
-      adapter,
-      schema: { tasks } as unknown as Record<string, Record<string, SQLWrapper>>
-    });
-  }, [db]);
+
+  // Use the new createDrizzleQueryKit factory (0.3.0 feature)
+  const qk = useMemo(
+    () =>
+      createDrizzleQueryKit({
+        db,
+        schema: { tasks },
+        security: securityOptions
+      }),
+    [db, securityOptions]
+  );
 
   // Note: Execute via QueryKit fluent API (Drizzle adapter under the hood)
 
@@ -346,6 +364,7 @@ export default function Home(): JSX.Element {
       setIsInputFocused(false);
       inputRef.current?.blur();
       setOperatorsUsed([]);
+      setQueryStructure(null);
       setExplainJson(null);
       setPlanningTimeMs(null);
       setExecutionTimeMs(null);
@@ -407,49 +426,77 @@ export default function Home(): JSX.Element {
         if (searchQuery.trim()) {
           try {
             const parseStart = performance.now();
-            const ast = parser.parse(searchQuery);
-            const translated = sqlTranslator.translate(ast) as
-              | string
-              | { sql: string; params: unknown[] };
-            localParseTranslateMs = performance.now() - parseStart;
-            setParseTranslateMs(localParseTranslateMs);
-            whereSql =
-              typeof translated === 'string' ? translated : translated.sql;
-            mockSQL += ` WHERE ${whereSql}`;
-            // Robust operator detection with word boundaries and precedence
-            const extractOperators = (sqlText: string): string[] => {
-              const found = new Set<string>();
-              const upper = sqlText.toUpperCase();
-              // Keyword operators (use word boundaries)
-              const keywordOps: Array<[string, RegExp]> = [
-                ['ILIKE', /\bILIKE\b/i],
-                ['LIKE', /\bLIKE\b/i],
-                ['AND', /\bAND\b/i],
-                ['OR', /\bOR\b/i],
-                ['NOT', /\bNOT\b/i],
-                ['IN', /\bIN\b/i],
-                ['BETWEEN', /\bBETWEEN\b/i]
-              ];
-              for (const [name, re] of keywordOps) {
-                if (re.test(sqlText)) found.add(name);
+            // Use parseWithContext for enhanced query analysis (0.3.0 feature)
+            const parseResult = parser.parseWithContext(searchQuery, {
+              schema: {
+                title: { type: 'string', description: 'Task title' },
+                status: {
+                  type: 'string',
+                  description: 'Task status',
+                  allowedValues: ['todo', 'doing', 'done']
+                },
+                priority: { type: 'number', description: 'Priority level' },
+                completed: { type: 'boolean', description: 'Is completed' }
               }
-              // Symbol operators: match longest first and remove before shorter matches
-              let temp = upper;
-              const consume = (re: RegExp, label: string): void => {
-                if (re.test(temp)) {
-                  found.add(label);
-                  temp = temp.replace(re, ' ');
-                }
-              };
-              consume(/>=/g, '>=');
-              consume(/<=/g, '<=');
-              consume(/!=/g, '!=');
-              consume(/=/g, '=');
-              consume(/>/g, '>');
-              consume(/</g, '<');
-              return Array.from(found);
-            };
-            detectedOperators = extractOperators(whereSql);
+            });
+
+            // Set query structure for UI display
+            setQueryStructure(parseResult.structure);
+
+            if (parseResult.success && parseResult.ast) {
+              const translated = sqlTranslator.translate(parseResult.ast) as
+                | string
+                | { sql: string; params: unknown[] };
+              localParseTranslateMs = performance.now() - parseStart;
+              setParseTranslateMs(localParseTranslateMs);
+              whereSql =
+                typeof translated === 'string' ? translated : translated.sql;
+              mockSQL += ` WHERE ${whereSql}`;
+
+              // Use referenced fields from structure (0.3.0 feature)
+              detectedOperators = [];
+              if (parseResult.structure.operatorCount > 0) {
+                // Extract operators from the SQL for display
+                const extractOperators = (sqlText: string): string[] => {
+                  const found = new Set<string>();
+                  const keywordOps: Array<[string, RegExp]> = [
+                    ['ILIKE', /\bILIKE\b/i],
+                    ['LIKE', /\bLIKE\b/i],
+                    ['AND', /\bAND\b/i],
+                    ['OR', /\bOR\b/i],
+                    ['NOT', /\bNOT\b/i],
+                    ['IN', /\bIN\b/i],
+                    ['BETWEEN', /\bBETWEEN\b/i]
+                  ];
+                  for (const [name, re] of keywordOps) {
+                    if (re.test(sqlText)) found.add(name);
+                  }
+                  let temp = sqlText.toUpperCase();
+                  const consume = (re: RegExp, label: string): void => {
+                    if (re.test(temp)) {
+                      found.add(label);
+                      temp = temp.replace(re, ' ');
+                    }
+                  };
+                  consume(/>=/g, '>=');
+                  consume(/<=/g, '<=');
+                  consume(/!=/g, '!=');
+                  consume(/=/g, '=');
+                  consume(/>/g, '>');
+                  consume(/</g, '<');
+                  return Array.from(found);
+                };
+                detectedOperators = extractOperators(whereSql);
+              } else {
+                // Simple query - just detect from SQL
+                if (/ILIKE/i.test(whereSql)) detectedOperators.push('ILIKE');
+                if (/=/i.test(whereSql) && !/!=/i.test(whereSql))
+                  detectedOperators.push('=');
+              }
+            } else {
+              // Parse failed - fall back to ILIKE search
+              throw new Error(parseResult.error?.message || 'Parse failed');
+            }
           } catch (error) {
             void trackQueryKitIssue({
               errorName: (error as Error)?.name ?? 'UnknownError',
@@ -1013,25 +1060,77 @@ export default function Home(): JSX.Element {
                     )}
                   </div>
                   {!isShortViewport ? (
-                    <div className="mt-3">
-                      <div className="text-xs text-muted-foreground mb-1">
-                        Detected operators
-                      </div>
-                      {operatorsUsed.length ? (
-                        <div className="flex flex-wrap gap-2">
-                          {operatorsUsed.map(op => (
-                            <span
-                              key={op}
-                              className="inline-flex items-center rounded-full border bg-muted px-2 py-0.5 text-xs font-medium"
-                            >
-                              {op}
-                            </span>
-                          ))}
+                    <>
+                      <div className="mt-3 grid grid-cols-2 gap-3">
+                        <div>
+                          <div className="text-xs text-muted-foreground mb-1">
+                            Detected operators
+                          </div>
+                          {operatorsUsed.length ? (
+                            <div className="flex flex-wrap gap-2">
+                              {operatorsUsed.map(op => (
+                                <span
+                                  key={op}
+                                  className="inline-flex items-center rounded-full border bg-muted px-2 py-0.5 text-xs font-medium"
+                                >
+                                  {op}
+                                </span>
+                              ))}
+                            </div>
+                          ) : (
+                            <div className="text-xs text-muted-foreground">
+                              -
+                            </div>
+                          )}
                         </div>
-                      ) : (
-                        <div className="text-xs text-muted-foreground">-</div>
-                      )}
-                    </div>
+                        {queryStructure && (
+                          <div>
+                            <div className="text-xs text-muted-foreground mb-1">
+                              Query complexity (0.3.0)
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                              <span
+                                className={cn(
+                                  'inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium',
+                                  queryStructure.complexity === 'simple' &&
+                                    'bg-green-500/10 text-green-600 border-green-500/30',
+                                  queryStructure.complexity === 'moderate' &&
+                                    'bg-yellow-500/10 text-yellow-600 border-yellow-500/30',
+                                  queryStructure.complexity === 'complex' &&
+                                    'bg-red-500/10 text-red-600 border-red-500/30'
+                                )}
+                              >
+                                {queryStructure.complexity}
+                              </span>
+                              <span className="inline-flex items-center rounded-full border bg-muted px-2 py-0.5 text-xs font-medium">
+                                depth: {queryStructure.depth}
+                              </span>
+                              <span className="inline-flex items-center rounded-full border bg-muted px-2 py-0.5 text-xs font-medium">
+                                clauses: {queryStructure.clauseCount}
+                              </span>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                      {queryStructure &&
+                        queryStructure.referencedFields.length > 0 && (
+                          <div className="mt-3">
+                            <div className="text-xs text-muted-foreground mb-1">
+                              Referenced fields
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                              {queryStructure.referencedFields.map(field => (
+                                <span
+                                  key={field}
+                                  className="inline-flex items-center rounded-full border bg-blue-500/10 text-blue-600 border-blue-500/30 px-2 py-0.5 text-xs font-medium"
+                                >
+                                  {field}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                    </>
                   ) : (
                     <div className="mt-3 text-xs text-muted-foreground">
                       View on larger screen for more details
