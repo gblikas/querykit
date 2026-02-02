@@ -1,5 +1,5 @@
 /**
- * Tests for Phase 2 features of parseWithContext:
+ * Tests for Validation & Security features of parseWithContext:
  * - Schema-aware field validation
  * - Security pre-check
  */
@@ -7,7 +7,7 @@
 import { QueryParser } from './parser';
 import { IFieldSchema } from './types';
 
-describe('QueryParser.parseWithContext - Phase 2 Features', () => {
+describe('QueryParser.parseWithContext - Validation & Security', () => {
   let parser: QueryParser;
 
   beforeEach(() => {
@@ -407,8 +407,8 @@ describe('QueryParser.parseWithContext - Phase 2 Features', () => {
     });
   });
 
-  describe('Integration with Phase 1 features', () => {
-    it('should still include all Phase 1 features', () => {
+  describe('Integration with Core Parsing', () => {
+    it('should include all core parsing features', () => {
       const result = parser.parseWithContext('status:done AND priority:high', {
         cursorPosition: 5,
         schema: {
@@ -420,13 +420,13 @@ describe('QueryParser.parseWithContext - Phase 2 Features', () => {
         }
       });
 
-      // Phase 1 features
+      // Core parsing features
       expect(result.success).toBe(true);
       expect(result.tokens).toHaveLength(3);
       expect(result.activeToken).toBeDefined();
       expect(result.structure).toBeDefined();
 
-      // Phase 2 features
+      // Validation & Security features
       expect(result.fieldValidation).toBeDefined();
       expect(result.security).toBeDefined();
     });

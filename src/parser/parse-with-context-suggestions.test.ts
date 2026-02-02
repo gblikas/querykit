@@ -1,5 +1,5 @@
 /**
- * Tests for Phase 3 features of parseWithContext:
+ * Tests for Suggestions & Recovery features of parseWithContext:
  * - Autocomplete suggestions
  * - Error recovery hints
  */
@@ -7,7 +7,7 @@
 import { QueryParser } from './parser';
 import { IFieldSchema } from './types';
 
-describe('QueryParser.parseWithContext - Phase 3 Features', () => {
+describe('QueryParser.parseWithContext - Suggestions & Recovery', () => {
   let parser: QueryParser;
 
   const testSchema: Record<string, IFieldSchema> = {
@@ -320,7 +320,7 @@ describe('QueryParser.parseWithContext - Phase 3 Features', () => {
     });
   });
 
-  describe('Integration with other phases', () => {
+  describe('Integration with Other Features', () => {
     it('should include all features together', () => {
       const result = parser.parseWithContext('status:do', {
         cursorPosition: 9,
@@ -330,15 +330,15 @@ describe('QueryParser.parseWithContext - Phase 3 Features', () => {
         }
       });
 
-      // Phase 1
+      // Core Parsing
       expect(result.tokens).toBeDefined();
       expect(result.structure).toBeDefined();
 
-      // Phase 2
+      // Validation & Security
       expect(result.fieldValidation).toBeDefined();
       expect(result.security).toBeDefined();
 
-      // Phase 3
+      // Suggestions & Recovery
       expect(result.suggestions).toBeDefined();
       expect(result.suggestions?.values?.some(v => v.value === 'done')).toBe(
         true
