@@ -13,11 +13,15 @@ import type {
 } from 'liqe';
 import {
   ComparisonOperator,
+  IAutocompleteSuggestions,
   IComparisonExpression,
+  IErrorRecovery,
   IFieldSchema,
+  IFieldSuggestion,
   IFieldValidationDetail,
   IFieldValidationResult,
   ILogicalExpression,
+  IOperatorSuggestion,
   IParserOptions,
   IParseWithContextOptions,
   IQueryParser,
@@ -28,6 +32,7 @@ import {
   ISecurityOptionsForContext,
   ISecurityViolation,
   ISecurityWarning,
+  IValueSuggestion,
   QueryExpression,
   QueryValue
 } from './types';
@@ -579,6 +584,21 @@ export class QueryParser implements IQueryParser {
       );
     }
 
+    // Generate autocomplete suggestions if cursor position provided
+    if (options.cursorPosition !== undefined) {
+      result.suggestions = this.generateAutocompleteSuggestions(
+        query,
+        options.cursorPosition,
+        activeToken,
+        options.schema
+      );
+    }
+
+    // Generate error recovery suggestions if parsing failed
+    if (!success) {
+      result.recovery = this.generateErrorRecovery(query, structure);
+    }
+
     return result;
   }
 
@@ -967,6 +987,363 @@ export class QueryParser implements IQueryParser {
       passed: violations.length === 0,
       violations,
       warnings
+    };
+  }
+
+  /**
+   * Generate autocomplete suggestions based on cursor position
+   */
+  private generateAutocompleteSuggestions(
+    query: string,
+    cursorPosition: number,
+    activeToken: IQueryToken | undefined,
+    schema?: Record<string, IFieldSchema>
+  ): IAutocompleteSuggestions {
+    // Determine context based on active token and position
+    if (!activeToken) {
+      // Cursor is not in a token - check if we're at the start or between tokens
+      if (query.trim().length === 0 || cursorPosition === 0) {
+        return this.suggestForEmptyContext(schema);
+      }
+      // Between tokens - suggest logical operators or new field
+      return this.suggestBetweenTokens(schema);
+    }
+
+    if (activeToken.type === 'operator') {
+      // Cursor is in a logical operator
+      return {
+        context: 'logical_operator',
+        logicalOperators: ['AND', 'OR', 'NOT'],
+        replaceText: activeToken.raw,
+        replaceRange: {
+          start: activeToken.startPosition,
+          end: activeToken.endPosition
+        }
+      };
+    }
+
+    // Active token is a term
+    const term = activeToken;
+    const relativePos = cursorPosition - term.startPosition;
+
+    // Determine if cursor is in key, operator, or value part
+    if (term.key !== null && term.operator !== null) {
+      const keyLength = term.key.length;
+      const operatorLength = term.operator.length;
+
+      if (relativePos < keyLength) {
+        // Cursor is in the field name
+        return this.suggestFields(term.key, schema);
+      } else if (relativePos < keyLength + operatorLength) {
+        // Cursor is in the operator
+        return this.suggestOperators(term.key, schema);
+      } else {
+        // Cursor is in the value
+        return this.suggestValues(term.key, term.value, schema);
+      }
+    } else if (term.key !== null) {
+      // Only key present (incomplete)
+      return this.suggestFields(term.key, schema);
+    } else {
+      // Bare value - could be a field name
+      return this.suggestFields(term.value || '', schema);
+    }
+  }
+
+  /**
+   * Suggest for empty/start context
+   */
+  private suggestForEmptyContext(
+    schema?: Record<string, IFieldSchema>
+  ): IAutocompleteSuggestions {
+    return {
+      context: 'empty',
+      fields: this.getFieldSuggestions('', schema),
+      logicalOperators: ['NOT']
+    };
+  }
+
+  /**
+   * Suggest between tokens (after a complete term)
+   */
+  private suggestBetweenTokens(
+    schema?: Record<string, IFieldSchema>
+  ): IAutocompleteSuggestions {
+    return {
+      context: 'logical_operator',
+      fields: this.getFieldSuggestions('', schema),
+      logicalOperators: ['AND', 'OR', 'NOT']
+    };
+  }
+
+  /**
+   * Suggest field names
+   */
+  private suggestFields(
+    partial: string,
+    schema?: Record<string, IFieldSchema>
+  ): IAutocompleteSuggestions {
+    return {
+      context: 'field',
+      fields: this.getFieldSuggestions(partial, schema),
+      replaceText: partial,
+      replaceRange:
+        partial.length > 0 ? { start: 0, end: partial.length } : undefined
+    };
+  }
+
+  /**
+   * Get field suggestions based on partial input
+   */
+  private getFieldSuggestions(
+    partial: string,
+    schema?: Record<string, IFieldSchema>
+  ): IFieldSuggestion[] {
+    if (!schema) {
+      return [];
+    }
+
+    const partialLower = partial.toLowerCase();
+    const suggestions: IFieldSuggestion[] = [];
+
+    for (const [field, fieldSchema] of Object.entries(schema)) {
+      const fieldLower = field.toLowerCase();
+      let score = 0;
+
+      if (partial.length === 0) {
+        // No partial - suggest all fields with base score
+        score = 50;
+      } else if (fieldLower === partialLower) {
+        // Exact match
+        score = 100;
+      } else if (fieldLower.startsWith(partialLower)) {
+        // Prefix match
+        score = 80 + (partial.length / field.length) * 20;
+      } else if (fieldLower.includes(partialLower)) {
+        // Contains match
+        score = 60;
+      } else {
+        // Check Levenshtein distance for typos
+        const distance = this.levenshteinDistance(partialLower, fieldLower);
+        if (distance <= 2) {
+          score = 40 - distance * 10;
+        }
+      }
+
+      if (score > 0) {
+        suggestions.push({
+          field,
+          type: fieldSchema.type,
+          description: fieldSchema.description,
+          score
+        });
+      }
+    }
+
+    // Sort by score descending
+    return suggestions.sort((a, b) => b.score - a.score);
+  }
+
+  /**
+   * Suggest operators
+   */
+  private suggestOperators(
+    field: string,
+    schema?: Record<string, IFieldSchema>
+  ): IAutocompleteSuggestions {
+    const fieldType = schema?.[field]?.type;
+    const operators = this.getOperatorSuggestions(fieldType);
+
+    return {
+      context: 'operator',
+      currentField: field,
+      operators
+    };
+  }
+
+  /**
+   * Get operator suggestions based on field type
+   */
+  private getOperatorSuggestions(fieldType?: string): IOperatorSuggestion[] {
+    const allOperators: IOperatorSuggestion[] = [
+      { operator: ':', description: 'equals', applicable: true },
+      { operator: ':!=', description: 'not equals', applicable: true },
+      {
+        operator: ':>',
+        description: 'greater than',
+        applicable: fieldType === 'number' || fieldType === 'date'
+      },
+      {
+        operator: ':>=',
+        description: 'greater than or equal',
+        applicable: fieldType === 'number' || fieldType === 'date'
+      },
+      {
+        operator: ':<',
+        description: 'less than',
+        applicable: fieldType === 'number' || fieldType === 'date'
+      },
+      {
+        operator: ':<=',
+        description: 'less than or equal',
+        applicable: fieldType === 'number' || fieldType === 'date'
+      }
+    ];
+
+    // Sort applicable operators first
+    return allOperators.sort((a, b) => {
+      if (a.applicable && !b.applicable) return -1;
+      if (!a.applicable && b.applicable) return 1;
+      return 0;
+    });
+  }
+
+  /**
+   * Suggest values
+   */
+  private suggestValues(
+    field: string,
+    partialValue: string | null,
+    schema?: Record<string, IFieldSchema>
+  ): IAutocompleteSuggestions {
+    const fieldSchema = schema?.[field];
+    const values = this.getValueSuggestions(partialValue || '', fieldSchema);
+
+    return {
+      context: 'value',
+      currentField: field,
+      values,
+      replaceText: partialValue || undefined
+    };
+  }
+
+  /**
+   * Get value suggestions based on schema
+   */
+  private getValueSuggestions(
+    partial: string,
+    fieldSchema?: IFieldSchema
+  ): IValueSuggestion[] {
+    if (!fieldSchema?.allowedValues) {
+      // Suggest based on type
+      if (fieldSchema?.type === 'boolean') {
+        return [
+          { value: true, label: 'true', score: 100 },
+          { value: false, label: 'false', score: 100 }
+        ];
+      }
+      return [];
+    }
+
+    const partialLower = partial.toLowerCase();
+    const suggestions: IValueSuggestion[] = [];
+
+    for (const value of fieldSchema.allowedValues) {
+      const valueStr = String(value).toLowerCase();
+      let score = 0;
+
+      if (partial.length === 0) {
+        score = 50;
+      } else if (valueStr === partialLower) {
+        score = 100;
+      } else if (valueStr.startsWith(partialLower)) {
+        score = 80;
+      } else if (valueStr.includes(partialLower)) {
+        score = 60;
+      }
+
+      if (score > 0) {
+        suggestions.push({
+          value,
+          label: String(value),
+          score
+        });
+      }
+    }
+
+    return suggestions.sort((a, b) => b.score - a.score);
+  }
+
+  /**
+   * Generate error recovery suggestions
+   */
+  private generateErrorRecovery(
+    query: string,
+    structure: IQueryStructure
+  ): IErrorRecovery {
+    // Check for unclosed quotes
+    const singleQuotes = (query.match(/'/g) || []).length;
+    const doubleQuotes = (query.match(/"/g) || []).length;
+
+    if (singleQuotes % 2 !== 0) {
+      const lastQuotePos = query.lastIndexOf("'");
+      return {
+        issue: 'unclosed_quote',
+        message: 'Unclosed single quote detected',
+        suggestion: "Add a closing ' to complete the quoted value",
+        autofix: query + "'",
+        position: lastQuotePos
+      };
+    }
+
+    if (doubleQuotes % 2 !== 0) {
+      const lastQuotePos = query.lastIndexOf('"');
+      return {
+        issue: 'unclosed_quote',
+        message: 'Unclosed double quote detected',
+        suggestion: 'Add a closing " to complete the quoted value',
+        autofix: query + '"',
+        position: lastQuotePos
+      };
+    }
+
+    // Check for unbalanced parentheses
+    if (!structure.hasBalancedParentheses) {
+      const openCount = (query.match(/\(/g) || []).length;
+      const closeCount = (query.match(/\)/g) || []).length;
+
+      if (openCount > closeCount) {
+        return {
+          issue: 'unclosed_parenthesis',
+          message: `Missing ${openCount - closeCount} closing parenthesis`,
+          suggestion: 'Add closing parenthesis to balance the expression',
+          autofix: query + ')'.repeat(openCount - closeCount)
+        };
+      } else {
+        return {
+          issue: 'unclosed_parenthesis',
+          message: `Extra ${closeCount - openCount} closing parenthesis`,
+          suggestion: 'Remove extra closing parenthesis'
+        };
+      }
+    }
+
+    // Check for trailing operator
+    const trimmed = query.trim();
+    if (/\b(AND|OR|NOT)\s*$/i.test(trimmed)) {
+      const match = trimmed.match(/\b(AND|OR|NOT)\s*$/i);
+      return {
+        issue: 'trailing_operator',
+        message: `Query ends with incomplete "${match?.[1]}" operator`,
+        suggestion: 'Add a condition after the operator or remove it',
+        autofix: trimmed.replace(/\s*(AND|OR|NOT)\s*$/i, '').trim()
+      };
+    }
+
+    // Check for missing value (field:)
+    if (/:$/.test(trimmed) || /:\s*$/.test(trimmed)) {
+      return {
+        issue: 'missing_value',
+        message: 'Field is missing a value',
+        suggestion: 'Add a value after the colon'
+      };
+    }
+
+    // Generic syntax error
+    return {
+      issue: 'syntax_error',
+      message: 'Query contains a syntax error',
+      suggestion: 'Check the query syntax and try again'
     };
   }
 }

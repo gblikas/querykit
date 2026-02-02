@@ -302,6 +302,163 @@ export interface IQueryParseResult {
    * Security pre-check results (only present if securityOptions was provided)
    */
   security?: ISecurityCheckResult;
+
+  /**
+   * Autocomplete suggestions based on cursor position
+   * Only present if cursorPosition was provided in options
+   */
+  suggestions?: IAutocompleteSuggestions;
+
+  /**
+   * Error recovery hints (only present if parsing failed)
+   */
+  recovery?: IErrorRecovery;
+}
+
+/**
+ * Autocomplete suggestions based on cursor context
+ */
+export interface IAutocompleteSuggestions {
+  /**
+   * The context where the cursor is positioned
+   */
+  context: 'field' | 'operator' | 'value' | 'logical_operator' | 'empty';
+
+  /**
+   * The current field being edited (if in value context)
+   */
+  currentField?: string;
+
+  /**
+   * Suggested field names (when in field context)
+   */
+  fields?: IFieldSuggestion[];
+
+  /**
+   * Suggested values (when in value context and schema has allowedValues)
+   */
+  values?: IValueSuggestion[];
+
+  /**
+   * Suggested operators (when in operator context)
+   */
+  operators?: IOperatorSuggestion[];
+
+  /**
+   * Suggested logical operators (AND, OR, NOT)
+   */
+  logicalOperators?: string[];
+
+  /**
+   * The text that would be replaced by the suggestion
+   */
+  replaceText?: string;
+
+  /**
+   * Position range that would be replaced
+   */
+  replaceRange?: { start: number; end: number };
+}
+
+/**
+ * A field suggestion for autocomplete
+ */
+export interface IFieldSuggestion {
+  /**
+   * The field name
+   */
+  field: string;
+
+  /**
+   * The field type (from schema)
+   */
+  type?: string;
+
+  /**
+   * Description of the field (from schema)
+   */
+  description?: string;
+
+  /**
+   * Match score (higher is better match)
+   */
+  score: number;
+}
+
+/**
+ * A value suggestion for autocomplete
+ */
+export interface IValueSuggestion {
+  /**
+   * The suggested value
+   */
+  value: string | number | boolean;
+
+  /**
+   * Display label (may differ from value)
+   */
+  label?: string;
+
+  /**
+   * Match score (higher is better match)
+   */
+  score: number;
+}
+
+/**
+ * An operator suggestion for autocomplete
+ */
+export interface IOperatorSuggestion {
+  /**
+   * The operator symbol
+   */
+  operator: string;
+
+  /**
+   * Human-readable description
+   */
+  description: string;
+
+  /**
+   * Whether this operator is applicable to the current field type
+   */
+  applicable: boolean;
+}
+
+/**
+ * Error recovery suggestions
+ */
+export interface IErrorRecovery {
+  /**
+   * The type of issue detected
+   */
+  issue:
+    | 'unclosed_quote'
+    | 'unclosed_parenthesis'
+    | 'trailing_operator'
+    | 'missing_value'
+    | 'missing_operator'
+    | 'syntax_error';
+
+  /**
+   * Human-readable description of the issue
+   */
+  message: string;
+
+  /**
+   * Suggested fix description
+   */
+  suggestion: string;
+
+  /**
+   * The corrected query (if auto-fix is possible)
+   */
+  autofix?: string;
+
+  /**
+   * Position where the issue was detected
+   */
+  position?: number;
 }
 
 /**
