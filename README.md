@@ -275,6 +275,165 @@ const publicSearchKit = createQueryKit({
 });
 ```
 
+## Input Parsing for Search UIs
+
+QueryKit provides utilities for building rich search bar experiences with real-time feedback, including key:value highlighting, autocomplete suggestions, and error recovery hints.
+
+### Real-Time Token Parsing
+
+Use `parseQueryInput` and `parseQueryTokens` for lightweight, real-time parsing as users type:
+
+```typescript
+import { parseQueryInput, parseQueryTokens } from '@gblikas/querykit';
+
+// Parse input to get terms and cursor context
+const input = 'status:done AND priority:';
+const result = parseQueryInput(input, { cursorPosition: 25 });
+
+// result.terms contains parsed terms:
+// [{ key: 'status', value: 'done', ... }, { key: 'priority', value: null, ... }]
+
+// result.cursorContext tells you where the cursor is: 'key', 'value', or 'operator'
+console.log(result.cursorContext); // 'value' (cursor is after 'priority:')
+
+// Get interleaved tokens (terms + operators) for highlighting
+const tokens = parseQueryTokens(input);
+// [
+//   { type: 'term', key: 'status', value: 'done', startPosition: 0, endPosition: 11 },
+//   { type: 'operator', operator: 'AND', startPosition: 12, endPosition: 15 },
+//   { type: 'term', key: 'priority', value: null, startPosition: 16, endPosition: 25 }
+// ]
+```
+
+### Rich Context with parseWithContext
+
+For comprehensive parsing with schema validation, autocomplete, and error recovery:
+
+```typescript
+import { QueryParser } from '@gblikas/querykit';
+
+const parser = new QueryParser();
+
+// Define your schema for validation and autocomplete
+const schema = {
+  status: {
+    type: 'string',
+    allowedValues: ['todo', 'doing', 'done'],
+    description: 'Task status'
+  },
+  priority: { type: 'number', description: 'Priority level (1-5)' },
+  assignee: { type: 'string', description: 'Assigned user' }
+};
+
+const result = parser.parseWithContext('status:do', {
+  cursorPosition: 9,
+  schema,
+  securityOptions: { maxClauseCount: 10 }
+});
+
+// Always returns a result object (never throws)
+console.log(result.success);    // true/false - whether parsing succeeded
+console.log(result.tokens);     // Tokenized input (always available)
+console.log(result.structure);  // Query structure analysis
+console.log(result.ast);        // AST (if successful)
+console.log(result.error);      // Error details (if failed)
+
+// Autocomplete suggestions based on cursor position
+console.log(result.suggestions);
+// {
+//   context: 'value',
+//   currentField: 'status',
+//   values: [
+//     { value: 'doing', score: 80 },
+//     { value: 'done', score: 80 }
+//   ]
+// }
+
+// Schema validation results
+console.log(result.fieldValidation);
+// { valid: true, fields: [...], unknownFields: [] }
+
+// Security pre-check
+console.log(result.security);
+// { passed: true, violations: [], warnings: [] }
+```
+
+### Error Recovery
+
+When parsing fails, `parseWithContext` provides helpful recovery hints:
+
+```typescript
+const result = parser.parseWithContext('status:"incomplete');
+
+console.log(result.recovery);
+// {
+//   issue: 'unclosed_quote',
+//   message: 'Unclosed double quote detected',
+//   suggestion: 'Add a closing " to complete the quoted value',
+//   autofix: 'status:"incomplete"',
+//   position: 7
+// }
+```
+
+Error types detected:
+- `unclosed_quote` - Missing closing quote (with autofix)
+- `unclosed_parenthesis` - Unbalanced parentheses (with autofix)
+- `trailing_operator` - Query ends with AND/OR/NOT (with autofix)
+- `missing_value` - Field has colon but no value
+- `syntax_error` - Generic syntax issue
+
+### Building a Search Bar with Highlighting
+
+Here's a React example using the input parser for highlighting:
+
+```tsx
+import { parseQueryTokens } from '@gblikas/querykit';
+
+function SearchBar({ value, onChange }) {
+  const tokens = parseQueryTokens(value);
+
+  const renderHighlightedQuery = () => {
+    if (!value) return null;
+
+    return tokens.map((token, idx) => {
+      const text = value.slice(token.startPosition, token.endPosition);
+
+      if (token.type === 'operator') {
+        return <span key={idx} className="text-purple-500">{text}</span>;
+      }
+
+      // Term token - highlight key and value differently
+      if (token.key && token.operator) {
+        const keyEnd = token.startPosition + token.key.length;
+        const opEnd = keyEnd + token.operator.length;
+        return (
+          <span key={idx}>
+            <span className="text-orange-400">{token.key}</span>
+            <span className="text-gray-500">{token.operator}</span>
+            <span className="text-blue-400">{value.slice(opEnd, token.endPosition)}</span>
+          </span>
+        );
+      }
+
+      return <span key={idx}>{text}</span>;
+    });
+  };
+
+  return (
+    <div className="relative">
+      <div className="absolute inset-0 pointer-events-none">
+        {renderHighlightedQuery()}
+      </div>
+      <input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="bg-transparent text-transparent caret-black"
+      />
+    </div>
+  );
+}
+```
+
 ## Roadmap
 
 ### Core Parsing Engine and DSL
@@ -283,6 +442,9 @@ const publicSearchKit = createQueryKit({
 - [x] Develop internal AST representation
 - [x] Implement consistent syntax for logical operators (AND, OR, NOT)
 - [x] Support standard comparison operators (==, !=, >, >=, <, <=)
+- [x] Real-time input parsing for search UIs
+- [x] Autocomplete suggestions with schema awareness
+- [x] Error recovery hints with autofix
 
 ### First Adapters
 - [x] Drizzle ORM integration
@@ -299,7 +461,7 @@ const publicSearchKit = createQueryKit({
 - [ ] Pagination helpers
 
 ### Ecosystem Expansion
-- [ ] Frontend query builder components
+- [x] Frontend query builder components (input parser)
 - [ ] Additional ORM adapters
 - [ ] Server middleware for Express/Fastify
 - [ ] TypeScript SDK generation

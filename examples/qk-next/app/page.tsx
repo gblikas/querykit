@@ -32,7 +32,12 @@ import { toast } from 'sonner';
 import Aurora from '@/components/reactbits/blocks/Backgrounds/Aurora/Aurora';
 import { PGlite } from '@electric-sql/pglite';
 import { useViewportInfo } from './hooks/use-viewport-info';
-import { cn, trackQueryKitIssue, trackQueryKitUsage, trackQueryKitSpeed } from '@/lib/utils';
+import {
+  cn,
+  trackQueryKitIssue,
+  trackQueryKitUsage,
+  trackQueryKitSpeed
+} from '@/lib/utils';
 import {
   Drawer,
   DrawerTrigger,
