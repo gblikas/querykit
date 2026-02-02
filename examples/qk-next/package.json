@@ -11,7 +11,7 @@
   "dependencies": {
     "@electric-sql/pglite": "^0.3.7",
     "@electric-sql/pglite-react": "^0.2.25",
-    "@gblikas/querykit": "^0.0.0",
+    "@gblikas/querykit": "^0.3.0",
     "@radix-ui/react-dialog": "^1.1.15",
     "@radix-ui/react-hover-card": "^1.1.15",
     "@vercel/analytics": "^1.5.0",
