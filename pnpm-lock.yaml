@@ -61,8 +61,8 @@ importers:
         specifier: ^0.2.25
         version: 0.2.33(@electric-sql/pglite@0.3.15)(react@19.1.0)
       '@gblikas/querykit':
-        specifier: file:../..
-        version: file:(@electric-sql/pglite@0.3.15)(@types/react@19.2.10)(react@19.1.0)
+        specifier: workspace:*
+        version: link:../..
       '@radix-ui/react-dialog':
         specifier: ^1.1.15
         version: 1.1.15(@types/react-dom@19.2.3(@types/react@19.2.10))(@types/react@19.2.10)(react-dom@19.1.0(react@19.1.0))(react@19.1.0)
@@ -719,9 +719,6 @@ packages:
 
   '@floating-ui/utils@0.2.10':
     resolution: {integrity: sha512-aGTxbpbg8/b5JfU1HXSrbH3wXZuLPJcNEcZQFMxLs3oSzgtVu6nFPkbbGGUvBcUjKV2YyB9Wxxabo+HEH9tcRQ==}
-
-  '@gblikas/querykit@file:':
-    resolution: {directory: '', type: directory}
 
   '@humanfs/core@0.19.1':
     resolution: {integrity: sha512-5DyQ4+1JEUzejeK1JGICcideyfUbGixgS9jNgex5nqkW+cY7WZhxBigmieN5Qnw9ZosSNVC9KQKyb+GUaGyKUA==}
@@ -4640,37 +4637,6 @@ snapshots:
       react-dom: 19.1.0(react@19.1.0)
 
   '@floating-ui/utils@0.2.10': {}
-
-  '@gblikas/querykit@file:(@electric-sql/pglite@0.3.15)(@types/react@19.2.10)(react@19.1.0)':
-    dependencies:
-      drizzle-orm: 0.30.10(@electric-sql/pglite@0.3.15)(@types/react@19.2.10)(react@19.1.0)
-      liqe: 3.8.2
-    transitivePeerDependencies:
-      - '@aws-sdk/client-rds-data'
-      - '@cloudflare/workers-types'
-      - '@electric-sql/pglite'
-      - '@libsql/client'
-      - '@neondatabase/serverless'
-      - '@op-engineering/op-sqlite'
-      - '@opentelemetry/api'
-      - '@planetscale/database'
-      - '@types/better-sqlite3'
-      - '@types/pg'
-      - '@types/react'
-      - '@types/sql.js'
-      - '@vercel/postgres'
-      - '@xata.io/client'
-      - better-sqlite3
-      - bun-types
-      - expo-sqlite
-      - knex
-      - kysely
-      - mysql2
-      - pg
-      - postgres
-      - react
-      - sql.js
-      - sqlite3
 
   '@humanfs/core@0.19.1': {}
 
