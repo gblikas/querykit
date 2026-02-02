@@ -14,6 +14,9 @@ import type {
 import {
   ComparisonOperator,
   IComparisonExpression,
+  IFieldSchema,
+  IFieldValidationDetail,
+  IFieldValidationResult,
   ILogicalExpression,
   IParserOptions,
   IParseWithContextOptions,
@@ -21,6 +24,10 @@ import {
   IQueryParseResult,
   IQueryStructure,
   IQueryToken,
+  ISecurityCheckResult,
+  ISecurityOptionsForContext,
+  ISecurityViolation,
+  ISecurityWarning,
   QueryExpression,
   QueryValue
 } from './types';
@@ -544,7 +551,8 @@ export class QueryParser implements IQueryParser {
       ? this.convertSingleToken(tokenResult.activeToken)
       : undefined;
 
-    return {
+    // Build base result
+    const result: IQueryParseResult = {
       success,
       input: query,
       ast,
@@ -554,6 +562,24 @@ export class QueryParser implements IQueryParser {
       activeTokenIndex: tokenResult.activeTokenIndex,
       structure
     };
+
+    // Perform field validation if schema provided
+    if (options.schema) {
+      result.fieldValidation = this.validateFields(
+        structure.referencedFields,
+        options.schema
+      );
+    }
+
+    // Perform security pre-check if security options provided
+    if (options.securityOptions) {
+      result.security = this.performSecurityCheck(
+        structure,
+        options.securityOptions
+      );
+    }
+
+    return result;
   }
 
   /**
@@ -723,5 +749,224 @@ export class QueryParser implements IQueryParser {
     }
 
     return undefined;
+  }
+
+  /**
+   * Validate fields against the provided schema
+   */
+  private validateFields(
+    referencedFields: string[],
+    schema: Record<string, IFieldSchema>
+  ): IFieldValidationResult {
+    const schemaFields = Object.keys(schema);
+    const fields: IFieldValidationDetail[] = [];
+    const unknownFields: string[] = [];
+    let allValid = true;
+
+    for (const field of referencedFields) {
+      if (field in schema) {
+        // Field exists in schema
+        fields.push({
+          field,
+          valid: true,
+          expectedType: schema[field].type,
+          allowedValues: schema[field].allowedValues
+        });
+      } else {
+        // Field not in schema - try to find a suggestion
+        const suggestion = this.findSimilarField(field, schemaFields);
+        fields.push({
+          field,
+          valid: false,
+          reason: 'unknown_field',
+          suggestion
+        });
+        unknownFields.push(field);
+        allValid = false;
+      }
+    }
+
+    return {
+      valid: allValid,
+      fields,
+      unknownFields
+    };
+  }
+
+  /**
+   * Find a similar field name (for typo suggestions)
+   */
+  private findSimilarField(
+    field: string,
+    schemaFields: string[]
+  ): string | undefined {
+    const fieldLower = field.toLowerCase();
+
+    // First, try exact case-insensitive match
+    for (const schemaField of schemaFields) {
+      if (schemaField.toLowerCase() === fieldLower) {
+        return schemaField;
+      }
+    }
+
+    // Then, try to find fields that start with the same prefix
+    const prefix = fieldLower.substring(0, Math.min(3, fieldLower.length));
+    for (const schemaField of schemaFields) {
+      if (schemaField.toLowerCase().startsWith(prefix)) {
+        return schemaField;
+      }
+    }
+
+    // Try Levenshtein distance for short fields
+    if (field.length <= 10) {
+      let bestMatch: string | undefined;
+      let bestDistance = Infinity;
+
+      for (const schemaField of schemaFields) {
+        const distance = this.levenshteinDistance(
+          fieldLower,
+          schemaField.toLowerCase()
+        );
+        if (distance <= 2 && distance < bestDistance) {
+          bestDistance = distance;
+          bestMatch = schemaField;
+        }
+      }
+
+      if (bestMatch) {
+        return bestMatch;
+      }
+    }
+
+    return undefined;
+  }
+
+  /**
+   * Calculate Levenshtein distance between two strings
+   */
+  private levenshteinDistance(a: string, b: string): number {
+    const matrix: number[][] = [];
+
+    for (let i = 0; i <= b.length; i++) {
+      matrix[i] = [i];
+    }
+
+    for (let j = 0; j <= a.length; j++) {
+      matrix[0][j] = j;
+    }
+
+    for (let i = 1; i <= b.length; i++) {
+      for (let j = 1; j <= a.length; j++) {
+        if (b.charAt(i - 1) === a.charAt(j - 1)) {
+          matrix[i][j] = matrix[i - 1][j - 1];
+        } else {
+          matrix[i][j] = Math.min(
+            matrix[i - 1][j - 1] + 1, // substitution
+            matrix[i][j - 1] + 1, // insertion
+            matrix[i - 1][j] + 1 // deletion
+          );
+        }
+      }
+    }
+
+    return matrix[b.length][a.length];
+  }
+
+  /**
+   * Perform security pre-check against the provided options
+   */
+  private performSecurityCheck(
+    structure: IQueryStructure,
+    options: ISecurityOptionsForContext
+  ): ISecurityCheckResult {
+    const violations: ISecurityViolation[] = [];
+    const warnings: ISecurityWarning[] = [];
+
+    // Check denied fields
+    if (options.denyFields && options.denyFields.length > 0) {
+      for (const field of structure.referencedFields) {
+        if (options.denyFields.includes(field)) {
+          violations.push({
+            type: 'denied_field',
+            message: `Field "${field}" is not allowed in queries`,
+            field
+          });
+        }
+      }
+    }
+
+    // Check allowed fields (if specified, only these fields are allowed)
+    if (options.allowedFields && options.allowedFields.length > 0) {
+      for (const field of structure.referencedFields) {
+        if (!options.allowedFields.includes(field)) {
+          violations.push({
+            type: 'field_not_allowed',
+            message: `Field "${field}" is not in the list of allowed fields`,
+            field
+          });
+        }
+      }
+    }
+
+    // Check dot notation
+    if (options.allowDotNotation === false) {
+      for (const field of structure.referencedFields) {
+        if (field.includes('.')) {
+          violations.push({
+            type: 'dot_notation',
+            message: `Dot notation is not allowed in field names: "${field}"`,
+            field
+          });
+        }
+      }
+    }
+
+    // Check query depth
+    if (options.maxQueryDepth !== undefined) {
+      if (structure.depth > options.maxQueryDepth) {
+        violations.push({
+          type: 'depth_exceeded',
+          message: `Query depth (${structure.depth}) exceeds maximum allowed (${options.maxQueryDepth})`
+        });
+      } else if (structure.depth >= options.maxQueryDepth * 0.8) {
+        warnings.push({
+          type: 'approaching_depth_limit',
+          message: `Query depth (${structure.depth}) is approaching the limit (${options.maxQueryDepth})`,
+          current: structure.depth,
+          limit: options.maxQueryDepth
+        });
+      }
+    }
+
+    // Check clause count
+    if (options.maxClauseCount !== undefined) {
+      if (structure.clauseCount > options.maxClauseCount) {
+        violations.push({
+          type: 'clause_limit',
+          message: `Clause count (${structure.clauseCount}) exceeds maximum allowed (${options.maxClauseCount})`
+        });
+      } else if (structure.clauseCount >= options.maxClauseCount * 0.8) {
+        warnings.push({
+          type: 'approaching_clause_limit',
+          message: `Clause count (${structure.clauseCount}) is approaching the limit (${options.maxClauseCount})`,
+          current: structure.clauseCount,
+          limit: options.maxClauseCount
+        });
+      }
+    }
+
+    // Add complexity warning
+    if (structure.complexity === 'complex') {
+      warnings.push({
+        type: 'complex_query',
+        message: 'This query is complex and may impact performance'
+      });
+    }
+
+    return {
+      passed: violations.length === 0,
+      violations,
+      warnings
+    };
   }
 }

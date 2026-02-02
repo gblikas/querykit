@@ -110,6 +110,74 @@ export interface IParseWithContextOptions {
    * Cursor position in the input (for cursor-aware features)
    */
   cursorPosition?: number;
+
+  /**
+   * Schema to validate fields against.
+   * Keys are field names, values describe the field type.
+   * When provided, enables field validation in the result.
+   */
+  schema?: Record<string, IFieldSchema>;
+
+  /**
+   * Security options for pre-validation.
+   * When provided, enables security pre-check in the result.
+   */
+  securityOptions?: ISecurityOptionsForContext;
+}
+
+/**
+ * Field schema definition for validation
+ */
+export interface IFieldSchema {
+  /**
+   * The type of the field
+   */
+  type: 'string' | 'number' | 'boolean' | 'date' | 'array' | 'unknown';
+
+  /**
+   * Whether the field is required (for documentation purposes)
+   */
+  required?: boolean;
+
+  /**
+   * Allowed values for the field (for enums)
+   */
+  allowedValues?: Array<string | number | boolean>;
+
+  /**
+   * Human-readable description of the field
+   */
+  description?: string;
+}
+
+/**
+ * Security options for parseWithContext (subset of full security options)
+ */
+export interface ISecurityOptionsForContext {
+  /**
+   * List of fields that are allowed to be queried
+   */
+  allowedFields?: string[];
+
+  /**
+   * List of fields that are denied from being queried
+   */
+  denyFields?: string[];
+
+  /**
+   * Maximum query depth allowed
+   */
+  maxQueryDepth?: number;
+
+  /**
+   * Maximum number of clauses allowed
+   */
+  maxClauseCount?: number;
+
+  /**
+   * Whether to allow dot notation in field names
+   */
+  allowDotNotation?: boolean;
 }
 
 /**
@@ -224,6 +292,144 @@ export interface IQueryParseResult {
    * Structural analysis of the query
    */
   structure: IQueryStructure;
+
+  /**
+   * Field validation results (only present if schema was provided in options)
+   */
+  fieldValidation?: IFieldValidationResult;
+
+  /**
+   * Security pre-check results (only present if securityOptions was provided)
+   */
+  security?: ISecurityCheckResult;
+}
+
+/**
+ * Result of field validation against schema
+ */
+export interface IFieldValidationResult {
+  /**
+   * Whether all fields passed validation
+   */
+  valid: boolean;
+
+  /**
+   * Validation details for each field
+   */
+  fields: IFieldValidationDetail[];
+
+  /**
+   * Fields that were referenced but not found in schema
+   */
+  unknownFields: string[];
+}
+
+/**
+ * Validation detail for a single field
+ */
+export interface IFieldValidationDetail {
+  /**
+   * The field name
+   */
+  field: string;
+
+  /**
+   * Whether this field is valid
+   */
+  valid: boolean;
+
+  /**
+   * The expected type from schema (if known)
+   */
+  expectedType?: string;
+
+  /**
+   * Reason for validation failure (if invalid)
+   */
+  reason?: 'unknown_field' | 'type_mismatch' | 'invalid_value' | 'denied';
+
+  /**
+   * Suggested correction (for typos)
+   */
+  suggestion?: string;
+
+  /**
+   * Allowed values (if field has enum constraint)
+   */
+  allowedValues?: Array<string | number | boolean>;
+}
+
+/**
+ * Result of security pre-check
+ */
+export interface ISecurityCheckResult {
+  /**
+   * Whether the query passes all security checks
+   */
+  passed: boolean;
+
+  /**
+   * List of security violations found
+   */
+  violations: ISecurityViolation[];
+
+  /**
+   * Warnings that don't block execution but should be noted
+   */
+  warnings: ISecurityWarning[];
+}
+
+/**
+ * A security violation that blocks query execution
+ */
+export interface ISecurityViolation {
+  /**
+   * Type of violation
+   */
+  type:
+    | 'denied_field'
+    | 'depth_exceeded'
+    | 'clause_limit'
+    | 'dot_notation'
+    | 'field_not_allowed';
+
+  /**
+   * Human-readable message
+   */
+  message: string;
+
+  /**
+   * The field that caused the violation (if applicable)
+   */
+  field?: string;
+}
+
+/**
+ * A security warning (doesn't block execution)
+ */
+export interface ISecurityWarning {
+  /**
+   * Type of warning
+   */
+  type:
+    | 'approaching_depth_limit'
+    | 'approaching_clause_limit'
+    | 'complex_query';
+
+  /**
+   * Human-readable message
+   */
+  message: string;
+
+  /**
+   * Current value
+   */
+  current?: number;
+
+  /**
+   * Limit value
+   */
+  limit?: number;
 }
 
 /**
