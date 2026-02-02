@@ -38,7 +38,6 @@
   },
   "scripts": {
     "build": "tsc --outDir dist",
-    "build:example": "pnpm build && cd examples/qk-next && pnpm build",
     "test": "jest",
     "lint": "eslint src --ext .ts",
     "format": "prettier --write \"src/**/*.ts\"",
