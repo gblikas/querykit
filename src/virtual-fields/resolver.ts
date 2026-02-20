@@ -111,12 +111,28 @@ function resolveComparisonExpression<
   };
 
   // Create the helpers object with type-safe fields() helper
+  // We use the allowedValues from the virtual field to validate the mapping keys at runtime.
+  // This ensures type safety even though we must type helpers as IResolverHelpers<TSchema, string>
+  // due to how VirtualFieldsConfig is defined.
   const helpers: IResolverHelpers<TSchema, string> = {
     fields: <TValues extends string>(
       mapping: SchemaFieldMap<TValues, TSchema>
     ): SchemaFieldMap<TValues, TSchema> => {
+      // Validate that all keys in the mapping are in the virtual field's allowed values
+      const mappingKeys = Object.keys(mapping);
+      const allowedValues = virtualFieldDef.allowedValues as string[];
+      
+      for (const key of mappingKeys) {
+        if (!allowedValues.includes(key)) {
+          throw new QueryParseError(
+            `Invalid key "${key}" in field mapping for virtual field "${fieldName}". ` +
+            `Allowed keys are: ${allowedValues.map(v => `"${v}"`).join(', ')}`
+          );
+        }
+      }
+      
       // Runtime: this is just an identity function
-      // Compile-time: TypeScript validates the mapping
+      // Compile-time: TypeScript validates the mapping structure
       return mapping;
     }
   };

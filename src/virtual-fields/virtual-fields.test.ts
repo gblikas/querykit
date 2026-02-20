@@ -779,5 +779,49 @@ describe('Virtual Fields', () => {
       // The fields() helper is an identity function at runtime
       expect(typeof virtualFields.my.resolve).toBe('function');
     });
+
+    it('should validate field mapping keys at runtime', () => {
+      const virtualFields: VirtualFieldsConfig<MockSchema, IMockContext> = {
+        my: {
+          allowedValues: ['assigned', 'created'] as const,
+          resolve: (input, ctx, { fields }) => {
+            // This invalid mapping should throw at runtime
+            // because 'invalid' is not in allowedValues
+            const fieldMap = fields({
+              assigned: 'assignee_id',
+              created: 'creator_id',
+              invalid: 'assignee_id'
+            } as any);
+
+            return {
+              type: 'comparison',
+              field: fieldMap[input.value],
+              operator: '==',
+              value: ctx.currentUserId
+            };
+          }
+        }
+      };
+
+      const context: IMockContext = {
+        currentUserId: 123,
+        currentUserTeamIds: []
+      };
+
+      const expr: IComparisonExpression = {
+        type: 'comparison',
+        field: 'my',
+        operator: '==',
+        value: 'assigned'
+      };
+
+      expect(() => {
+        resolveVirtualFields(expr, virtualFields, context);
+      }).toThrow(QueryParseError);
+
+      expect(() => {
+        resolveVirtualFields(expr, virtualFields, context);
+      }).toThrow('Invalid key "invalid" in field mapping');
+    });
   });
 });
