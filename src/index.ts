@@ -12,6 +12,11 @@ import { QueryParser, IParserOptions } from './parser';
 import { SqlTranslator } from './translators/sql';
 import { ISecurityOptions, QuerySecurityValidator } from './security';
 import { IAdapter, IAdapterOptions } from './adapters';
+import {
+  IQueryContext,
+  VirtualFieldsConfig,
+  resolveVirtualFields
+} from './virtual-fields';
 
 export {
   // Parser exports
@@ -29,6 +34,7 @@ export {
 // Re-export from modules
 export * from './translators';
 export * from './adapters';
+export * from './virtual-fields';
 
 /**
  * Create a new QueryBuilder instance
@@ -53,7 +59,8 @@ export interface IQueryKitOptions<
   TSchema extends Record<string, object> = Record<
     string,
     Record<string, unknown>
-  >
+  >,
+  TContext extends IQueryContext = IQueryContext
 > {
   /**
    * The adapter to use for database connections
@@ -74,6 +81,39 @@ export interface IQueryKitOptions<
    * Options to initialize the provided adapter
    */
   adapterOptions?: IAdapterOptions & { [key: string]: unknown };
+
+  /**
+   * Virtual field definitions for context-aware query expansion.
+   * Virtual fields allow shortcuts like `my:assigned` that expand to
+   * real schema fields at query execution time.
+   *
+   * @example
+   * virtualFields: {
+   *   my: {
+   *     allowedValues: ['assigned', 'created'] as const,
+   *     resolve: (input, ctx, { fields }) => ({
+   *       type: 'comparison',
+   *       field: fields({ assigned: 'assignee_id', created: 'creator_id' })[input.value],
+   *       operator: '==',
+   *       value: ctx.currentUserId
+   *     })
+   *   }
+   * }
+   */
+  virtualFields?: VirtualFieldsConfig<TSchema, TContext>;
+
+  /**
+   * Factory function to create query execution context.
+   * Called once per query execution to provide runtime values
+   * for virtual field resolution.
+   *
+   * @example
+   * createContext: async () => ({
+   *   currentUserId: await getCurrentUserId(),
+   *   currentUserTeamIds: await getUserTeamIds()
+   * })
+   */
+  createContext?: () => TContext | Promise<TContext>;
 }
 
 // Define interfaces for return types
@@ -105,10 +145,11 @@ export type QueryKit<
  */
 export function createQueryKit<
   TSchema extends Record<string, object>,
+  TContext extends IQueryContext = IQueryContext,
   TRows extends { [K in keyof TSchema & string]: unknown } = {
     [K in keyof TSchema & string]: unknown;
   }
->(options: IQueryKitOptions<TSchema>): QueryKit<TSchema, TRows> {
+>(options: IQueryKitOptions<TSchema, TContext>): QueryKit<TSchema, TRows> {
   const parser = new QueryParser();
   const securityValidator = new QuerySecurityValidator(options.security);
 
@@ -136,12 +177,8 @@ export function createQueryKit<
     ): IWhereClause<TRows[K]> => {
       return {
         where: (queryString: string): IQueryExecutor<TRows[K]> => {
-          // Parse and validate the query
+          // Parse the query
           const expressionAst = parser.parse(queryString);
-          securityValidator.validate(
-            expressionAst,
-            options.schema as unknown as Record<string, Record<string, unknown>>
-          );
 
           // Execution state accumulated via fluent calls
           let orderByState: Record<string, 'asc' | 'desc'> = {};
@@ -165,10 +202,35 @@ export function createQueryKit<
               return executor;
             },
             execute: async (): Promise<TRows[K][]> => {
+              // Get context if virtual fields are configured
+              let context: TContext | undefined;
+              if (options.virtualFields && options.createContext) {
+                context = await options.createContext();
+              }
+
+              // Resolve virtual fields if configured and context is available
+              let resolvedExpression = expressionAst;
+              if (options.virtualFields && context) {
+                resolvedExpression = resolveVirtualFields(
+                  expressionAst,
+                  options.virtualFields,
+                  context
+                );
+              }
+
+              // Validate the resolved query
+              securityValidator.validate(
+                resolvedExpression,
+                options.schema as unknown as Record<
+                  string,
+                  Record<string, unknown>
+                >
+              );
+
               // Delegate to adapter
               const results = await options.adapter.execute(
                 table,
-                expressionAst,
+                resolvedExpression,
                 {
                   orderBy:
                     Object.keys(orderByState).length > 0

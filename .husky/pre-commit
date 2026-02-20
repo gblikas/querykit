@@ -14,16 +14,16 @@ echo "Running pre-commit checks..."
 
 # Run lint-staged to process only changed files
 echo "🔍 Running lint-staged..."
-pnpm lint-staged || { echo "❌ Linting failed"; exit 1; }
+npx lint-staged || { echo "❌ Linting failed"; exit 1; }
 
 # Check TypeScript compilation
 echo "🔍 Checking TypeScript compilation..."
-pnpm exec tsc --noEmit || { echo "❌ TypeScript check failed"; exit 1; }
+npx tsc --noEmit || { echo "❌ TypeScript check failed"; exit 1; }
 
 # Run tests
 if [ "$RUN_TESTS" = "true" ]; then
   echo "🧪 Running tests..."
-  pnpm test || { echo "❌ Tests failed"; exit 1; }
+  npm test || { echo "❌ Tests failed"; exit 1; }
 fi
 
 # If everything passes, allow the commit

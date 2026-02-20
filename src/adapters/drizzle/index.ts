@@ -9,6 +9,7 @@ import { IAdapter, IAdapterOptions, IQueryExecutionOptions } from '../types';
 import { QueryExpression } from '../../parser/types';
 import { SQL, SQLWrapper, asc, desc, sql } from 'drizzle-orm';
 import { createQueryKit, QueryKit } from '../../index';
+import { IQueryContext } from '../../virtual-fields';
 /**
  * Type for Drizzle ORM database instance
  */
@@ -91,8 +92,7 @@ export class DrizzleAdapterError extends Error {
  */
 export class DrizzleAdapter<
   TSchema extends Record<string, unknown> = Record<string, unknown>
-> implements IAdapter<IDrizzleAdapterOptions<TSchema>>
-{
+> implements IAdapter<IDrizzleAdapterOptions<TSchema>> {
   private db!: unknown;
   private schema!: TSchema;
   private translator!: DrizzleTranslator;
@@ -291,7 +291,7 @@ export function createDrizzleQueryKit<
 
   type RowMap = RowMapFromDrizzleSchema<TSchema>;
 
-  return createQueryKit<TSchema, RowMap>({
+  return createQueryKit<TSchema, IQueryContext, RowMap>({
     adapter,
     schema: args.schema as unknown as TSchema,
     security: args.security
