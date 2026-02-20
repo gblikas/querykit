@@ -72,8 +72,14 @@ function resolveComparisonExpression<
 
   // Validate the value is a string (virtual fields require string values)
   if (typeof expr.value !== 'string') {
+    const valueType = Array.isArray(expr.value)
+      ? `array (${JSON.stringify(expr.value)})`
+      : typeof expr.value === 'object'
+        ? `object (${JSON.stringify(expr.value)})`
+        : typeof expr.value;
+
     throw new QueryParseError(
-      `Virtual field "${fieldName}" requires a string value, got ${typeof expr.value}`
+      `Virtual field "${fieldName}" requires a string value, got ${valueType}`
     );
   }
 

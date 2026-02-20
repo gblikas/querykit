@@ -546,8 +546,8 @@ virtualFields: {
       const fieldMap = fields({
         assigned: 'assignee_id',  // ✓ Valid schema field
         created: 'creator_id'      // ✓ Valid schema field
-        // Missing 'created' → TypeScript error!
-        // invalid_field → TypeScript error!
+        // Missing 'watching' → TypeScript error!
+        // assigned: 'invalid_field' → TypeScript error!
       });
 
       return {
@@ -673,7 +673,7 @@ qk.query('tasks').where('my:>assigned')
 Here's a full example with multiple virtual fields:
 
 ```typescript
-import { createQueryKit, IQueryContext } from '@gblikas/querykit';
+import { createQueryKit, IQueryContext, ComparisonOperator } from '@gblikas/querykit';
 import { drizzleAdapter } from '@gblikas/querykit/adapters/drizzle';
 
 // Define your context type
@@ -746,7 +746,7 @@ const qk = createQueryKit<typeof schema, TaskQueryContext>({
         return {
           type: 'comparison',
           field: 'priority',
-          operator: input.operator as any,
+          operator: input.operator as ComparisonOperator,
           value: priorityMap[input.value as keyof typeof priorityMap]
         };
       }
