@@ -202,6 +202,13 @@ export function createQueryKit<
               return executor;
             },
             execute: async (): Promise<TRows[K][]> => {
+              // Validate that if virtual fields are configured, createContext must also be provided
+              if (options.virtualFields && !options.createContext) {
+                throw new Error(
+                  'createContext must be provided when virtualFields is configured'
+                );
+              }
+
               // Get context if virtual fields are configured
               let context: TContext | undefined;
               if (options.virtualFields && options.createContext) {
