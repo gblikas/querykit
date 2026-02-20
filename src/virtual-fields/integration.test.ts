@@ -18,7 +18,6 @@ type MockSchema = {
     status: string;
     priority: number;
   };
-  [key: string]: object;
 };
 
 // Mock context for testing
@@ -147,7 +146,7 @@ describe('Virtual Fields Integration', () => {
       virtualFields: {
         my: {
           allowedValues: ['assigned'] as const,
-          resolve: (input, ctx) => ({
+          resolve: (_input, ctx) => ({
             type: 'comparison',
             field: 'assignee_id',
             operator: '==',
@@ -310,7 +309,7 @@ describe('Virtual Fields Integration', () => {
       virtualFields: {
         my: {
           allowedValues: ['assigned'] as const,
-          resolve: (input, ctx) => ({
+          resolve: (_input, ctx) => ({
             type: 'comparison',
             field: 'assignee_id',
             operator: '==',

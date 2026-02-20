@@ -12,7 +12,6 @@ import {
   IQueryContext,
   IVirtualFieldInput,
   VirtualFieldsConfig,
-  IResolverHelpers,
   SchemaFieldMap
 } from './types';
 
@@ -111,26 +110,24 @@ function resolveComparisonExpression<
   };
 
   // Create the helpers object with type-safe fields() helper
-  // We use the allowedValues from the virtual field to validate the mapping keys at runtime.
-  // This ensures type safety even though we must type helpers as IResolverHelpers<TSchema, string>
-  // due to how VirtualFieldsConfig is defined.
-  const helpers: IResolverHelpers<TSchema, string> = {
+  // The helpers function is generic and will be properly typed when called by the resolver
+  const helpers = {
     fields: <TValues extends string>(
       mapping: SchemaFieldMap<TValues, TSchema>
     ): SchemaFieldMap<TValues, TSchema> => {
       // Validate that all keys in the mapping are in the virtual field's allowed values
       const mappingKeys = Object.keys(mapping);
-      const allowedValues = virtualFieldDef.allowedValues as string[];
-      
+      const allowedValues = virtualFieldDef.allowedValues as readonly string[];
+
       for (const key of mappingKeys) {
         if (!allowedValues.includes(key)) {
           throw new QueryParseError(
             `Invalid key "${key}" in field mapping for virtual field "${fieldName}". ` +
-            `Allowed keys are: ${allowedValues.map(v => `"${v}"`).join(', ')}`
+              `Allowed keys are: ${allowedValues.map(v => `"${v}"`).join(', ')}`
           );
         }
       }
-      
+
       // Runtime: this is just an identity function
       // Compile-time: TypeScript validates the mapping structure
       return mapping;
@@ -138,7 +135,12 @@ function resolveComparisonExpression<
   };
 
   // Resolve the virtual field
-  const resolved = virtualFieldDef.resolve(input, context, helpers);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const resolved = virtualFieldDef.resolve(
+    input as any,
+    context,
+    helpers as any
+  );
 
   return resolved as QueryExpression;
 }

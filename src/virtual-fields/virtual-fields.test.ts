@@ -23,7 +23,6 @@ type MockSchema = {
     name: string;
     email: string;
   };
-  [key: string]: object;
 };
 
 // Mock context for testing
@@ -79,7 +78,7 @@ describe('Virtual Fields', () => {
       const virtualFields: VirtualFieldsConfig<MockSchema, IMockContext> = {
         my: {
           allowedValues: ['assigned'] as const,
-          resolve: (input, ctx) => ({
+          resolve: (_input, ctx) => ({
             type: 'comparison',
             field: 'assignee_id',
             operator: '==',
@@ -88,7 +87,7 @@ describe('Virtual Fields', () => {
         },
         team: {
           allowedValues: ['assigned'] as const,
-          resolve: (input, ctx) => ({
+          resolve: (_input, ctx) => ({
             type: 'comparison',
             field: 'assignee_id',
             operator: 'IN',
@@ -143,7 +142,7 @@ describe('Virtual Fields', () => {
       const virtualFields: VirtualFieldsConfig<MockSchema, IMockContext> = {
         my: {
           allowedValues: ['assigned'] as const,
-          resolve: (input, ctx) => ({
+          resolve: (_input, ctx) => ({
             type: 'comparison',
             field: 'assignee_id',
             operator: '==',
@@ -253,7 +252,7 @@ describe('Virtual Fields', () => {
       const virtualFields: VirtualFieldsConfig<MockSchema, IMockContext> = {
         my: {
           allowedValues: ['assigned', 'created'] as const,
-          resolve: (input, ctx) => ({
+          resolve: (_input, ctx) => ({
             type: 'comparison',
             field: 'assignee_id',
             operator: '==',
@@ -290,7 +289,7 @@ describe('Virtual Fields', () => {
         my: {
           allowedValues: ['assigned'] as const,
           allowOperators: false, // Explicitly disallow operators
-          resolve: (input, ctx) => ({
+          resolve: (_input, ctx) => ({
             type: 'comparison',
             field: 'assignee_id',
             operator: '==',
@@ -360,7 +359,7 @@ describe('Virtual Fields', () => {
       const virtualFields: VirtualFieldsConfig<MockSchema, IMockContext> = {
         my: {
           allowedValues: ['assigned'] as const,
-          resolve: (input, ctx) => ({
+          resolve: (_input, ctx) => ({
             type: 'comparison',
             field: 'assignee_id',
             operator: '==',
@@ -390,7 +389,7 @@ describe('Virtual Fields', () => {
       const virtualFields: VirtualFieldsConfig<MockSchema, IMockContext> = {
         my: {
           allowedValues: ['assigned'] as const,
-          resolve: (input, ctx) => ({
+          resolve: (_input, ctx) => ({
             type: 'comparison',
             field: 'assignee_id',
             operator: '==',
@@ -426,7 +425,7 @@ describe('Virtual Fields', () => {
       const virtualFields: VirtualFieldsConfig<MockSchema, IMockContext> = {
         my: {
           allowedValues: ['assigned'] as const,
-          resolve: (input, ctx) => ({
+          resolve: (_input, ctx) => ({
             type: 'comparison',
             field: 'assignee_id',
             operator: '==',
@@ -456,7 +455,7 @@ describe('Virtual Fields', () => {
       const virtualFields: VirtualFieldsConfig<MockSchema, IMockContext> = {
         team: {
           allowedValues: ['members'] as const,
-          resolve: (input, ctx) => ({
+          resolve: (_input, ctx) => ({
             type: 'comparison',
             field: 'assignee_id',
             operator: 'IN',
@@ -488,7 +487,7 @@ describe('Virtual Fields', () => {
       const virtualFields: VirtualFieldsConfig<MockSchema, IMockContext> = {
         my: {
           allowedValues: ['assigned'] as const,
-          resolve: (input, ctx) => ({
+          resolve: (_input, ctx) => ({
             type: 'comparison',
             field: 'assignee_id',
             operator: '==',
@@ -550,7 +549,7 @@ describe('Virtual Fields', () => {
       const virtualFields: VirtualFieldsConfig<MockSchema, IMockContext> = {
         my: {
           allowedValues: ['assigned'] as const,
-          resolve: (input, ctx) => ({
+          resolve: (_input, ctx) => ({
             type: 'comparison',
             field: 'assignee_id',
             operator: '==',
@@ -592,7 +591,7 @@ describe('Virtual Fields', () => {
       const virtualFields: VirtualFieldsConfig<MockSchema, IMockContext> = {
         myItems: {
           allowedValues: ['all'] as const,
-          resolve: (input, ctx) => ({
+          resolve: (_input, ctx) => ({
             type: 'logical',
             operator: 'OR',
             left: {
@@ -665,7 +664,7 @@ describe('Virtual Fields', () => {
       const virtualFields: VirtualFieldsConfig<MockSchema, IMockContext> = {
         my: {
           allowedValues: ['assigned'] as const,
-          resolve: (input, ctx) => ({
+          resolve: (_input, ctx) => ({
             type: 'comparison',
             field: 'assignee_id',
             operator: '==',
@@ -787,10 +786,12 @@ describe('Virtual Fields', () => {
           resolve: (input, ctx, { fields }) => {
             // This invalid mapping should throw at runtime
             // because 'invalid' is not in allowedValues
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
             const fieldMap = fields({
               assigned: 'assignee_id',
               created: 'creator_id',
               invalid: 'assignee_id'
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
             } as any);
 
             return {

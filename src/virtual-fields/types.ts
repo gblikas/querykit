@@ -39,14 +39,23 @@ export interface IVirtualFieldInput {
 }
 
 /**
+ * Helper type to filter out index signatures from a type
+ */
+type KnownKeys<T> = {
+  [K in keyof T]: string extends K ? never : number extends K ? never : K;
+} extends { [_ in keyof T]: infer U }
+  ? U
+  : never;
+
+/**
  * Utility type to extract all field names from a schema.
- * Recursively extracts field names from nested tables.
+ * Recursively extracts field names from nested tables, excluding index signatures.
  */
 export type AllSchemaFields<TSchema extends Record<string, object>> = {
-  [K in keyof TSchema]: TSchema[K] extends { [key: string]: unknown }
+  [K in KnownKeys<TSchema>]: TSchema[K] extends { [key: string]: unknown }
     ? keyof TSchema[K] & string
     : never;
-}[keyof TSchema];
+}[KnownKeys<TSchema>];
 
 /**
  * Type-safe mapping from allowed values to schema fields.
@@ -180,5 +189,6 @@ export type VirtualFieldsConfig<
   TSchema extends Record<string, object> = Record<string, object>,
   TContext extends IQueryContext = IQueryContext
 > = {
-  [fieldName: string]: IVirtualFieldDefinition<TSchema, TContext, string>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  [fieldName: string]: IVirtualFieldDefinition<TSchema, TContext, any>;
 };
