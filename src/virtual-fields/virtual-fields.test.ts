@@ -4,7 +4,7 @@
 
 import { QueryParseError } from '../parser/parser';
 import { resolveVirtualFields } from './resolver';
-import { IQueryContext, VirtualFieldsConfig } from './types';
+import { IQueryContext, VirtualFieldsConfig, SchemaFieldMap } from './types';
 import { IComparisonExpression, ILogicalExpression } from '../parser/types';
 
 // Mock schema for testing
@@ -786,17 +786,20 @@ describe('Virtual Fields', () => {
           resolve: (input, ctx, { fields }) => {
             // This invalid mapping should throw at runtime
             // because 'invalid' is not in allowedValues
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            // We use Record<string, string> to bypass compile-time checks
+            // and test runtime validation
             const fieldMap = fields({
               assigned: 'assignee_id',
               created: 'creator_id',
               invalid: 'assignee_id'
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            } as any);
+            } as Record<string, string> as SchemaFieldMap<
+              'assigned' | 'created',
+              MockSchema
+            >);
 
             return {
               type: 'comparison',
-              field: fieldMap[input.value],
+              field: fieldMap[input.value as 'assigned' | 'created'],
               operator: '==',
               value: ctx.currentUserId
             };

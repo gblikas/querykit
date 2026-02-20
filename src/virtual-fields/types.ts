@@ -68,22 +68,27 @@ export type SchemaFieldMap<
 
 /**
  * Helper functions provided to virtual field resolvers.
+ *
+ * Note: The fields() method is generic at the method level, not the interface level.
+ * This allows TypeScript to infer TValues from the mapping object passed at call-time,
+ * eliminating the need for type assertions while maintaining full type safety.
  */
-export interface IResolverHelpers<
-  TSchema extends Record<string, object>,
-  TValues extends string = string
-> {
+export interface IResolverHelpers<TSchema extends Record<string, object>> {
   /**
    * Type-safe field mapping helper.
    * Ensures all allowedValues are mapped to valid schema fields.
+   *
+   * The generic TValues parameter is inferred from the keys in the mapping object,
+   * providing full type safety without requiring explicit type annotations.
    *
    * @example
    * const fieldMap = fields({
    *   assigned: 'assignee_id',
    *   created: 'creator_id'
    * });
+   * // TypeScript infers TValues as 'assigned' | 'created'
    */
-  fields: (
+  fields: <TValues extends string>(
     mapping: SchemaFieldMap<TValues, TSchema>
   ) => SchemaFieldMap<TValues, TSchema>;
 }
@@ -166,7 +171,7 @@ export interface IVirtualFieldDefinition<
   resolve: (
     input: IVirtualFieldInput & { value: TValues },
     context: TContext,
-    helpers: IResolverHelpers<TSchema, TValues>
+    helpers: IResolverHelpers<TSchema>
   ) => ITypedQueryExpression<AllSchemaFields<TSchema>>;
 
   /**
@@ -184,11 +189,15 @@ export interface IVirtualFieldDefinition<
 
 /**
  * Configuration for all virtual fields in a QueryKit instance.
+ *
+ * Note: Uses a flexible type for the values to allow each virtual field definition
+ * to have its own specific TValues type (e.g., 'assigned' | 'created' for one field,
+ * 'high' | 'low' for another). The IResolverHelpers.fields() method infers these
+ * types at call-time, maintaining type safety without needing explicit annotations.
  */
 export type VirtualFieldsConfig<
   TSchema extends Record<string, object> = Record<string, object>,
   TContext extends IQueryContext = IQueryContext
 > = {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  [fieldName: string]: IVirtualFieldDefinition<TSchema, TContext, any>;
+  [fieldName: string]: IVirtualFieldDefinition<TSchema, TContext, string>;
 };

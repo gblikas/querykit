@@ -12,6 +12,7 @@ import {
   IQueryContext,
   IVirtualFieldInput,
   VirtualFieldsConfig,
+  IResolverHelpers,
   SchemaFieldMap
 } from './types';
 
@@ -110,8 +111,9 @@ function resolveComparisonExpression<
   };
 
   // Create the helpers object with type-safe fields() helper
-  // The helpers function is generic and will be properly typed when called by the resolver
-  const helpers = {
+  // The fields() method is generic at the method level, allowing TypeScript to
+  // infer TValues from the mapping object at call-time without needing type assertions
+  const helpers: IResolverHelpers<TSchema> = {
     fields: <TValues extends string>(
       mapping: SchemaFieldMap<TValues, TSchema>
     ): SchemaFieldMap<TValues, TSchema> => {
@@ -134,13 +136,8 @@ function resolveComparisonExpression<
     }
   };
 
-  // Resolve the virtual field
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const resolved = virtualFieldDef.resolve(
-    input as any,
-    context,
-    helpers as any
-  );
+  // Resolve the virtual field - no type assertions needed!
+  const resolved = virtualFieldDef.resolve(input, context, helpers);
 
   return resolved as QueryExpression;
 }
