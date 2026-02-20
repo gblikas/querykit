@@ -434,6 +434,352 @@ function SearchBar({ value, onChange }) {
 }
 ```
 
+## Virtual Fields
+
+Virtual fields enable powerful shortcuts in your queries that expand to real schema fields at query execution time based on runtime context. This allows you to support queries like `my:assigned` which expands to `assignee_id == <current_user_id>` using the currently logged-in user's ID.
+
+### Why Virtual Fields?
+
+Virtual fields are useful when:
+- You want to provide user-friendly shortcuts (e.g., `my:assigned` instead of `assignee_id:123`)
+- The query depends on runtime context (current user, permissions, tenant, etc.)
+- You want to abstract complex field mappings from end users
+- You need consistent query shortcuts across your application
+
+### Basic Usage
+
+Define virtual fields when creating your QueryKit instance:
+
+```typescript
+import { createQueryKit } from '@gblikas/querykit';
+import { drizzleAdapter } from '@gblikas/querykit/adapters/drizzle';
+
+const qk = createQueryKit({
+  adapter: drizzleAdapter,
+  schema: { tasks, users },
+
+  // Define virtual fields
+  virtualFields: {
+    my: {
+      allowedValues: ['assigned', 'created', 'watching'] as const,
+      description: 'Filter by your relationship to items',
+      
+      resolve: (input, ctx, { fields }) => {
+        // Map virtual values to real schema fields
+        const fieldMap = fields({
+          assigned: 'assignee_id',
+          created: 'creator_id',
+          watching: 'watcher_ids'
+        });
+
+        return {
+          type: 'comparison',
+          field: fieldMap[input.value],
+          operator: '==',
+          value: ctx.currentUserId
+        };
+      }
+    }
+  },
+
+  // Provide runtime context
+  createContext: async () => ({
+    currentUserId: await getCurrentUserId(),
+    currentUserTeamIds: await getUserTeamIds()
+  })
+});
+
+// Use virtual fields in queries
+const myTasks = await qk
+  .query('tasks')
+  .where('my:assigned AND status:active')
+  .execute();
+```
+
+### Configuration Options
+
+Each virtual field definition supports:
+
+```typescript
+{
+  // Required: allowed values for this virtual field
+  allowedValues: ['value1', 'value2'] as const,
+
+  // Optional: allow comparison operators (>, <, >=, <=)
+  // Default: false (only equality ":" is allowed)
+  allowOperators?: boolean,
+
+  // Required: resolver function
+  resolve: (input, context, helpers) => {
+    // Return a query expression that replaces the virtual field
+    return {
+      type: 'comparison',
+      field: 'real_field',
+      operator: '==',
+      value: context.someValue
+    };
+  },
+
+  // Optional: human-readable description
+  description?: string,
+
+  // Optional: descriptions for each value
+  valueDescriptions?: {
+    value1: 'Description of value1',
+    value2: 'Description of value2'
+  }
+}
+```
+
+### Type-Safe Field Mapping
+
+The `fields()` helper provides compile-time validation that all mapped fields exist in your schema:
+
+```typescript
+virtualFields: {
+  my: {
+    allowedValues: ['assigned', 'created'] as const,
+    resolve: (input, ctx, { fields }) => {
+      // TypeScript validates:
+      // 1. All allowedValues keys are mapped
+      // 2. All field values exist in the schema
+      const fieldMap = fields({
+        assigned: 'assignee_id',  // ✓ Valid schema field
+        created: 'creator_id'      // ✓ Valid schema field
+        // Missing 'created' → TypeScript error!
+        // invalid_field → TypeScript error!
+      });
+
+      return {
+        type: 'comparison',
+        field: fieldMap[input.value],
+        operator: '==',
+        value: ctx.currentUserId
+      };
+    }
+  }
+}
+```
+
+### Context Factory
+
+The `createContext` function is called once per query execution to provide runtime values:
+
+```typescript
+createContext: async () => {
+  const user = await getCurrentUser();
+  const permissions = await getUserPermissions(user.id);
+  
+  return {
+    currentUserId: user.id,
+    currentUserTeamIds: user.teamIds,
+    canSeeArchived: permissions.includes('view:archived')
+  };
+}
+```
+
+Context is type-safe and can include any data your resolvers need:
+
+```typescript
+interface MyQueryContext extends IQueryContext {
+  currentUserId: number;
+  currentUserTeamIds: number[];
+  canSeeArchived: boolean;
+}
+
+const qk = createQueryKit<typeof schema, MyQueryContext>({
+  // ... configuration
+});
+```
+
+### Complex Resolvers
+
+Virtual fields can return logical expressions for more complex scenarios:
+
+```typescript
+virtualFields: {
+  myItems: {
+    allowedValues: ['all'] as const,
+    resolve: (input, ctx) => ({
+      // Return a logical OR expression
+      type: 'logical',
+      operator: 'OR',
+      left: {
+        type: 'comparison',
+        field: 'assignee_id',
+        operator: '==',
+        value: ctx.currentUserId
+      },
+      right: {
+        type: 'comparison',
+        field: 'creator_id',
+        operator: '==',
+        value: ctx.currentUserId
+      }
+    })
+  }
+}
+
+// Expands to: (assignee_id == currentUserId OR creator_id == currentUserId)
+await qk.query('tasks').where('myItems:all').execute();
+```
+
+### Allowing Comparison Operators
+
+By default, only equality (`:`) is allowed. Enable other operators with `allowOperators: true`:
+
+```typescript
+virtualFields: {
+  priority: {
+    allowedValues: ['high', 'low'] as const,
+    allowOperators: true,  // Enable >, <, etc.
+    
+    resolve: (input, ctx) => {
+      const threshold = input.value === 'high' ? 7 : 3;
+      
+      return {
+        type: 'comparison',
+        field: 'priority',
+        operator: input.operator,  // Use the operator from the query
+        value: threshold
+      };
+    }
+  }
+}
+
+// Both work:
+qk.query('tasks').where('priority:high')    // priority == 7
+qk.query('tasks').where('priority:>high')  // priority > 7
+```
+
+### Error Handling
+
+QueryKit throws `QueryParseError` for invalid virtual field usage:
+
+```typescript
+// Invalid value
+qk.query('tasks').where('my:invalid')
+// Error: Invalid value "invalid" for virtual field "my". 
+//        Allowed values: "assigned", "created", "watching"
+
+// Operator not allowed (when allowOperators: false)
+qk.query('tasks').where('my:>assigned')
+// Error: Virtual field "my" does not allow comparison operators. 
+//        Only equality (":") is permitted.
+```
+
+### Complete Example
+
+Here's a full example with multiple virtual fields:
+
+```typescript
+import { createQueryKit, IQueryContext } from '@gblikas/querykit';
+import { drizzleAdapter } from '@gblikas/querykit/adapters/drizzle';
+
+// Define your context type
+interface TaskQueryContext extends IQueryContext {
+  currentUserId: number;
+  currentUserTeamIds: number[];
+  currentTenantId: string;
+}
+
+// Create QueryKit with virtual fields
+const qk = createQueryKit<typeof schema, TaskQueryContext>({
+  adapter: drizzleAdapter,
+  schema: { tasks, users },
+
+  virtualFields: {
+    // User relationship shortcuts
+    my: {
+      allowedValues: ['assigned', 'created', 'watching'] as const,
+      description: 'Filter by your relationship to tasks',
+      valueDescriptions: {
+        assigned: 'Tasks assigned to you',
+        created: 'Tasks you created',
+        watching: 'Tasks you are watching'
+      },
+      resolve: (input, ctx, { fields }) => {
+        const fieldMap = fields({
+          assigned: 'assignee_id',
+          created: 'creator_id',
+          watching: 'watcher_ids'
+        });
+        return {
+          type: 'comparison',
+          field: fieldMap[input.value],
+          operator: '==',
+          value: ctx.currentUserId
+        };
+      }
+    },
+
+    // Team shortcuts
+    team: {
+      allowedValues: ['assigned', 'owned'] as const,
+      description: 'Filter by team relationship',
+      resolve: (input, ctx, { fields }) => {
+        const fieldMap = fields({
+          assigned: 'assignee_id',
+          owned: 'owner_id'
+        });
+        return {
+          type: 'comparison',
+          field: fieldMap[input.value],
+          operator: 'IN',
+          value: ctx.currentUserTeamIds
+        };
+      }
+    },
+
+    // Priority shortcuts with operators
+    priority: {
+      allowedValues: ['critical', 'high', 'normal', 'low'] as const,
+      allowOperators: true,
+      description: 'Filter by priority level',
+      resolve: (input) => {
+        const priorityMap = {
+          critical: 10,
+          high: 7,
+          normal: 5,
+          low: 3
+        };
+        return {
+          type: 'comparison',
+          field: 'priority',
+          operator: input.operator as any,
+          value: priorityMap[input.value as keyof typeof priorityMap]
+        };
+      }
+    }
+  },
+
+  // Context factory
+  createContext: async () => {
+    const user = await getCurrentUser();
+    const teams = await getUserTeams(user.id);
+    
+    return {
+      currentUserId: user.id,
+      currentUserTeamIds: teams.map(t => t.id),
+      currentTenantId: user.tenantId
+    };
+  }
+});
+
+// Example queries using virtual fields
+// "my:assigned AND status:active"
+// "team:assigned OR my:created"
+// "priority:>high AND my:watching"
+// "(my:assigned OR team:assigned) AND status:active"
+
+const results = await qk
+  .query('tasks')
+  .where('my:assigned AND priority:>high')
+  .orderBy('created_at', 'desc')
+  .limit(10)
+  .execute();
+```
+
 ## Roadmap
 
 ### Core Parsing Engine and DSL
@@ -459,6 +805,7 @@ function SearchBar({ value, onChange }) {
 - [x] Support for complex nested expressions
 - [ ] Custom function support
 - [ ] Pagination helpers
+- [x] Virtual fields for context-aware query expansion
 
 ### Ecosystem Expansion
 - [x] Frontend query builder components (input parser)
