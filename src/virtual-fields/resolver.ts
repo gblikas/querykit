@@ -45,6 +45,11 @@ export function resolveVirtualFields<
     return resolveLogicalExpression(expr, virtualFields, context);
   }
 
+  // Pass through raw expressions
+  if (expr.type === 'raw') {
+    return expr;
+  }
+
   // Unknown expression type, return as-is
   return expr;
 }
