@@ -132,6 +132,24 @@ describe('Raw SQL Expressions', () => {
         expect(sqlString).toContain('user123');
         expect(sqlString).toContain('user456');
       });
+
+      it('should validate field name to prevent SQL injection', () => {
+        expect(() => jsonbContains('invalid;field', 'value')).toThrow(
+          'Invalid field name'
+        );
+        expect(() => jsonbContains('1invalid', 'value')).toThrow(
+          'Invalid field name'
+        );
+        expect(() => jsonbContains('a'.repeat(65), 'value')).toThrow(
+          'Field name too long'
+        );
+      });
+
+      it('should allow valid field names with dots and underscores', () => {
+        expect(() => jsonbContains('valid_field', 'value')).not.toThrow();
+        expect(() => jsonbContains('table.field', 'value')).not.toThrow();
+        expect(() => jsonbContains('my_table.my_field', 'value')).not.toThrow();
+      });
     });
 
     describe('dateWithinDays', () => {
@@ -175,6 +193,24 @@ describe('Raw SQL Expressions', () => {
         const sqlString30 = getSqlString(result30 as SQL);
 
         expect(sqlString30).toContain('30');
+      });
+
+      it('should validate field name to prevent SQL injection', () => {
+        expect(() => dateWithinDays('invalid;field', 7)).toThrow(
+          'Invalid field name'
+        );
+        expect(() => dateWithinDays('1invalid', 7)).toThrow(
+          'Invalid field name'
+        );
+        expect(() => dateWithinDays('a'.repeat(65), 7)).toThrow(
+          'Field name too long'
+        );
+      });
+
+      it('should allow valid field names with dots and underscores', () => {
+        expect(() => dateWithinDays('valid_field', 7)).not.toThrow();
+        expect(() => dateWithinDays('table.field', 7)).not.toThrow();
+        expect(() => dateWithinDays('my_table.my_field', 7)).not.toThrow();
       });
     });
   });

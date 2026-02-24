@@ -6,6 +6,20 @@ import { sql } from 'drizzle-orm';
 import { IRawSqlExpression } from '../parser/types';
 
 /**
+ * Validates field name to prevent SQL injection.
+ * Only allows alphanumeric characters, dots, and underscores.
+ * @private
+ */
+function validateFieldName(field: string): void {
+  if (!/^[a-zA-Z][a-zA-Z0-9._]*$/.test(field)) {
+    throw new Error(`Invalid field name: ${field}`);
+  }
+  if (field.length > 64) {
+    throw new Error(`Field name too long: ${field}`);
+  }
+}
+
+/**
  * Create a JSONB array contains expression (PostgreSQL).
  * Checks if the JSONB array field contains the given value.
  *
@@ -22,6 +36,7 @@ export function jsonbContains(
   field: string,
   value: unknown
 ): IRawSqlExpression {
+  validateFieldName(field);
   return {
     type: 'raw',
     toSql: () =>
@@ -43,6 +58,7 @@ export function jsonbContains(
  * // Generates: created_at >= NOW() - INTERVAL '1 days'
  */
 export function dateWithinDays(field: string, days: number): IRawSqlExpression {
+  validateFieldName(field);
   return {
     type: 'raw',
     toSql: () =>

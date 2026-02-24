@@ -108,7 +108,10 @@ export class DrizzleTranslator implements ITranslator<SQL> {
         };
         return rawExpr.toSql({
           adapter: 'drizzle',
-          tableName: '', // Can be empty for now as the schema is accessible
+          // tableName is empty because raw SQL expressions in virtual fields
+          // are resolved before translation and don't need table context at this stage.
+          // The schema is provided for field lookups if needed.
+          tableName: '',
           schema: this.options.schema
         }) as SQL;
       }
