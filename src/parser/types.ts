@@ -52,9 +52,29 @@ export interface ILogicalExpression {
 }
 
 /**
+ * Represents a raw SQL expression node in the AST.
+ * Used by virtual fields to inject database-specific SQL operations.
+ */
+export interface IRawSqlExpression {
+  type: 'raw';
+  /**
+   * Function that generates the raw SQL for the adapter.
+   * For Drizzle, this should return a SQL template result.
+   */
+  toSql: (context: {
+    adapter: string;
+    tableName: string;
+    schema: Record<string, unknown>;
+  }) => unknown;
+}
+
+/**
  * Represents any valid query expression node
  */
-export type QueryExpression = IComparisonExpression | ILogicalExpression;
+export type QueryExpression =
+  | IComparisonExpression
+  | ILogicalExpression
+  | IRawSqlExpression;
 
 /**
  * Configuration options for the parser

@@ -97,6 +97,21 @@ export class DrizzleTranslator implements ITranslator<SQL> {
         return this.translateComparisonExpression(expression);
       case 'logical':
         return this.translateLogicalExpression(expression);
+      case 'raw': {
+        const rawExpr = expression as {
+          type: 'raw';
+          toSql: (context: {
+            adapter: string;
+            tableName: string;
+            schema: Record<string, unknown>;
+          }) => unknown;
+        };
+        return rawExpr.toSql({
+          adapter: 'drizzle',
+          tableName: '', // Can be empty for now as the schema is accessible
+          schema: this.options.schema
+        }) as SQL;
+      }
       default:
         throw new DrizzleTranslationError(
           `Unsupported expression type: ${(expression as { type: string }).type}`

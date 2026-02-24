@@ -240,13 +240,14 @@ export class QuerySecurityValidator {
             `Found "${field}" - use a simple field name without dots instead.`
         );
       }
-    } else {
+    } else if (expression.type === 'logical') {
       // Recursively validate logical expressions
       this.validateNoDotNotation(expression.left);
       if (expression.right) {
         this.validateNoDotNotation(expression.right);
       }
     }
+    // Raw expressions are skipped - they handle their own field access
   }
 
   /**
@@ -285,13 +286,14 @@ export class QuerySecurityValidator {
           }
         }
       }
-    } else {
+    } else if (expression.type === 'logical') {
       // Recursively validate logical expressions
       this.validateDenyValues(expression.left);
       if (expression.right) {
         this.validateDenyValues(expression.right);
       }
     }
+    // Raw expressions are skipped - they handle their own values
   }
 
   /**
@@ -350,6 +352,7 @@ export class QuerySecurityValidator {
         this.validateQueryDepth(expression.right, currentDepth + 1);
       }
     }
+    // Raw and comparison expressions don't add depth
   }
 
   /**
@@ -377,6 +380,10 @@ export class QuerySecurityValidator {
   private countClauses(expression: QueryExpression): number {
     if (expression.type === 'comparison') {
       return 1;
+    }
+
+    if (expression.type === 'raw') {
+      return 1; // Raw expressions count as one clause
     }
 
     let count = 0;
@@ -442,12 +449,13 @@ export class QuerySecurityValidator {
       ) {
         throw new QuerySecurityError('Object values are not allowed');
       }
-    } else {
+    } else if (expression.type === 'logical') {
       this.validateValueLengths(expression.left);
       if (expression.right) {
         this.validateValueLengths(expression.right);
       }
     }
+    // Raw expressions are skipped - they handle their own values
   }
 
   /**
@@ -481,12 +489,13 @@ export class QuerySecurityValidator {
           .replace(/\?{2,}/g, '?'); // Limit consecutive question marks
         (expression as IComparisonExpression).value = sanitized;
       }
-    } else {
+    } else if (expression.type === 'logical') {
       this.sanitizeWildcards(expression.left);
       if (expression.right) {
         this.sanitizeWildcards(expression.right);
       }
     }
+    // Raw expressions are skipped - they handle their own wildcards
   }
 
   /**
@@ -502,11 +511,12 @@ export class QuerySecurityValidator {
   ): void {
     if (expression.type === 'comparison') {
       fieldSet.add(expression.field);
-    } else {
+    } else if (expression.type === 'logical') {
       this.collectFields(expression.left, fieldSet);
       if (expression.right) {
         this.collectFields(expression.right, fieldSet);
       }
     }
+    // Raw expressions don't expose field names for collection
   }
 }

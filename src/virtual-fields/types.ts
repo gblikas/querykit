@@ -5,8 +5,27 @@
 import {
   QueryExpression,
   IComparisonExpression,
-  ComparisonOperator
+  ComparisonOperator,
+  IRawSqlExpression
 } from '../parser/types';
+
+/**
+ * Context provided to raw SQL generators for adapter-specific SQL generation.
+ */
+export interface IRawSqlContext {
+  /**
+   * The database adapter identifier (e.g., 'drizzle')
+   */
+  adapter: string;
+  /**
+   * The table name being queried
+   */
+  tableName: string;
+  /**
+   * Access to the schema for field references
+   */
+  schema: Record<string, unknown>;
+}
 
 /**
  * Base interface for query context.
@@ -113,10 +132,11 @@ export interface ITypedComparisonExpression<
 
 /**
  * Schema-constrained query expression.
- * Can be a comparison or logical expression with typed fields.
+ * Can be a comparison, logical expression with typed fields, or a raw SQL expression.
  */
 export type ITypedQueryExpression<TFields extends string = string> =
   | ITypedComparisonExpression<TFields>
+  | IRawSqlExpression
   | QueryExpression;
 
 /**
