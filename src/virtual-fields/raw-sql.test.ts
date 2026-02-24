@@ -212,6 +212,30 @@ describe('Raw SQL Expressions', () => {
         expect(() => dateWithinDays('table.field', 7)).not.toThrow();
         expect(() => dateWithinDays('my_table.my_field', 7)).not.toThrow();
       });
+
+      it('should validate days parameter to ensure it is a positive finite number', () => {
+        expect(() => dateWithinDays('created_at', -1)).toThrow(
+          'Must be a positive number'
+        );
+        expect(() => dateWithinDays('created_at', 0)).toThrow(
+          'Must be a positive number'
+        );
+        expect(() => dateWithinDays('created_at', Infinity)).toThrow(
+          'Must be a finite number'
+        );
+        expect(() => dateWithinDays('created_at', -Infinity)).toThrow(
+          'Must be a finite number'
+        );
+        expect(() => dateWithinDays('created_at', NaN)).toThrow(
+          'Must be a finite number'
+        );
+      });
+
+      it('should accept valid positive finite number values for days', () => {
+        expect(() => dateWithinDays('created_at', 1)).not.toThrow();
+        expect(() => dateWithinDays('created_at', 0.5)).not.toThrow();
+        expect(() => dateWithinDays('created_at', 1000)).not.toThrow();
+      });
     });
   });
 

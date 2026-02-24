@@ -45,11 +45,24 @@ export function jsonbContains(
 }
 
 /**
+ * Validates days parameter to ensure it's a positive finite number.
+ * @private
+ */
+function validateDaysParameter(days: number): void {
+  if (!Number.isFinite(days)) {
+    throw new Error(`Invalid days parameter: ${days}. Must be a finite number.`);
+  }
+  if (days <= 0) {
+    throw new Error(`Invalid days parameter: ${days}. Must be a positive number.`);
+  }
+}
+
+/**
  * Create a date range expression.
  * Checks if a timestamp field is within the specified number of days from now.
  *
  * @param field - The timestamp field name (e.g., 'created_at')
- * @param days - Number of days from now
+ * @param days - Number of days from now (must be a positive finite number)
  * @returns A raw SQL expression for date range check
  *
  * @example
@@ -59,6 +72,7 @@ export function jsonbContains(
  */
 export function dateWithinDays(field: string, days: number): IRawSqlExpression {
   validateFieldName(field);
+  validateDaysParameter(days);
   return {
     type: 'raw',
     toSql: () =>
