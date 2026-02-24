@@ -780,6 +780,197 @@ const results = await qk
   .execute();
 ```
 
+### Raw SQL Expressions
+
+For advanced query patterns that can't be expressed as simple field comparisons, virtual fields can return **raw SQL expressions**. This enables database-specific operations like JSONB array membership checks, date calculations, and custom SQL logic.
+
+#### Why Raw SQL Expressions?
+
+Use raw SQL expressions when you need to:
+- **Check JSONB array membership** - e.g., `my:assigned` where `assignedTo` is a JSONB array
+- **Implement computed/derived fields** - e.g., `priority:high` based on date calculations
+- **Use database-specific functions** - e.g., PostGIS functions, full-text search
+- **Combine multiple conditions** - e.g., custom business logic that requires complex SQL
+
+#### Basic Example
+
+```typescript
+import { createQueryKit } from '@gblikas/querykit';
+import { drizzleAdapter } from '@gblikas/querykit/adapters/drizzle';
+import { jsonbContains, dateWithinDays } from '@gblikas/querykit/virtual-fields';
+import { sql } from 'drizzle-orm';
+
+interface MyContext extends IQueryContext {
+  currentUserId: string;
+}
+
+const qk = createQueryKit<typeof schema, MyContext>({
+  adapter: drizzleAdapter({ db, schema }),
+  schema,
+
+  virtualFields: {
+    // JSONB array contains example
+    my: {
+      allowedValues: ['assigned'] as const,
+      description: 'Filter by your relationship to items',
+      resolve: (input, ctx) => {
+        if (input.value === 'assigned') {
+          return jsonbContains('assigned_to', ctx.currentUserId);
+        }
+        throw new Error(`Unknown value: ${input.value}`);
+      }
+    },
+
+    // Computed priority based on createdAt
+    priority: {
+      allowedValues: ['high', 'medium', 'low'] as const,
+      description: 'Filter by computed priority (based on age)',
+      resolve: (input) => {
+        const thresholds = { high: 1, medium: 7, low: 30 };
+        const days = thresholds[input.value as keyof typeof thresholds];
+        return dateWithinDays('created_at', days);
+      }
+    },
+
+    // Custom raw SQL example
+    custom: {
+      allowedValues: ['active'] as const,
+      resolve: (input, ctx) => ({
+        type: 'raw',
+        toSql: () => sql`status = 'active' AND ${sql.identifier('owner_id')} = ${ctx.currentUserId}`
+      })
+    }
+  },
+
+  createContext: async () => ({
+    currentUserId: await getCurrentUserId()
+  })
+});
+
+// Queries that now work:
+await qk.query('my_table').where('my:assigned').execute();
+await qk.query('my_table').where('priority:high AND status:active').execute();
+```
+
+#### Helper Functions
+
+QueryKit provides helper functions for common raw SQL patterns:
+
+##### `jsonbContains(field, value)` - JSONB Array Membership (PostgreSQL)
+
+Checks if a JSONB array field contains the given value:
+
+```typescript
+import { jsonbContains } from '@gblikas/querykit/virtual-fields';
+
+// Check if assignedTo contains the current user ID
+jsonbContains('assigned_to', ctx.currentUserId)
+// Generates: assigned_to @> '["user123"]'::jsonb
+
+// Works with arrays too
+jsonbContains('tags', ['urgent', 'review'])
+// Generates: tags @> '["urgent","review"]'::jsonb
+```
+
+##### `dateWithinDays(field, days)` - Date Range Check
+
+Checks if a timestamp field is within the specified number of days from now:
+
+```typescript
+import { dateWithinDays } from '@gblikas/querykit/virtual-fields';
+
+// Check if created within last day
+dateWithinDays('created_at', 1)
+// Generates: created_at >= NOW() - INTERVAL '1 days'
+
+// Check if created within last week
+dateWithinDays('created_at', 7)
+// Generates: created_at >= NOW() - INTERVAL '7 days'
+```
+
+#### Custom Raw SQL
+
+For complete control, create your own raw SQL expressions:
+
+```typescript
+virtualFields: {
+  custom: {
+    allowedValues: ['special'] as const,
+    resolve: (input, ctx) => ({
+      type: 'raw',
+      toSql: (context) => {
+        // context provides: adapter, tableName, schema
+        // Return a Drizzle SQL template
+        return sql`
+          ${sql.identifier('status')} = 'active' 
+          AND ${sql.identifier('owner_id')} = ${ctx.currentUserId}
+          AND ${sql.identifier('created_at')} >= NOW() - INTERVAL '30 days'
+        `;
+      }
+    })
+  }
+}
+```
+
+#### Schema Example with JSONB
+
+Here's a complete example with a Drizzle schema that uses JSONB:
+
+```typescript
+import { pgTable, serial, varchar, timestamp, jsonb } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+
+export const tasks = pgTable('tasks', {
+  id: serial('id').primaryKey(),
+  title: varchar('title', { length: 256 }),
+  description: varchar('description', { length: 1024 }),
+  createdAt: timestamp('created_at').defaultNow(),
+  status: varchar('status', { length: 50 }).default('open'),
+  // JSONB array of user IDs
+  assignedTo: jsonb('assigned_to')
+    .$type<string[]>()
+    .default(sql`'[]'`)
+});
+
+// QueryKit configuration
+const qk = createQueryKit({
+  adapter: drizzleAdapter({ db, schema: { tasks } }),
+  schema: { tasks },
+  
+  virtualFields: {
+    my: {
+      allowedValues: ['assigned'] as const,
+      resolve: (input, ctx) => jsonbContains('assigned_to', ctx.currentUserId)
+    }
+  },
+  
+  createContext: async () => ({
+    currentUserId: await getCurrentUserId()
+  })
+});
+
+// Query: find my assigned tasks that are high priority
+await qk.query('tasks')
+  .where('my:assigned AND priority:high')
+  .execute();
+```
+
+#### Combining with Standard Fields
+
+Raw SQL expressions work seamlessly with standard field queries:
+
+```typescript
+// Mix virtual fields (raw SQL) with standard field queries
+await qk.query('tasks')
+  .where('my:assigned AND status:active AND priority:>5')
+  .execute();
+  
+// Complex nested queries
+await qk.query('tasks')
+  .where('(my:assigned OR priority:high) AND NOT status:closed')
+  .execute();
+```
+
 ## Roadmap
 
 ### Core Parsing Engine and DSL
@@ -803,6 +994,7 @@ const results = await qk
 - [ ] CLI tools for testing and debugging
 - [x] Performance optimizations for SQL generation
 - [x] Support for complex nested expressions
+- [x] Raw SQL expressions for virtual fields (JSONB, computed fields, custom SQL)
 - [ ] Custom function support
 - [ ] Pagination helpers
 - [x] Virtual fields for context-aware query expansion
