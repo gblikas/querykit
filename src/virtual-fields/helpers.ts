@@ -40,7 +40,7 @@ export function jsonbContains(
   return {
     type: 'raw',
     toSql: () =>
-      sql`${sql.identifier(field)} @> ${JSON.stringify(Array.isArray(value) ? value : [value])}::jsonb`
+      sql`${sql.identifier(field)} @> ${sql.raw("'" + JSON.stringify(Array.isArray(value) ? value : [value]).replace(/'/g, "''") + "'::jsonb")}`
   };
 }
 
