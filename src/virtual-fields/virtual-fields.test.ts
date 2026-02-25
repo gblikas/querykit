@@ -385,7 +385,7 @@ describe('Virtual Fields', () => {
       expect(resolved).toEqual(expr);
     });
 
-    it('should throw QueryParseError for non-string values in virtual fields', () => {
+    it('should throw QueryParseError for invalid types in virtual fields', () => {
       const virtualFields: VirtualFieldsConfig<MockSchema, IMockContext> = {
         my: {
           allowedValues: ['assigned'] as const,
@@ -403,20 +403,41 @@ describe('Virtual Fields', () => {
         currentUserTeamIds: []
       };
 
-      const expr: IComparisonExpression = {
+      // Test with array (not allowed)
+      const exprArray: IComparisonExpression = {
         type: 'comparison',
         field: 'my',
         operator: '==',
-        value: 123 // Number instead of string
+        value: [1, 2, 3] // Array instead of string/number/boolean
       };
 
       expect(() => {
-        resolveVirtualFields(expr, virtualFields, context);
+        resolveVirtualFields(exprArray, virtualFields, context);
       }).toThrow(QueryParseError);
 
       expect(() => {
-        resolveVirtualFields(expr, virtualFields, context);
-      }).toThrow('Virtual field "my" requires a string value');
+        resolveVirtualFields(exprArray, virtualFields, context);
+      }).toThrow(
+        'Virtual field "my" requires a string, number, or boolean value'
+      );
+
+      // Test with null (not allowed)
+      const exprNull: IComparisonExpression = {
+        type: 'comparison',
+        field: 'my',
+        operator: '==',
+        value: null
+      };
+
+      expect(() => {
+        resolveVirtualFields(exprNull, virtualFields, context);
+      }).toThrow(QueryParseError);
+
+      expect(() => {
+        resolveVirtualFields(exprNull, virtualFields, context);
+      }).toThrow(
+        'Virtual field "my" requires a string, number, or boolean value'
+      );
     });
   });
 
@@ -636,6 +657,213 @@ describe('Virtual Fields', () => {
       expect((resolved.right as IComparisonExpression).field).toBe(
         'creator_id'
       );
+    });
+  });
+
+  describe('Non-String Allowed Values', () => {
+    it('should support numeric values in allowedValues', () => {
+      const virtualFields: VirtualFieldsConfig<MockSchema, IMockContext> = {
+        priority: {
+          allowedValues: [1, 2, 3] as const,
+          resolve: input => ({
+            type: 'comparison',
+            field: 'priority',
+            operator: '==',
+            value: input.value
+          })
+        }
+      };
+
+      const context: IMockContext = {
+        currentUserId: 123,
+        currentUserTeamIds: []
+      };
+
+      const expr: IComparisonExpression = {
+        type: 'comparison',
+        field: 'priority',
+        operator: '==',
+        value: 2
+      };
+
+      const resolved = resolveVirtualFields(expr, virtualFields, context);
+
+      expect(resolved).toEqual({
+        type: 'comparison',
+        field: 'priority',
+        operator: '==',
+        value: 2
+      });
+    });
+
+    it('should support boolean values in allowedValues', () => {
+      const virtualFields: VirtualFieldsConfig<MockSchema, IMockContext> = {
+        isActive: {
+          allowedValues: [true, false] as const,
+          resolve: input => ({
+            type: 'comparison',
+            field: 'status',
+            operator: '==',
+            value: input.value ? 'active' : 'inactive'
+          })
+        }
+      };
+
+      const context: IMockContext = {
+        currentUserId: 123,
+        currentUserTeamIds: []
+      };
+
+      const expr: IComparisonExpression = {
+        type: 'comparison',
+        field: 'isActive',
+        operator: '==',
+        value: true
+      };
+
+      const resolved = resolveVirtualFields(expr, virtualFields, context);
+
+      expect(resolved).toEqual({
+        type: 'comparison',
+        field: 'status',
+        operator: '==',
+        value: 'active'
+      });
+    });
+
+    it('should support mixed types in allowedValues', () => {
+      const virtualFields: VirtualFieldsConfig<MockSchema, IMockContext> = {
+        filter: {
+          allowedValues: ['today', 7, true, 30] as const,
+          resolve: input => {
+            if (input.value === 'today') {
+              return {
+                type: 'comparison',
+                field: 'status',
+                operator: '==',
+                value: 'today'
+              };
+            } else if (typeof input.value === 'number') {
+              return {
+                type: 'comparison',
+                field: 'priority',
+                operator: '==',
+                value: input.value
+              };
+            } else {
+              return {
+                type: 'comparison',
+                field: 'status',
+                operator: '==',
+                value: 'active'
+              };
+            }
+          }
+        }
+      };
+
+      const context: IMockContext = {
+        currentUserId: 123,
+        currentUserTeamIds: []
+      };
+
+      // Test with string value
+      const expr1: IComparisonExpression = {
+        type: 'comparison',
+        field: 'filter',
+        operator: '==',
+        value: 'today'
+      };
+      const resolved1 = resolveVirtualFields(expr1, virtualFields, context);
+      expect((resolved1 as IComparisonExpression).value).toBe('today');
+
+      // Test with numeric value
+      const expr2: IComparisonExpression = {
+        type: 'comparison',
+        field: 'filter',
+        operator: '==',
+        value: 7
+      };
+      const resolved2 = resolveVirtualFields(expr2, virtualFields, context);
+      expect((resolved2 as IComparisonExpression).value).toBe(7);
+
+      // Test with boolean value
+      const expr3: IComparisonExpression = {
+        type: 'comparison',
+        field: 'filter',
+        operator: '==',
+        value: true
+      };
+      const resolved3 = resolveVirtualFields(expr3, virtualFields, context);
+      expect((resolved3 as IComparisonExpression).value).toBe('active');
+    });
+
+    it('should reject non-allowed numeric values', () => {
+      const virtualFields: VirtualFieldsConfig<MockSchema, IMockContext> = {
+        priority: {
+          allowedValues: [1, 2, 3] as const,
+          resolve: input => ({
+            type: 'comparison',
+            field: 'priority',
+            operator: '==',
+            value: input.value
+          })
+        }
+      };
+
+      const context: IMockContext = {
+        currentUserId: 123,
+        currentUserTeamIds: []
+      };
+
+      const expr: IComparisonExpression = {
+        type: 'comparison',
+        field: 'priority',
+        operator: '==',
+        value: 5
+      };
+
+      expect(() => {
+        resolveVirtualFields(expr, virtualFields, context);
+      }).toThrow(QueryParseError);
+
+      expect(() => {
+        resolveVirtualFields(expr, virtualFields, context);
+      }).toThrow('Invalid value "5" for virtual field "priority"');
+    });
+
+    it('should reject non-allowed boolean values', () => {
+      const virtualFields: VirtualFieldsConfig<MockSchema, IMockContext> = {
+        isActive: {
+          allowedValues: [true] as const,
+          resolve: () => ({
+            type: 'comparison',
+            field: 'status',
+            operator: '==',
+            value: 'active'
+          })
+        }
+      };
+
+      const context: IMockContext = {
+        currentUserId: 123,
+        currentUserTeamIds: []
+      };
+
+      const expr: IComparisonExpression = {
+        type: 'comparison',
+        field: 'isActive',
+        operator: '==',
+        value: false
+      };
+
+      expect(() => {
+        resolveVirtualFields(expr, virtualFields, context);
+      }).toThrow(QueryParseError);
+
+      expect(() => {
+        resolveVirtualFields(expr, virtualFields, context);
+      }).toThrow('Invalid value "false" for virtual field "isActive"');
     });
   });
 
