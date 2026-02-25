@@ -136,7 +136,24 @@ function resolveComparisonExpression<
       )[];
 
       for (const key of mappingKeys) {
-        if (!allowedValues.includes(key)) {
+        // Convert string key to appropriate type for comparison
+        // Numbers: "1" -> 1, Booleans: "true" -> true, Strings: remain as-is
+        let keyToCheck: string | number | boolean = key;
+
+        // Try to parse as number
+        const asNumber = Number(key);
+        if (
+          !isNaN(asNumber) &&
+          allowedValues.some(v => typeof v === 'number')
+        ) {
+          keyToCheck = asNumber;
+        }
+        // Try to parse as boolean
+        else if (key === 'true' || key === 'false') {
+          keyToCheck = key === 'true';
+        }
+
+        if (!allowedValues.includes(keyToCheck)) {
           throw new QueryParseError(
             `Invalid key "${key}" in field mapping for virtual field "${fieldName}". ` +
               `Allowed keys are: ${allowedValues.map(v => `"${v}"`).join(', ')}`

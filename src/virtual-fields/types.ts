@@ -206,11 +206,12 @@ export interface IVirtualFieldDefinition<
   /**
    * Descriptions for each allowed value (for autocomplete UI).
    * Optional metadata for documentation and tooling.
-   * For boolean values, use "true" or "false" as keys.
+   * Note: For boolean values, use "true" or "false" as string keys since
+   * TypeScript Records require string | number | symbol keys.
    */
-  valueDescriptions?: Partial<
-    Record<TValues extends string | number ? TValues : string, string>
-  >;
+  valueDescriptions?: TValues extends boolean
+    ? Partial<Record<'true' | 'false', string>>
+    : Partial<Record<TValues & (string | number), string>>;
 }
 
 /**
