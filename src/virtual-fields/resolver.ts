@@ -140,12 +140,9 @@ function resolveComparisonExpression<
         // Numbers: "1" -> 1, Booleans: "true" -> true, Strings: remain as-is
         let keyToCheck: string | number | boolean = key;
 
-        // Try to parse as number
+        // Try to parse as number - but only if that specific number exists in allowedValues
         const asNumber = Number(key);
-        if (
-          !isNaN(asNumber) &&
-          allowedValues.some(v => typeof v === 'number')
-        ) {
+        if (!isNaN(asNumber) && allowedValues.includes(asNumber)) {
           keyToCheck = asNumber;
         }
         // Try to parse as boolean
