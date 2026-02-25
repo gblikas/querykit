@@ -503,7 +503,14 @@ Each virtual field definition supports:
 ```typescript
 {
   // Required: allowed values for this virtual field
-  allowedValues: ['value1', 'value2'] as const,
+  // Supports string, number, and boolean values
+  allowedValues: ['value1', 'value2'] as const,  // strings
+  // or
+  allowedValues: [1, 2, 3] as const,  // numbers
+  // or
+  allowedValues: [true, false] as const,  // booleans
+  // or
+  allowedValues: ['today', 7, true] as const,  // mixed types
 
   // Optional: allow comparison operators (>, <, >=, <=)
   // Default: false (only equality ":" is allowed)
@@ -778,6 +785,67 @@ const results = await qk
   .orderBy('created_at', 'desc')
   .limit(10)
   .execute();
+```
+
+#### Non-String Allowed Values
+
+Virtual fields support not just string values, but also numeric and boolean values. This is useful when you want to map query values to numeric priorities, boolean flags, or other non-string types:
+
+```typescript
+const qk = createQueryKit({
+  schema: mySchema,
+  adapter: drizzleAdapter,
+  
+  virtualFields: {
+    // Numeric values for priority filtering
+    priorityLevel: {
+      allowedValues: [1, 2, 3] as const,
+      description: 'Filter by numeric priority level',
+      resolve: (input) => ({
+        type: 'comparison',
+        field: 'priority',
+        operator: '==',
+        value: input.value  // input.value is typed as 1 | 2 | 3
+      })
+    },
+    
+    // Boolean values for status flags
+    isActive: {
+      allowedValues: [true, false] as const,
+      description: 'Filter by active status',
+      resolve: (input) => ({
+        type: 'comparison',
+        field: 'status',
+        operator: '==',
+        value: input.value ? 'active' : 'inactive'
+      })
+    },
+    
+    // Mixed types in the same field
+    timeFilter: {
+      allowedValues: ['today', 7, 30, true] as const,
+      description: 'Flexible time-based filter',
+      resolve: (input) => {
+        if (input.value === 'today') {
+          return dateWithinDays('created_at', 1);
+        } else if (typeof input.value === 'number') {
+          return dateWithinDays('created_at', input.value);
+        } else {
+          // true = show all items
+          return { type: 'comparison', field: 'id', operator: '>', value: 0 };
+        }
+      }
+    }
+  },
+  
+  createContext: async () => ({})
+});
+
+// Example queries:
+// "priorityLevel:2"              - Finds items with priority = 2
+// "isActive:true"                - Finds active items
+// "timeFilter:7"                 - Finds items created in last 7 days
+// "timeFilter:today"             - Finds items created today
 ```
 
 ### Raw SQL Expressions
