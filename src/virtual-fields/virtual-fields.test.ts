@@ -1055,5 +1055,83 @@ describe('Virtual Fields', () => {
         resolveVirtualFields(expr, virtualFields, context);
       }).toThrow('Invalid key "invalid" in field mapping');
     });
+
+    it('should handle numeric keys in field mapping validation', () => {
+      const virtualFields: VirtualFieldsConfig<MockSchema, IMockContext> = {
+        priority: {
+          allowedValues: [1, 2, 3] as const,
+          resolve: (input, ctx, { fields }) => {
+            // Using fields() with numeric allowedValues
+            // Note: This is unusual but should work
+            const fieldMap = fields({
+              '1': 'priority',
+              '2': 'priority',
+              '3': 'priority'
+            } as Record<string, string> as SchemaFieldMap<string, MockSchema>);
+
+            return {
+              type: 'comparison',
+              field: fieldMap[String(input.value)],
+              operator: '==',
+              value: input.value
+            };
+          }
+        }
+      };
+
+      const context: IMockContext = {
+        currentUserId: 123,
+        currentUserTeamIds: []
+      };
+
+      const expr: IComparisonExpression = {
+        type: 'comparison',
+        field: 'priority',
+        operator: '==',
+        value: 2
+      };
+
+      const resolved = resolveVirtualFields(expr, virtualFields, context);
+      expect((resolved as IComparisonExpression).field).toBe('priority');
+      expect((resolved as IComparisonExpression).value).toBe(2);
+    });
+
+    it('should handle boolean keys in field mapping validation', () => {
+      const virtualFields: VirtualFieldsConfig<MockSchema, IMockContext> = {
+        isActive: {
+          allowedValues: [true, false] as const,
+          resolve: (input, ctx, { fields }) => {
+            // Using fields() with boolean allowedValues
+            const fieldMap = fields({
+              true: 'status',
+              false: 'status'
+            } as Record<string, string> as SchemaFieldMap<string, MockSchema>);
+
+            return {
+              type: 'comparison',
+              field: fieldMap[String(input.value)],
+              operator: '==',
+              value: input.value ? 'active' : 'inactive'
+            };
+          }
+        }
+      };
+
+      const context: IMockContext = {
+        currentUserId: 123,
+        currentUserTeamIds: []
+      };
+
+      const expr: IComparisonExpression = {
+        type: 'comparison',
+        field: 'isActive',
+        operator: '==',
+        value: true
+      };
+
+      const resolved = resolveVirtualFields(expr, virtualFields, context);
+      expect((resolved as IComparisonExpression).field).toBe('status');
+      expect((resolved as IComparisonExpression).value).toBe('active');
+    });
   });
 });
