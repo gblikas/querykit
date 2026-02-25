@@ -75,20 +75,25 @@ function resolveComparisonExpression<
     return expr;
   }
 
-  // Validate the value is a string (virtual fields require string values)
-  if (typeof expr.value !== 'string') {
-    const valueType = Array.isArray(expr.value)
+  // Validate the value type (virtual fields accept string, number, or boolean values)
+  const valueType = typeof expr.value;
+  if (
+    valueType !== 'string' &&
+    valueType !== 'number' &&
+    valueType !== 'boolean'
+  ) {
+    const typeDescription = Array.isArray(expr.value)
       ? `array (${JSON.stringify(expr.value)})`
-      : typeof expr.value === 'object'
+      : valueType === 'object'
         ? `object (${JSON.stringify(expr.value)})`
-        : typeof expr.value;
+        : valueType;
 
     throw new QueryParseError(
-      `Virtual field "${fieldName}" requires a string value, got ${valueType}`
+      `Virtual field "${fieldName}" requires a string, number, or boolean value, got ${typeDescription}`
     );
   }
 
-  const value = expr.value;
+  const value = expr.value as string | number | boolean;
 
   // Validate the value is in allowedValues
   if (!virtualFieldDef.allowedValues.includes(value)) {
@@ -109,7 +114,7 @@ function resolveComparisonExpression<
   }
 
   // Create the input for the resolver
-  const input: IVirtualFieldInput & { value: string } = {
+  const input: IVirtualFieldInput & { value: string | number | boolean } = {
     field: fieldName,
     operator: expr.operator,
     value: value
@@ -124,10 +129,31 @@ function resolveComparisonExpression<
     ): SchemaFieldMap<TValues, TSchema> => {
       // Validate that all keys in the mapping are in the virtual field's allowed values
       const mappingKeys = Object.keys(mapping);
-      const allowedValues = virtualFieldDef.allowedValues as readonly string[];
+      const allowedValues = virtualFieldDef.allowedValues as readonly (
+        | string
+        | number
+        | boolean
+      )[];
 
       for (const key of mappingKeys) {
-        if (!allowedValues.includes(key)) {
+        // Convert string key to appropriate type for comparison
+        // Numbers: "1" -> 1, Booleans: "true" -> true, Strings: remain as-is
+        let keyToCheck: string | number | boolean = key;
+
+        // Try to parse as number
+        const asNumber = Number(key);
+        if (
+          !isNaN(asNumber) &&
+          allowedValues.some(v => typeof v === 'number')
+        ) {
+          keyToCheck = asNumber;
+        }
+        // Try to parse as boolean
+        else if (key === 'true' || key === 'false') {
+          keyToCheck = key === 'true';
+        }
+
+        if (!allowedValues.includes(keyToCheck)) {
           throw new QueryParseError(
             `Invalid key "${key}" in field mapping for virtual field "${fieldName}". ` +
               `Allowed keys are: ${allowedValues.map(v => `"${v}"`).join(', ')}`

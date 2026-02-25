@@ -54,7 +54,7 @@ export interface IVirtualFieldInput {
   /**
    * The value provided in the query
    */
-  value: string;
+  value: string | number | boolean;
 }
 
 /**
@@ -146,7 +146,7 @@ export type ITypedQueryExpression<TFields extends string = string> =
 export interface IVirtualFieldDefinition<
   TSchema extends Record<string, object>,
   TContext extends IQueryContext = IQueryContext,
-  TValues extends string = string
+  TValues extends string | number | boolean = string | number | boolean
 > {
   /**
    * Allowed values for this virtual field.
@@ -154,6 +154,9 @@ export interface IVirtualFieldDefinition<
    *
    * @example
    * allowedValues: ['assigned', 'created', 'watching'] as const
+   * allowedValues: [1, 2, 3] as const
+   * allowedValues: [true, false] as const
+   * allowedValues: ['today', 7, true] as const
    */
   allowedValues: readonly TValues[];
 
@@ -203,8 +206,12 @@ export interface IVirtualFieldDefinition<
   /**
    * Descriptions for each allowed value (for autocomplete UI).
    * Optional metadata for documentation and tooling.
+   * Note: For boolean values, use "true" or "false" as string keys since
+   * TypeScript Records require string | number | symbol keys.
    */
-  valueDescriptions?: Partial<Record<TValues, string>>;
+  valueDescriptions?: TValues extends boolean
+    ? Partial<Record<'true' | 'false', string>>
+    : Partial<Record<TValues & (string | number), string>>;
 }
 
 /**
@@ -219,5 +226,9 @@ export type VirtualFieldsConfig<
   TSchema extends Record<string, object> = Record<string, object>,
   TContext extends IQueryContext = IQueryContext
 > = {
-  [fieldName: string]: IVirtualFieldDefinition<TSchema, TContext, string>;
+  [fieldName: string]: IVirtualFieldDefinition<
+    TSchema,
+    TContext,
+    string | number | boolean
+  >;
 };
