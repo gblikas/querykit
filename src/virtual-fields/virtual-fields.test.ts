@@ -1133,5 +1133,88 @@ describe('Virtual Fields', () => {
       expect((resolved as IComparisonExpression).field).toBe('status');
       expect((resolved as IComparisonExpression).value).toBe('active');
     });
+
+    it('should correctly handle string keys in fields() when allowedValues contains both strings and numbers', () => {
+      // Regression test for: string '0' should not be converted to number 0
+      // if allowedValues contains both string '0' and numbers 1, 2
+      const virtualFields: VirtualFieldsConfig<MockSchema, IMockContext> = {
+        level: {
+          allowedValues: ['0', 1, 2] as const,
+          resolve: (input, ctx, { fields }) => {
+            // Map string '0', number 1, number 2 to actual fields
+            const fieldMap = fields({
+              '0': 'status',
+              1: 'priority',
+              2: 'priority'
+            } as Record<string, string> as SchemaFieldMap<string, MockSchema>);
+
+            return {
+              type: 'comparison',
+              field: fieldMap[input.value as '0' | 1 | 2],
+              operator: '==',
+              value: 'test'
+            };
+          }
+        }
+      };
+
+      const context: IMockContext = {
+        currentUserId: 123,
+        currentUserTeamIds: []
+      };
+
+      // Test with string '0' - should resolve correctly without error
+      const expr: IComparisonExpression = {
+        type: 'comparison',
+        field: 'level',
+        operator: '==',
+        value: '0'
+      };
+
+      const resolved = resolveVirtualFields(expr, virtualFields, context);
+      // Should map to 'status' field since we passed '0' (string)
+      expect((resolved as IComparisonExpression).field).toBe('status');
+      expect((resolved as IComparisonExpression).value).toBe('test');
+    });
+
+    it('should correctly handle numeric keys in fields() when allowedValues contains numbers', () => {
+      // When allowedValues contains numeric 0, 1, 2, string keys should be converted
+      const virtualFields: VirtualFieldsConfig<MockSchema, IMockContext> = {
+        level: {
+          allowedValues: [0, 1, 2] as const,
+          resolve: (input, ctx, { fields }) => {
+            // Map all numeric values
+            const fieldMap = fields({
+              0: 'status',
+              1: 'priority',
+              2: 'priority'
+            } as Record<string, string> as SchemaFieldMap<string, MockSchema>);
+
+            return {
+              type: 'comparison',
+              field: fieldMap[input.value as 0 | 1 | 2],
+              operator: '==',
+              value: 'test'
+            };
+          }
+        }
+      };
+
+      const context: IMockContext = {
+        currentUserId: 123,
+        currentUserTeamIds: []
+      };
+
+      // Test with numeric 0 - should resolve correctly
+      const expr: IComparisonExpression = {
+        type: 'comparison',
+        field: 'level',
+        operator: '==',
+        value: 0
+      };
+
+      const resolved = resolveVirtualFields(expr, virtualFields, context);
+      expect((resolved as IComparisonExpression).field).toBe('status');
+    });
   });
 });
