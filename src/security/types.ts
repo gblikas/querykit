@@ -65,22 +65,54 @@ export interface ISecurityOptions {
    * The keys are field names (can include table prefixes like "user.role")
    * and the values are arrays of denied values for that field.
    *
+   * **Negation Handling**: Queries that explicitly *exclude* denied values
+   * (using `NOT`, `!=`, or `NOT IN`) are allowed, since the user is trying
+   * to avoid those values, not access them. Double-negation (`NOT (NOT ...)`)
+   * is treated as a positive match and will be blocked.
+   *
    * @example
    * ```typescript
-   * // Prevent certain values from being queried
    * denyValues: {
    *   'status': ['deleted', 'banned'],
-   *   'role': ['superadmin', 'system'],
-   *   'user.type': ['internal', 'bot']
+   *   'role': ['superadmin', 'system']
    * }
    *
-   * // This would block queries like:
+   * // Blocked queries:
    * // status == "deleted"
-   * // role IN ["superadmin", "admin"]
-   * // user.type == "internal"
+   * // status IN ["deleted", "active"]
+   * // role == "superadmin"
+   *
+   * // Allowed queries (exclusions):
+   * // NOT status == "deleted"
+   * // status != "deleted"
+   * // status NOT IN ["deleted", "banned"]
    * ```
    */
   denyValues?: Record<string, Array<string | number | boolean | null>>;
+
+  /**
+   * Values that are automatically excluded from ALL query results.
+   * Unlike `denyValues` (which validates user input), this option
+   * injects `AND field NOT IN (values)` into every query at the adapter layer.
+   *
+   * Use this for RBAC enforcement where certain records must never be returned
+   * regardless of how users phrase their queries.
+   *
+   * @example
+   * ```typescript
+   * enforceExcludedValues: {
+   *   status: ['archived', 'deleted'],
+   *   visibility: ['internal']
+   * }
+   * // Every query will have appended:
+   * // AND status NOT IN ('archived', 'deleted')
+   * // AND visibility NOT IN ('internal')
+   * ```
+   */
+  enforceExcludedValues?: Record<
+    string,
+    Array<string | number | boolean | null>
+  >;
 
   /**
    * Whether to allow dot notation in field names (e.g., "user.name", "metadata.tags").
@@ -243,6 +275,7 @@ export const DEFAULT_SECURITY_OPTIONS: Required<ISecurityOptions> = {
   allowedFields: [], // Empty means "use schema fields"
   denyFields: [], // Empty means no denied fields
   denyValues: {}, // Empty means no denied values for any field
+  enforceExcludedValues: {}, // Empty means no enforced exclusions
   allowDotNotation: true, // Allow dot notation by default for backward compatibility
 
   // Query complexity limits

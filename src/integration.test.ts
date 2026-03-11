@@ -199,4 +199,142 @@ describe('QueryKit Integration Tests', () => {
       expect(whereStr.toLowerCase()).toContain('active');
     });
   });
+
+  describe('enforceExcludedValues', () => {
+    it('should inject NOT IN filters into query when enforceExcludedValues is configured', async () => {
+      const adapter = new DrizzleAdapter();
+      adapter.initialize({ db: mockDb, schema: mockSchema });
+
+      const qk = createQueryKit({
+        adapter,
+        schema: { todos: { id: {}, title: {}, priority: {}, status: {} } },
+        security: {
+          enforceExcludedValues: {
+            status: ['archived', 'deleted']
+          }
+        }
+      });
+
+      await qk.query('todos').where('priority:>1').execute();
+
+      expect(mockWhere).toHaveBeenCalled();
+      const whereArg = mockWhere.mock.calls[0][0] as unknown as SQL;
+      const whereStr = getSqlString(whereArg);
+      // The enforced exclusions should be included in the WHERE clause
+      expect(whereStr.toLowerCase()).toContain('not in');
+      expect(whereStr.toLowerCase()).toContain('archived');
+      expect(whereStr.toLowerCase()).toContain('deleted');
+    });
+
+    it('should inject NOT IN filters for multiple fields', async () => {
+      const adapter = new DrizzleAdapter();
+      adapter.initialize({ db: mockDb, schema: mockSchema });
+
+      const qk = createQueryKit({
+        adapter,
+        schema: { todos: { id: {}, title: {}, priority: {}, status: {} } },
+        security: {
+          enforceExcludedValues: {
+            status: ['archived', 'deleted'],
+            priority: [0]
+          }
+        }
+      });
+
+      await qk.query('todos').where('title:"test"').execute();
+
+      expect(mockWhere).toHaveBeenCalled();
+      const whereArg = mockWhere.mock.calls[0][0] as unknown as SQL;
+      const whereStr = getSqlString(whereArg);
+      expect(whereStr.toLowerCase()).toContain('not in');
+      expect(whereStr.toLowerCase()).toContain('archived');
+    });
+
+    it('should not inject anything when enforceExcludedValues is empty', async () => {
+      const adapter = new DrizzleAdapter();
+      adapter.initialize({ db: mockDb, schema: mockSchema });
+
+      const qk = createQueryKit({
+        adapter,
+        schema: { todos: { id: {}, title: {}, priority: {}, status: {} } },
+        security: {
+          enforceExcludedValues: {}
+        }
+      });
+
+      await qk.query('todos').where('priority:>1').execute();
+
+      expect(mockWhere).toHaveBeenCalled();
+      const whereArg = mockWhere.mock.calls[0][0] as unknown as SQL;
+      const whereStr = getSqlString(whereArg);
+      // Should not contain NOT IN when no exclusions configured
+      expect(whereStr.toLowerCase()).not.toContain('not in');
+    });
+
+    it('should not inject anything when enforceExcludedValues is not configured', async () => {
+      const adapter = new DrizzleAdapter();
+      adapter.initialize({ db: mockDb, schema: mockSchema });
+
+      const qk = createQueryKit({
+        adapter,
+        schema: { todos: { id: {}, title: {}, priority: {}, status: {} } }
+        // no security option at all
+      });
+
+      await qk.query('todos').where('priority:>1').execute();
+
+      expect(mockWhere).toHaveBeenCalled();
+      const whereArg = mockWhere.mock.calls[0][0] as unknown as SQL;
+      const whereStr = getSqlString(whereArg);
+      expect(whereStr.toLowerCase()).not.toContain('not in');
+    });
+
+    it('should allow denyValues and enforceExcludedValues together', async () => {
+      const adapter = new DrizzleAdapter();
+      adapter.initialize({ db: mockDb, schema: mockSchema });
+
+      const qk = createQueryKit({
+        adapter,
+        schema: { todos: { id: {}, title: {}, priority: {}, status: {} } },
+        security: {
+          denyValues: { status: ['archived', 'deleted'] },
+          enforceExcludedValues: { status: ['archived', 'deleted'] }
+        }
+      });
+
+      // NOT status:"archived" should pass denyValues validation (negation)
+      // and the enforced exclusions will still be injected
+      await expect(
+        qk.query('todos').where('NOT status:"archived"').execute()
+      ).resolves.toBeDefined();
+
+      expect(mockWhere).toHaveBeenCalled();
+      const whereArg = mockWhere.mock.calls[0][0] as unknown as SQL;
+      const whereStr = getSqlString(whereArg);
+      // enforceExcludedValues injects NOT IN
+      expect(whereStr.toLowerCase()).toContain('not in');
+    });
+
+    it('should skip fields with empty value arrays in enforceExcludedValues', async () => {
+      const adapter = new DrizzleAdapter();
+      adapter.initialize({ db: mockDb, schema: mockSchema });
+
+      const qk = createQueryKit({
+        adapter,
+        schema: { todos: { id: {}, title: {}, priority: {}, status: {} } },
+        security: {
+          enforceExcludedValues: {
+            status: [] // empty array should be skipped
+          }
+        }
+      });
+
+      await qk.query('todos').where('priority:>1').execute();
+
+      expect(mockWhere).toHaveBeenCalled();
+      const whereArg = mockWhere.mock.calls[0][0] as unknown as SQL;
+      const whereStr = getSqlString(whereArg);
+      expect(whereStr.toLowerCase()).not.toContain('not in');
+    });
+  });
 });

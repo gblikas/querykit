@@ -1,6 +1,7 @@
 import { QuerySecurityValidator, QuerySecurityError } from './validator';
 import { QueryParser } from '../parser/parser';
 import { QueryExpression, IComparisonExpression } from '../parser/types';
+import { DEFAULT_SECURITY_OPTIONS } from './types';
 
 describe('QuerySecurityValidator', () => {
   let validator: QuerySecurityValidator;
@@ -568,6 +569,293 @@ describe('QuerySecurityValidator', () => {
     });
   });
 
+  describe('validateDenyValues with negation', () => {
+    it('should allow NOT operator with denied values', () => {
+      const validator = new QuerySecurityValidator({
+        denyValues: { status: ['archived', 'deleted'] }
+      });
+      const query = parser.parse('NOT status:"archived"');
+      expect(() => validator.validate(query)).not.toThrow();
+    });
+
+    it('should allow != operator with denied values', () => {
+      const validator = new QuerySecurityValidator({
+        denyValues: { status: ['deleted'] }
+      });
+      const mockQuery: QueryExpression = {
+        type: 'comparison',
+        field: 'status',
+        operator: '!=',
+        value: 'deleted'
+      };
+      expect(() => validator.validate(mockQuery)).not.toThrow();
+    });
+
+    it('should allow NOT IN operator with denied values', () => {
+      const validator = new QuerySecurityValidator({
+        denyValues: { status: ['archived', 'deleted'] }
+      });
+      const mockQuery: QueryExpression = {
+        type: 'comparison',
+        field: 'status',
+        operator: 'NOT IN',
+        value: ['archived', 'deleted']
+      };
+      expect(() => validator.validate(mockQuery)).not.toThrow();
+    });
+
+    it('should still block positive matches with denied values', () => {
+      const validator = new QuerySecurityValidator({
+        denyValues: { status: ['archived'] }
+      });
+      const query = parser.parse('status:"archived"');
+      expect(() => validator.validate(query)).toThrow(QuerySecurityError);
+    });
+
+    it('should still block IN operator with denied values', () => {
+      const validator = new QuerySecurityValidator({
+        denyValues: { status: ['archived', 'deleted'] }
+      });
+      const mockQuery: QueryExpression = {
+        type: 'comparison',
+        field: 'status',
+        operator: 'IN',
+        value: ['archived', 'active']
+      };
+      expect(() => validator.validate(mockQuery)).toThrow(QuerySecurityError);
+    });
+
+    it('should block double-negated denied values (NOT NOT)', () => {
+      const validator = new QuerySecurityValidator({
+        denyValues: { status: ['deleted'] }
+      });
+      // NOT (NOT status:"deleted") should be blocked - it's a positive match
+      const mockQuery: QueryExpression = {
+        type: 'logical',
+        operator: 'NOT',
+        left: {
+          type: 'logical',
+          operator: 'NOT',
+          left: {
+            type: 'comparison',
+            field: 'status',
+            operator: '==',
+            value: 'deleted'
+          }
+        }
+      };
+      expect(() => validator.validate(mockQuery)).toThrow(QuerySecurityError);
+    });
+
+    it('should allow triple-negated denied values (NOT NOT NOT)', () => {
+      const validator = new QuerySecurityValidator({
+        denyValues: { status: ['deleted'] }
+      });
+      // NOT (NOT (NOT status:"deleted")) should be allowed - net result is negation
+      const mockQuery: QueryExpression = {
+        type: 'logical',
+        operator: 'NOT',
+        left: {
+          type: 'logical',
+          operator: 'NOT',
+          left: {
+            type: 'logical',
+            operator: 'NOT',
+            left: {
+              type: 'comparison',
+              field: 'status',
+              operator: '==',
+              value: 'deleted'
+            }
+          }
+        }
+      };
+      expect(() => validator.validate(mockQuery)).not.toThrow();
+    });
+
+    it('should handle negation in complex expressions with AND', () => {
+      const validator = new QuerySecurityValidator({
+        denyValues: { status: ['deleted'] }
+      });
+      // name:"John" AND NOT status:"deleted" should be allowed
+      const mockQuery: QueryExpression = {
+        type: 'logical',
+        operator: 'AND',
+        left: {
+          type: 'comparison',
+          field: 'name',
+          operator: '==',
+          value: 'John'
+        },
+        right: {
+          type: 'logical',
+          operator: 'NOT',
+          left: {
+            type: 'comparison',
+            field: 'status',
+            operator: '==',
+            value: 'deleted'
+          }
+        }
+      };
+      expect(() => validator.validate(mockQuery)).not.toThrow();
+    });
+
+    it('should handle negation in complex expressions with OR', () => {
+      const validator = new QuerySecurityValidator({
+        denyValues: { status: ['deleted'] }
+      });
+      // NOT status:"deleted" OR name:"John" should be allowed
+      const mockQuery: QueryExpression = {
+        type: 'logical',
+        operator: 'OR',
+        left: {
+          type: 'logical',
+          operator: 'NOT',
+          left: {
+            type: 'comparison',
+            field: 'status',
+            operator: '==',
+            value: 'deleted'
+          }
+        },
+        right: {
+          type: 'comparison',
+          field: 'name',
+          operator: '==',
+          value: 'John'
+        }
+      };
+      expect(() => validator.validate(mockQuery)).not.toThrow();
+    });
+
+    it('should block when one branch has positive denied value in AND', () => {
+      const validator = new QuerySecurityValidator({
+        denyValues: { status: ['deleted'] }
+      });
+      // name:"John" AND status:"deleted" should be blocked
+      const mockQuery: QueryExpression = {
+        type: 'logical',
+        operator: 'AND',
+        left: {
+          type: 'comparison',
+          field: 'name',
+          operator: '==',
+          value: 'John'
+        },
+        right: {
+          type: 'comparison',
+          field: 'status',
+          operator: '==',
+          value: 'deleted'
+        }
+      };
+      expect(() => validator.validate(mockQuery)).toThrow(QuerySecurityError);
+    });
+
+    it('should block when one branch has positive denied value in OR', () => {
+      const validator = new QuerySecurityValidator({
+        denyValues: { status: ['deleted'] }
+      });
+      // NOT status:"archived" OR status:"deleted" should be blocked
+      const mockQuery: QueryExpression = {
+        type: 'logical',
+        operator: 'OR',
+        left: {
+          type: 'logical',
+          operator: 'NOT',
+          left: {
+            type: 'comparison',
+            field: 'status',
+            operator: '==',
+            value: 'archived'
+          }
+        },
+        right: {
+          type: 'comparison',
+          field: 'status',
+          operator: '==',
+          value: 'deleted'
+        }
+      };
+      expect(() => validator.validate(mockQuery)).toThrow(QuerySecurityError);
+    });
+
+    it('should not affect other fields when checking negation', () => {
+      const validator = new QuerySecurityValidator({
+        denyValues: {
+          status: ['deleted'],
+          role: ['admin']
+        }
+      });
+      // NOT status:"deleted" AND role:"admin" - role is positive match, should be blocked
+      const mockQuery: QueryExpression = {
+        type: 'logical',
+        operator: 'AND',
+        left: {
+          type: 'logical',
+          operator: 'NOT',
+          left: {
+            type: 'comparison',
+            field: 'status',
+            operator: '==',
+            value: 'deleted'
+          }
+        },
+        right: {
+          type: 'comparison',
+          field: 'role',
+          operator: '==',
+          value: 'admin'
+        }
+      };
+      expect(() => validator.validate(mockQuery)).toThrow(QuerySecurityError);
+    });
+
+    it('should allow multiple negated denied values', () => {
+      const validator = new QuerySecurityValidator({
+        denyValues: {
+          status: ['deleted', 'archived']
+        }
+      });
+      // NOT status:"deleted" AND NOT status:"archived" should be allowed
+      const mockQuery: QueryExpression = {
+        type: 'logical',
+        operator: 'AND',
+        left: {
+          type: 'logical',
+          operator: 'NOT',
+          left: {
+            type: 'comparison',
+            field: 'status',
+            operator: '==',
+            value: 'deleted'
+          }
+        },
+        right: {
+          type: 'logical',
+          operator: 'NOT',
+          left: {
+            type: 'comparison',
+            field: 'status',
+            operator: '==',
+            value: 'archived'
+          }
+        }
+      };
+      expect(() => validator.validate(mockQuery)).not.toThrow();
+    });
+
+    it('should allow NOT with non-denied values (no denyValues config effect)', () => {
+      const validator = new QuerySecurityValidator({
+        denyValues: { status: ['deleted'] }
+      });
+      // NOT name:"John" should be allowed - name is not in denyValues
+      const query = parser.parse('NOT name:"John"');
+      expect(() => validator.validate(query)).not.toThrow();
+    });
+  });
+
   describe('validateNoDotNotation (allowDotNotation)', () => {
     it('should allow dot notation by default', () => {
       const validator = new QuerySecurityValidator({});
@@ -822,6 +1110,23 @@ describe('QuerySecurityValidator', () => {
 
       // Ensure at least one pattern triggered security validation
       expect(atLeastOneFailed).toBe(true);
+    });
+  });
+
+  describe('enforceExcludedValues option in DEFAULT_SECURITY_OPTIONS', () => {
+    it('should have enforceExcludedValues as an empty object by default', () => {
+      expect(DEFAULT_SECURITY_OPTIONS.enforceExcludedValues).toBeDefined();
+      expect(DEFAULT_SECURITY_OPTIONS.enforceExcludedValues).toEqual({});
+    });
+
+    it('should accept enforceExcludedValues in constructor options', () => {
+      expect(() => {
+        new QuerySecurityValidator({
+          enforceExcludedValues: {
+            status: ['archived', 'deleted']
+          }
+        });
+      }).not.toThrow();
     });
   });
 });

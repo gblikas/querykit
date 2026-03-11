@@ -257,18 +257,35 @@ export class QuerySecurityValidator {
    * queried is not in the denyValues list for that field. This provides
    * granular control over what values can be queried for specific fields.
    *
+   * Negation handling: comparisons that explicitly *exclude* a denied value
+   * (via `NOT`, `!=`, or `NOT IN`) are allowed, since the user is trying to
+   * avoid those values rather than access them. Double-negation (NOT NOT) is
+   * treated as a positive match and will be blocked.
+   *
    * @private
    * @param expression - The query expression to validate
-   * @throws {QuerySecurityError} If a denied value is found in the query
+   * @param negated - Whether the current expression is in a negated context
+   * @throws {QuerySecurityError} If a denied value is found in a non-negated context
    */
-  private validateDenyValues(expression: QueryExpression): void {
+  private validateDenyValues(
+    expression: QueryExpression,
+    negated: boolean = false
+  ): void {
     // Skip if no denyValues configured
     if (Object.keys(this.options.denyValues).length === 0) {
       return;
     }
 
     if (expression.type === 'comparison') {
-      const { field, value } = expression;
+      const { field, operator, value } = expression;
+
+      // Check if this is an exclusion comparison (negated context OR negative operator)
+      const isExclusion = negated || operator === '!=' || operator === 'NOT IN';
+
+      if (isExclusion) {
+        return; // User is excluding the value, allow it
+      }
+
       const deniedValues = this.options.denyValues[field];
 
       if (deniedValues && deniedValues.length > 0) {
@@ -287,10 +304,12 @@ export class QuerySecurityValidator {
         }
       }
     } else if (expression.type === 'logical') {
-      // Recursively validate logical expressions
-      this.validateDenyValues(expression.left);
+      // Flip negation context when encountering NOT operator (handles double-negation)
+      const childNegated = expression.operator === 'NOT' ? !negated : negated;
+
+      this.validateDenyValues(expression.left, childNegated);
       if (expression.right) {
-        this.validateDenyValues(expression.right);
+        this.validateDenyValues(expression.right, childNegated);
       }
     }
     // Raw expressions are skipped - they handle their own values

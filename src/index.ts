@@ -17,6 +17,7 @@ import {
   VirtualFieldsConfig,
   resolveVirtualFields
 } from './virtual-fields';
+import { QueryExpression } from './parser/types';
 
 export {
   // Parser exports
@@ -141,6 +142,49 @@ export type QueryKit<
 };
 
 /**
+ * Inject enforced exclusion filters into a query expression.
+ *
+ * For each field in `enforceExcludedValues`, appends
+ * `AND field NOT IN (values)` to the expression, ensuring those records
+ * are never returned regardless of what the user queried.
+ *
+ * @param expression - The original query expression
+ * @param enforceExcludedValues - Map of field → denied values to inject
+ * @returns A new expression with the exclusion filters AND-ed in
+ */
+function applyEnforcedExclusions(
+  expression: QueryExpression,
+  enforceExcludedValues: Record<string, Array<string | number | boolean | null>>
+): QueryExpression {
+  const entries = Object.entries(enforceExcludedValues).filter(
+    ([, values]) => values.length > 0
+  );
+
+  if (entries.length === 0) {
+    return expression;
+  }
+
+  // Build NOT IN exclusion expressions for each field
+  const exclusions: QueryExpression[] = entries.map(([field, values]) => ({
+    type: 'comparison' as const,
+    field,
+    operator: 'NOT IN' as const,
+    value: values
+  }));
+
+  // AND all exclusions together with the original expression
+  return exclusions.reduce<QueryExpression>(
+    (acc, exclusion) => ({
+      type: 'logical' as const,
+      operator: 'AND' as const,
+      left: acc,
+      right: exclusion
+    }),
+    expression
+  );
+}
+
+/**
  * Create a new QueryKit instance
  */
 export function createQueryKit<
@@ -234,10 +278,22 @@ export function createQueryKit<
                 >
               );
 
+              // Apply enforced exclusions after validation (server-side RBAC enforcement)
+              const enforceExcludedValues =
+                options.security?.enforceExcludedValues;
+              const finalExpression =
+                enforceExcludedValues &&
+                Object.keys(enforceExcludedValues).length > 0
+                  ? applyEnforcedExclusions(
+                      resolvedExpression,
+                      enforceExcludedValues
+                    )
+                  : resolvedExpression;
+
               // Delegate to adapter
               const results = await options.adapter.execute(
                 table,
-                resolvedExpression,
+                finalExpression,
                 {
                   orderBy:
                     Object.keys(orderByState).length > 0
