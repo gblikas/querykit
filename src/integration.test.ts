@@ -201,7 +201,7 @@ describe('QueryKit Integration Tests', () => {
   });
 
   describe('enforceExcludedValues', () => {
-    it('should inject NOT IN filters into query when enforceExcludedValues is configured', async () => {
+    it('should inject status NOT IN (archived, deleted) when enforceExcludedValues is configured', async () => {
       const adapter = new DrizzleAdapter();
       adapter.initialize({ db: mockDb, schema: mockSchema });
 
@@ -220,13 +220,14 @@ describe('QueryKit Integration Tests', () => {
       expect(mockWhere).toHaveBeenCalled();
       const whereArg = mockWhere.mock.calls[0][0] as unknown as SQL;
       const whereStr = getSqlString(whereArg);
-      // The enforced exclusions should be included in the WHERE clause
+      // The enforced exclusions should produce: status NOT IN ('archived', 'deleted')
+      expect(whereStr).toContain('status');
       expect(whereStr.toLowerCase()).toContain('not in');
-      expect(whereStr.toLowerCase()).toContain('archived');
-      expect(whereStr.toLowerCase()).toContain('deleted');
+      expect(whereStr).toContain('archived');
+      expect(whereStr).toContain('deleted');
     });
 
-    it('should inject NOT IN filters for multiple fields', async () => {
+    it('should inject NOT IN filters for multiple fields, each on the correct field', async () => {
       const adapter = new DrizzleAdapter();
       adapter.initialize({ db: mockDb, schema: mockSchema });
 
@@ -246,8 +247,11 @@ describe('QueryKit Integration Tests', () => {
       expect(mockWhere).toHaveBeenCalled();
       const whereArg = mockWhere.mock.calls[0][0] as unknown as SQL;
       const whereStr = getSqlString(whereArg);
+      // Both fields should have NOT IN applied
       expect(whereStr.toLowerCase()).toContain('not in');
-      expect(whereStr.toLowerCase()).toContain('archived');
+      expect(whereStr).toContain('status');
+      expect(whereStr).toContain('archived');
+      expect(whereStr).toContain('priority');
     });
 
     it('should not inject anything when enforceExcludedValues is empty', async () => {
@@ -289,7 +293,13 @@ describe('QueryKit Integration Tests', () => {
       expect(whereStr.toLowerCase()).not.toContain('not in');
     });
 
-    it('should work alongside denyValues: allowed queries still get enforced exclusions injected', async () => {
+    it('should block queries referencing denied values, and enforce exclusions on safe queries', async () => {
+      // This is the critical interaction test:
+      // Given status: ['published', 'archived', 'deleted']
+      // denyValues prevents referencing archived/deleted in the query
+      // enforceExcludedValues ensures archived/deleted records are NEVER returned,
+      // even when the user writes something like NOT status:published (which implicitly
+      // includes archived and deleted records).
       const adapter = new DrizzleAdapter();
       adapter.initialize({ db: mockDb, schema: mockSchema });
 
@@ -297,27 +307,31 @@ describe('QueryKit Integration Tests', () => {
         adapter,
         schema: { todos: { id: {}, title: {}, priority: {}, status: {} } },
         security: {
-          // denyValues blocks any query that references these values
           denyValues: { status: ['archived', 'deleted'] },
-          // enforceExcludedValues injects NOT IN so those records never appear
           enforceExcludedValues: { status: ['archived', 'deleted'] }
         }
       });
 
-      // A query with a denied value in it should still be rejected by denyValues
+      // 1. Querying a denied value directly should throw
       await expect(
-        qk.query('todos').where('NOT status:"archived"').execute()
+        qk.query('todos').where('NOT status:deleted').execute()
       ).rejects.toThrow();
 
-      // A query that doesn't mention the denied values passes denyValues
-      // and still gets the enforced NOT IN injected
+      // 2. Querying a non-denied value passes denyValues validation.
+      //    BUT "NOT status:published" without enforceExcludedValues would return
+      //    archived and deleted records. With enforceExcludedValues, those are excluded.
       jest.clearAllMocks();
-      await qk.query('todos').where('priority:>1').execute();
+      await qk.query('todos').where('NOT status:published').execute();
+
       expect(mockWhere).toHaveBeenCalled();
       const whereArg = mockWhere.mock.calls[0][0] as unknown as SQL;
       const whereStr = getSqlString(whereArg);
-      // enforceExcludedValues injects NOT IN for the safe query
+      // enforceExcludedValues injects: AND status NOT IN ('archived', 'deleted')
+      // ensuring only status:active (or other non-excluded values) can be returned
+      expect(whereStr).toContain('status');
       expect(whereStr.toLowerCase()).toContain('not in');
+      expect(whereStr).toContain('archived');
+      expect(whereStr).toContain('deleted');
     });
 
     it('should skip fields with empty value arrays in enforceExcludedValues', async () => {
