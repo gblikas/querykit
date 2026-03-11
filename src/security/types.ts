@@ -65,10 +65,16 @@ export interface ISecurityOptions {
    * The keys are field names (can include table prefixes like "user.role")
    * and the values are arrays of denied values for that field.
    *
-   * **Negation Handling**: Queries that explicitly *exclude* denied values
-   * (using `NOT`, `!=`, or `NOT IN`) are allowed, since the user is trying
-   * to avoid those values, not access them. Double-negation (`NOT (NOT ...)`)
-   * is treated as a positive match and will be blocked.
+   * Any query that references a denied value in any form is rejected, including
+   * negated forms (`NOT status:"deleted"`, `status != "deleted"`, `status NOT IN
+   * ["deleted"]`). This follows an explicit allow-listing approach: if you don't
+   * want users to reference a sensitive value at all, `denyValues` blocks it
+   * completely, regardless of how it's used.
+   *
+   * To guarantee denied records are never returned from any query — including
+   * queries that don't reference the denied value at all (e.g. `NOT status:
+   * "published"` implicitly includes archived/deleted) — use
+   * `enforceExcludedValues` to inject server-side `NOT IN` filters.
    *
    * @example
    * ```typescript
@@ -77,15 +83,17 @@ export interface ISecurityOptions {
    *   'role': ['superadmin', 'system']
    * }
    *
-   * // Blocked queries:
+   * // Blocked queries (denied value is mentioned in any form):
    * // status == "deleted"
-   * // status IN ["deleted", "active"]
-   * // role == "superadmin"
-   *
-   * // Allowed queries (exclusions):
    * // NOT status == "deleted"
    * // status != "deleted"
+   * // status IN ["deleted", "active"]
    * // status NOT IN ["deleted", "banned"]
+   * // role == "superadmin"
+   *
+   * // Allowed queries (no denied value is referenced):
+   * // status == "active"
+   * // role == "admin"
    * ```
    */
   denyValues?: Record<string, Array<string | number | boolean | null>>;

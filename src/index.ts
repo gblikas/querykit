@@ -148,6 +148,9 @@ export type QueryKit<
  * `AND field NOT IN (values)` to the expression, ensuring those records
  * are never returned regardless of what the user queried.
  *
+ * This is an internal helper used by `createQueryKit`. It is applied after
+ * security validation, so the exclusions are invisible to the validator.
+ *
  * @param expression - The original query expression
  * @param enforceExcludedValues - Map of field → denied values to inject
  * @returns A new expression with the exclusion filters AND-ed in

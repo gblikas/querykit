@@ -569,16 +569,20 @@ describe('QuerySecurityValidator', () => {
     });
   });
 
-  describe('validateDenyValues with negation', () => {
-    it('should allow NOT operator with denied values', () => {
+  describe('validateDenyValues with negation operators', () => {
+    // denyValues blocks ALL mentions of denied values, regardless of operator.
+    // This is intentional: the user should not be able to even reference a denied
+    // value in their query. Use enforceExcludedValues for server-side RBAC.
+
+    it('should block NOT operator wrapping a denied value', () => {
       const validator = new QuerySecurityValidator({
         denyValues: { status: ['archived', 'deleted'] }
       });
       const query = parser.parse('NOT status:"archived"');
-      expect(() => validator.validate(query)).not.toThrow();
+      expect(() => validator.validate(query)).toThrow(QuerySecurityError);
     });
 
-    it('should allow != operator with denied values', () => {
+    it('should block != operator with a denied value', () => {
       const validator = new QuerySecurityValidator({
         denyValues: { status: ['deleted'] }
       });
@@ -588,10 +592,10 @@ describe('QuerySecurityValidator', () => {
         operator: '!=',
         value: 'deleted'
       };
-      expect(() => validator.validate(mockQuery)).not.toThrow();
+      expect(() => validator.validate(mockQuery)).toThrow(QuerySecurityError);
     });
 
-    it('should allow NOT IN operator with denied values', () => {
+    it('should block NOT IN operator with denied values', () => {
       const validator = new QuerySecurityValidator({
         denyValues: { status: ['archived', 'deleted'] }
       });
@@ -601,10 +605,10 @@ describe('QuerySecurityValidator', () => {
         operator: 'NOT IN',
         value: ['archived', 'deleted']
       };
-      expect(() => validator.validate(mockQuery)).not.toThrow();
+      expect(() => validator.validate(mockQuery)).toThrow(QuerySecurityError);
     });
 
-    it('should still block positive matches with denied values', () => {
+    it('should block positive matches with denied values', () => {
       const validator = new QuerySecurityValidator({
         denyValues: { status: ['archived'] }
       });
@@ -612,7 +616,7 @@ describe('QuerySecurityValidator', () => {
       expect(() => validator.validate(query)).toThrow(QuerySecurityError);
     });
 
-    it('should still block IN operator with denied values', () => {
+    it('should block IN operator that includes a denied value', () => {
       const validator = new QuerySecurityValidator({
         denyValues: { status: ['archived', 'deleted'] }
       });
@@ -629,7 +633,6 @@ describe('QuerySecurityValidator', () => {
       const validator = new QuerySecurityValidator({
         denyValues: { status: ['deleted'] }
       });
-      // NOT (NOT status:"deleted") should be blocked - it's a positive match
       const mockQuery: QueryExpression = {
         type: 'logical',
         operator: 'NOT',
@@ -647,11 +650,10 @@ describe('QuerySecurityValidator', () => {
       expect(() => validator.validate(mockQuery)).toThrow(QuerySecurityError);
     });
 
-    it('should allow triple-negated denied values (NOT NOT NOT)', () => {
+    it('should block triple-negated denied values (NOT NOT NOT)', () => {
       const validator = new QuerySecurityValidator({
         denyValues: { status: ['deleted'] }
       });
-      // NOT (NOT (NOT status:"deleted")) should be allowed - net result is negation
       const mockQuery: QueryExpression = {
         type: 'logical',
         operator: 'NOT',
@@ -670,14 +672,14 @@ describe('QuerySecurityValidator', () => {
           }
         }
       };
-      expect(() => validator.validate(mockQuery)).not.toThrow();
+      expect(() => validator.validate(mockQuery)).toThrow(QuerySecurityError);
     });
 
-    it('should handle negation in complex expressions with AND', () => {
+    it('should block denied value in AND expression even when other branch is safe', () => {
       const validator = new QuerySecurityValidator({
         denyValues: { status: ['deleted'] }
       });
-      // name:"John" AND NOT status:"deleted" should be allowed
+      // name:"John" AND NOT status:"deleted" — the denied value is still mentioned
       const mockQuery: QueryExpression = {
         type: 'logical',
         operator: 'AND',
@@ -698,14 +700,14 @@ describe('QuerySecurityValidator', () => {
           }
         }
       };
-      expect(() => validator.validate(mockQuery)).not.toThrow();
+      expect(() => validator.validate(mockQuery)).toThrow(QuerySecurityError);
     });
 
-    it('should handle negation in complex expressions with OR', () => {
+    it('should block denied value in OR expression even when other branch is safe', () => {
       const validator = new QuerySecurityValidator({
         denyValues: { status: ['deleted'] }
       });
-      // NOT status:"deleted" OR name:"John" should be allowed
+      // NOT status:"deleted" OR name:"John" — still mentions denied value
       const mockQuery: QueryExpression = {
         type: 'logical',
         operator: 'OR',
@@ -726,132 +728,23 @@ describe('QuerySecurityValidator', () => {
           value: 'John'
         }
       };
-      expect(() => validator.validate(mockQuery)).not.toThrow();
-    });
-
-    it('should block when one branch has positive denied value in AND', () => {
-      const validator = new QuerySecurityValidator({
-        denyValues: { status: ['deleted'] }
-      });
-      // name:"John" AND status:"deleted" should be blocked
-      const mockQuery: QueryExpression = {
-        type: 'logical',
-        operator: 'AND',
-        left: {
-          type: 'comparison',
-          field: 'name',
-          operator: '==',
-          value: 'John'
-        },
-        right: {
-          type: 'comparison',
-          field: 'status',
-          operator: '==',
-          value: 'deleted'
-        }
-      };
       expect(() => validator.validate(mockQuery)).toThrow(QuerySecurityError);
     });
 
-    it('should block when one branch has positive denied value in OR', () => {
+    it('should not affect queries that do not reference denied values', () => {
       const validator = new QuerySecurityValidator({
         denyValues: { status: ['deleted'] }
       });
-      // NOT status:"archived" OR status:"deleted" should be blocked
-      const mockQuery: QueryExpression = {
-        type: 'logical',
-        operator: 'OR',
-        left: {
-          type: 'logical',
-          operator: 'NOT',
-          left: {
-            type: 'comparison',
-            field: 'status',
-            operator: '==',
-            value: 'archived'
-          }
-        },
-        right: {
-          type: 'comparison',
-          field: 'status',
-          operator: '==',
-          value: 'deleted'
-        }
-      };
-      expect(() => validator.validate(mockQuery)).toThrow(QuerySecurityError);
-    });
-
-    it('should not affect other fields when checking negation', () => {
-      const validator = new QuerySecurityValidator({
-        denyValues: {
-          status: ['deleted'],
-          role: ['admin']
-        }
-      });
-      // NOT status:"deleted" AND role:"admin" - role is positive match, should be blocked
-      const mockQuery: QueryExpression = {
-        type: 'logical',
-        operator: 'AND',
-        left: {
-          type: 'logical',
-          operator: 'NOT',
-          left: {
-            type: 'comparison',
-            field: 'status',
-            operator: '==',
-            value: 'deleted'
-          }
-        },
-        right: {
-          type: 'comparison',
-          field: 'role',
-          operator: '==',
-          value: 'admin'
-        }
-      };
-      expect(() => validator.validate(mockQuery)).toThrow(QuerySecurityError);
-    });
-
-    it('should allow multiple negated denied values', () => {
-      const validator = new QuerySecurityValidator({
-        denyValues: {
-          status: ['deleted', 'archived']
-        }
-      });
-      // NOT status:"deleted" AND NOT status:"archived" should be allowed
-      const mockQuery: QueryExpression = {
-        type: 'logical',
-        operator: 'AND',
-        left: {
-          type: 'logical',
-          operator: 'NOT',
-          left: {
-            type: 'comparison',
-            field: 'status',
-            operator: '==',
-            value: 'deleted'
-          }
-        },
-        right: {
-          type: 'logical',
-          operator: 'NOT',
-          left: {
-            type: 'comparison',
-            field: 'status',
-            operator: '==',
-            value: 'archived'
-          }
-        }
-      };
-      expect(() => validator.validate(mockQuery)).not.toThrow();
-    });
-
-    it('should allow NOT with non-denied values (no denyValues config effect)', () => {
-      const validator = new QuerySecurityValidator({
-        denyValues: { status: ['deleted'] }
-      });
-      // NOT name:"John" should be allowed - name is not in denyValues
+      // NOT name:"John" is fine — name is not in denyValues
       const query = parser.parse('NOT name:"John"');
+      expect(() => validator.validate(query)).not.toThrow();
+    });
+
+    it('should allow queries on fields not listed in denyValues', () => {
+      const validator = new QuerySecurityValidator({
+        denyValues: { status: ['deleted'] }
+      });
+      const query = parser.parse('name:"active"');
       expect(() => validator.validate(query)).not.toThrow();
     });
   });

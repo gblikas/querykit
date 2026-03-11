@@ -289,7 +289,7 @@ describe('QueryKit Integration Tests', () => {
       expect(whereStr.toLowerCase()).not.toContain('not in');
     });
 
-    it('should allow denyValues and enforceExcludedValues together', async () => {
+    it('should work alongside denyValues: allowed queries still get enforced exclusions injected', async () => {
       const adapter = new DrizzleAdapter();
       adapter.initialize({ db: mockDb, schema: mockSchema });
 
@@ -297,21 +297,26 @@ describe('QueryKit Integration Tests', () => {
         adapter,
         schema: { todos: { id: {}, title: {}, priority: {}, status: {} } },
         security: {
+          // denyValues blocks any query that references these values
           denyValues: { status: ['archived', 'deleted'] },
+          // enforceExcludedValues injects NOT IN so those records never appear
           enforceExcludedValues: { status: ['archived', 'deleted'] }
         }
       });
 
-      // NOT status:"archived" should pass denyValues validation (negation)
-      // and the enforced exclusions will still be injected
+      // A query with a denied value in it should still be rejected by denyValues
       await expect(
         qk.query('todos').where('NOT status:"archived"').execute()
-      ).resolves.toBeDefined();
+      ).rejects.toThrow();
 
+      // A query that doesn't mention the denied values passes denyValues
+      // and still gets the enforced NOT IN injected
+      jest.clearAllMocks();
+      await qk.query('todos').where('priority:>1').execute();
       expect(mockWhere).toHaveBeenCalled();
       const whereArg = mockWhere.mock.calls[0][0] as unknown as SQL;
       const whereStr = getSqlString(whereArg);
-      // enforceExcludedValues injects NOT IN
+      // enforceExcludedValues injects NOT IN for the safe query
       expect(whereStr.toLowerCase()).toContain('not in');
     });
 

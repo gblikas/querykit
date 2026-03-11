@@ -257,35 +257,27 @@ export class QuerySecurityValidator {
    * queried is not in the denyValues list for that field. This provides
    * granular control over what values can be queried for specific fields.
    *
-   * Negation handling: comparisons that explicitly *exclude* a denied value
-   * (via `NOT`, `!=`, or `NOT IN`) are allowed, since the user is trying to
-   * avoid those values rather than access them. Double-negation (NOT NOT) is
-   * treated as a positive match and will be blocked.
+   * Any query that references a denied value in any form — including with
+   * negation operators like `NOT`, `!=`, or `NOT IN` — is rejected. This
+   * prevents users from probing or referencing sensitive values at all,
+   * rather than relying on operator semantics to determine intent.
+   *
+   * To guarantee denied records are never returned (e.g. when the user
+   * queries a different field), use `enforceExcludedValues` instead,
+   * which injects server-side `NOT IN` filters into every query.
    *
    * @private
    * @param expression - The query expression to validate
-   * @param negated - Whether the current expression is in a negated context
-   * @throws {QuerySecurityError} If a denied value is found in a non-negated context
+   * @throws {QuerySecurityError} If a denied value is found in the query
    */
-  private validateDenyValues(
-    expression: QueryExpression,
-    negated: boolean = false
-  ): void {
+  private validateDenyValues(expression: QueryExpression): void {
     // Skip if no denyValues configured
     if (Object.keys(this.options.denyValues).length === 0) {
       return;
     }
 
     if (expression.type === 'comparison') {
-      const { field, operator, value } = expression;
-
-      // Check if this is an exclusion comparison (negated context OR negative operator)
-      const isExclusion = negated || operator === '!=' || operator === 'NOT IN';
-
-      if (isExclusion) {
-        return; // User is excluding the value, allow it
-      }
-
+      const { field, value } = expression;
       const deniedValues = this.options.denyValues[field];
 
       if (deniedValues && deniedValues.length > 0) {
@@ -304,12 +296,10 @@ export class QuerySecurityValidator {
         }
       }
     } else if (expression.type === 'logical') {
-      // Flip negation context when encountering NOT operator (handles double-negation)
-      const childNegated = expression.operator === 'NOT' ? !negated : negated;
-
-      this.validateDenyValues(expression.left, childNegated);
+      // Recursively validate logical expressions
+      this.validateDenyValues(expression.left);
       if (expression.right) {
-        this.validateDenyValues(expression.right, childNegated);
+        this.validateDenyValues(expression.right);
       }
     }
     // Raw expressions are skipped - they handle their own values
