@@ -257,6 +257,15 @@ export class QuerySecurityValidator {
    * queried is not in the denyValues list for that field. This provides
    * granular control over what values can be queried for specific fields.
    *
+   * Any query that references a denied value in any form — including with
+   * negation operators like `NOT`, `!=`, or `NOT IN` — is rejected. This
+   * prevents users from probing or referencing sensitive values at all,
+   * rather than relying on operator semantics to determine intent.
+   *
+   * To guarantee denied records are never returned (e.g. when the user
+   * queries a different field), use `enforceExcludedValues` instead,
+   * which injects server-side `NOT IN` filters into every query.
+   *
    * @private
    * @param expression - The query expression to validate
    * @throws {QuerySecurityError} If a denied value is found in the query

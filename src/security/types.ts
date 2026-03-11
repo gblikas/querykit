@@ -65,22 +65,62 @@ export interface ISecurityOptions {
    * The keys are field names (can include table prefixes like "user.role")
    * and the values are arrays of denied values for that field.
    *
+   * Any query that references a denied value in any form is rejected, including
+   * negated forms (`NOT status:"deleted"`, `status != "deleted"`, `status NOT IN
+   * ["deleted"]`). This follows an explicit allow-listing approach: if you don't
+   * want users to reference a sensitive value at all, `denyValues` blocks it
+   * completely, regardless of how it's used.
+   *
+   * To guarantee denied records are never returned from any query — including
+   * queries that don't reference the denied value at all (e.g. `NOT status:
+   * "published"` implicitly includes archived/deleted) — use
+   * `enforceExcludedValues` to inject server-side `NOT IN` filters.
+   *
    * @example
    * ```typescript
-   * // Prevent certain values from being queried
    * denyValues: {
    *   'status': ['deleted', 'banned'],
-   *   'role': ['superadmin', 'system'],
-   *   'user.type': ['internal', 'bot']
+   *   'role': ['superadmin', 'system']
    * }
    *
-   * // This would block queries like:
+   * // Blocked queries (denied value is mentioned in any form):
    * // status == "deleted"
-   * // role IN ["superadmin", "admin"]
-   * // user.type == "internal"
+   * // NOT status == "deleted"
+   * // status != "deleted"
+   * // status IN ["deleted", "active"]
+   * // status NOT IN ["deleted", "banned"]
+   * // role == "superadmin"
+   *
+   * // Allowed queries (no denied value is referenced):
+   * // status == "active"
+   * // role == "admin"
    * ```
    */
   denyValues?: Record<string, Array<string | number | boolean | null>>;
+
+  /**
+   * Values that are automatically excluded from ALL query results.
+   * Unlike `denyValues` (which validates user input), this option
+   * injects `AND field NOT IN (values)` into every query at the adapter layer.
+   *
+   * Use this for RBAC enforcement where certain records must never be returned
+   * regardless of how users phrase their queries.
+   *
+   * @example
+   * ```typescript
+   * enforceExcludedValues: {
+   *   status: ['archived', 'deleted'],
+   *   visibility: ['internal']
+   * }
+   * // Every query will have appended:
+   * // AND status NOT IN ('archived', 'deleted')
+   * // AND visibility NOT IN ('internal')
+   * ```
+   */
+  enforceExcludedValues?: Record<
+    string,
+    Array<string | number | boolean | null>
+  >;
 
   /**
    * Whether to allow dot notation in field names (e.g., "user.name", "metadata.tags").
@@ -243,6 +283,7 @@ export const DEFAULT_SECURITY_OPTIONS: Required<ISecurityOptions> = {
   allowedFields: [], // Empty means "use schema fields"
   denyFields: [], // Empty means no denied fields
   denyValues: {}, // Empty means no denied values for any field
+  enforceExcludedValues: {}, // Empty means no enforced exclusions
   allowDotNotation: true, // Allow dot notation by default for backward compatibility
 
   // Query complexity limits
