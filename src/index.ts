@@ -84,6 +84,34 @@ export interface IQueryKitOptions<
   adapterOptions?: IAdapterOptions & { [key: string]: unknown };
 
   /**
+   * Parser configuration options passed through to the QueryParser.
+   * Allows configuring field name mappings, case sensitivity, and other
+   * parser-level settings at the QueryKit instance level.
+   *
+   * @example
+   * parserOptions: {
+   *   caseInsensitiveFields: true,
+   *   fieldMappings: {
+   *     author: 'author_name',
+   *     name: 'title',
+   *   }
+   * }
+   */
+  parserOptions?: IParserOptions;
+
+  /**
+   * When true, the execution pipeline uses `parseWithContext` with autofix
+   * instead of `parse`, recovering gracefully from incomplete or malformed
+   * queries (trailing operators, unclosed quotes, etc.) instead of throwing.
+   *
+   * Useful for search UIs where queries may be in a transiently incomplete
+   * state when submitted.
+   *
+   * @default false
+   */
+  tolerant?: boolean;
+
+  /**
    * Virtual field definitions for context-aware query expansion.
    * Virtual fields allow shortcuts like `my:assigned` that expand to
    * real schema fields at query execution time.
@@ -197,8 +225,9 @@ export function createQueryKit<
     [K in keyof TSchema & string]: unknown;
   }
 >(options: IQueryKitOptions<TSchema, TContext>): QueryKit<TSchema, TRows> {
-  const parser = new QueryParser();
+  const parser = new QueryParser(options.parserOptions);
   const securityValidator = new QuerySecurityValidator(options.security);
+  const isTolerant = options.tolerant ?? false;
 
   // Initialize adapter if options provided. If adapter is already initialized,
   // calling initialize again with the same options should be a no-op for most adapters.
@@ -224,8 +253,31 @@ export function createQueryKit<
     ): IWhereClause<TRows[K]> => {
       return {
         where: (queryString: string): IQueryExecutor<TRows[K]> => {
-          // Parse the query
-          const expressionAst = parser.parse(queryString);
+          // Parse the query, optionally using tolerant mode with autofix
+          let expressionAst: QueryExpression;
+          if (isTolerant) {
+            const contextResult = parser.parseWithContext(queryString);
+            if (contextResult.success && contextResult.ast) {
+              expressionAst = contextResult.ast;
+            } else if (contextResult.recovery?.autofix) {
+              const retryResult = parser.parseWithContext(
+                contextResult.recovery.autofix
+              );
+              if (retryResult.success && retryResult.ast) {
+                expressionAst = retryResult.ast;
+              } else {
+                throw new Error(
+                  `Failed to parse query even after autofix: ${contextResult.error?.message ?? 'Unknown error'}`
+                );
+              }
+            } else {
+              throw new Error(
+                `Failed to parse query: ${contextResult.error?.message ?? 'Unknown error'}`
+              );
+            }
+          } else {
+            expressionAst = parser.parse(queryString);
+          }
 
           // Execution state accumulated via fluent calls
           let orderByState: Record<string, 'asc' | 'desc'> = {};

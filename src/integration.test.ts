@@ -559,4 +559,191 @@ describe('QueryKit Integration Tests', () => {
       expect(whereStr).toContain('deleted');
     });
   });
+
+  describe('createQueryKit with parserOptions (fixes #19)', () => {
+    beforeEach(() => {
+      jest.clearAllMocks();
+    });
+
+    it('should apply fieldMappings during query execution', async () => {
+      const localAdapter = new DrizzleAdapter();
+      localAdapter.initialize({ db: mockDb, schema: mockSchema });
+
+      const qk = createQueryKit({
+        adapter: localAdapter,
+        schema: { todos: { id: {}, title: {}, priority: {}, status: {} } },
+        parserOptions: {
+          fieldMappings: { name: 'title' }
+        }
+      });
+
+      await qk.query('todos').where('name:test').execute();
+
+      expect(mockWhere).toHaveBeenCalled();
+      const whereArg = mockWhere.mock.calls[0][0] as unknown as SQL;
+      const whereStr = getSqlString(whereArg);
+      expect(whereStr).toContain('title');
+    });
+
+    it('should apply caseInsensitiveFields during query execution', async () => {
+      const localAdapter = new DrizzleAdapter();
+      localAdapter.initialize({ db: mockDb, schema: mockSchema });
+
+      const qk = createQueryKit({
+        adapter: localAdapter,
+        schema: { todos: { id: {}, title: {}, priority: {}, status: {} } },
+        parserOptions: {
+          caseInsensitiveFields: true,
+          fieldMappings: { status: 'status' }
+        }
+      });
+
+      await qk.query('todos').where('Status:active').execute();
+
+      expect(mockWhere).toHaveBeenCalled();
+      const whereArg = mockWhere.mock.calls[0][0] as unknown as SQL;
+      const whereStr = getSqlString(whereArg);
+      expect(whereStr).toContain('status');
+    });
+
+    it('should combine caseInsensitiveFields and fieldMappings', async () => {
+      const localAdapter = new DrizzleAdapter();
+      localAdapter.initialize({ db: mockDb, schema: mockSchema });
+
+      const qk = createQueryKit({
+        adapter: localAdapter,
+        schema: { todos: { id: {}, title: {}, priority: {}, status: {} } },
+        parserOptions: {
+          caseInsensitiveFields: true,
+          fieldMappings: { author: 'title' }
+        }
+      });
+
+      await qk.query('todos').where('AUTHOR:test').execute();
+
+      expect(mockWhere).toHaveBeenCalled();
+      const whereArg = mockWhere.mock.calls[0][0] as unknown as SQL;
+      const whereStr = getSqlString(whereArg);
+      expect(whereStr).toContain('title');
+    });
+  });
+
+  describe('createQueryKit tolerant mode (fixes #19)', () => {
+    beforeEach(() => {
+      jest.clearAllMocks();
+    });
+
+    it('should auto-recover from trailing operator', async () => {
+      const localAdapter = new DrizzleAdapter();
+      localAdapter.initialize({ db: mockDb, schema: mockSchema });
+
+      const qk = createQueryKit({
+        adapter: localAdapter,
+        schema: { todos: { id: {}, title: {}, priority: {}, status: {} } },
+        tolerant: true
+      });
+
+      const results = await qk
+        .query('todos')
+        .where('status:active AND')
+        .execute();
+      expect(results).toBeDefined();
+    });
+
+    it('should auto-recover from unclosed quote', async () => {
+      const localAdapter = new DrizzleAdapter();
+      localAdapter.initialize({ db: mockDb, schema: mockSchema });
+
+      const qk = createQueryKit({
+        adapter: localAdapter,
+        schema: { todos: { id: {}, title: {}, priority: {}, status: {} } },
+        tolerant: true
+      });
+
+      const results = await qk.query('todos').where('status:"active').execute();
+      expect(results).toBeDefined();
+    });
+
+    it('should parse valid queries normally in tolerant mode', async () => {
+      const localAdapter = new DrizzleAdapter();
+      localAdapter.initialize({ db: mockDb, schema: mockSchema });
+
+      const qk = createQueryKit({
+        adapter: localAdapter,
+        schema: { todos: { id: {}, title: {}, priority: {}, status: {} } },
+        tolerant: true
+      });
+
+      const results = await qk
+        .query('todos')
+        .where('status:active AND priority:>1')
+        .execute();
+      expect(results).toBeDefined();
+      expect(mockWhere).toHaveBeenCalled();
+    });
+
+    it('should throw in strict mode (default)', () => {
+      const localAdapter = new DrizzleAdapter();
+      localAdapter.initialize({ db: mockDb, schema: mockSchema });
+
+      const qk = createQueryKit({
+        adapter: localAdapter,
+        schema: { todos: { id: {}, title: {}, priority: {}, status: {} } }
+      });
+
+      expect(() => qk.query('todos').where('status:active AND')).toThrow();
+    });
+
+    it('should throw when tolerant autofix also fails', () => {
+      const localAdapter = new DrizzleAdapter();
+      localAdapter.initialize({ db: mockDb, schema: mockSchema });
+
+      const qk = createQueryKit({
+        adapter: localAdapter,
+        schema: { todos: { id: {}, title: {}, priority: {}, status: {} } },
+        tolerant: true
+      });
+
+      expect(() => qk.query('todos').where('')).toThrow();
+    });
+  });
+
+  describe('lowercase boolean operators via createQueryKit (fixes #19)', () => {
+    beforeEach(() => {
+      jest.clearAllMocks();
+    });
+
+    it('should execute queries with lowercase "and"', async () => {
+      const localAdapter = new DrizzleAdapter();
+      localAdapter.initialize({ db: mockDb, schema: mockSchema });
+
+      const qk = createQueryKit({
+        adapter: localAdapter,
+        schema: { todos: { id: {}, title: {}, priority: {}, status: {} } }
+      });
+
+      const results = await qk
+        .query('todos')
+        .where('priority:>1 and status:active')
+        .execute();
+      expect(results).toBeDefined();
+      expect(results).toHaveLength(2);
+    });
+
+    it('should execute queries with lowercase "or"', async () => {
+      const localAdapter = new DrizzleAdapter();
+      localAdapter.initialize({ db: mockDb, schema: mockSchema });
+
+      const qk = createQueryKit({
+        adapter: localAdapter,
+        schema: { todos: { id: {}, title: {}, priority: {}, status: {} } }
+      });
+
+      const results = await qk
+        .query('todos')
+        .where('status:active or status:pending')
+        .execute();
+      expect(results).toBeDefined();
+    });
+  });
 });

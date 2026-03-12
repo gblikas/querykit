@@ -77,11 +77,13 @@ dueDate:{2023-01-01 TO 2023-01-31}      # Exclusive range
 name:/Todo.*/         # Regular expression
 title:intro*          # Wildcard matching
 
-# Boolean operators
+# Boolean operators (case insensitive)
 status:active AND priority:>2     # AND operator
 status:active OR status:pending   # OR operator
 NOT expired:true      # NOT operator
 -expired:true         # Alternative NOT syntax
+status:active and name:test       # Lowercase operators work too
+status:active Or priority:>2      # Mixed case also supported
 
 # Grouping
 (status:active OR status:pending) AND priority:<3
@@ -89,6 +91,81 @@ NOT expired:true      # NOT operator
 # Implicit AND (space between expressions)
 status:active priority:>2
 ```
+
+## Parser Options
+
+`createQueryKit` accepts a `parserOptions` field to configure the underlying `QueryParser`. This avoids the need for manual query string preprocessing.
+
+### Field Mappings
+
+Map user-friendly field names to actual schema column names:
+
+```typescript
+const qk = createQueryKit({
+  adapter: drizzleAdapter,
+  schema: { users },
+  parserOptions: {
+    fieldMappings: {
+      author: 'author_name',
+      name: 'title',
+      created_by: 'created_by_name',
+    }
+  }
+});
+
+// Users can query with friendly names:
+const results = await qk
+  .query('users')
+  .where('author:"Jane Doe" AND name:safety')
+  .execute();
+// Internally resolves to: author_name:"Jane Doe" AND title:safety
+```
+
+### Case-Insensitive Fields
+
+Enable case-insensitive field name matching:
+
+```typescript
+const qk = createQueryKit({
+  adapter: drizzleAdapter,
+  schema: { users },
+  parserOptions: {
+    caseInsensitiveFields: true,
+    fieldMappings: { status: 'task_status' }
+  }
+});
+
+// All of these resolve to task_status:active
+qk.query('users').where('Status:active');
+qk.query('users').where('STATUS:active');
+qk.query('users').where('status:active');
+```
+
+## Tolerant Parse Mode
+
+By default, `createQueryKit` throws on any malformed input. For search UIs where queries may be submitted in a transiently incomplete state, enable tolerant mode to leverage `parseWithContext`'s built-in error recovery:
+
+```typescript
+const qk = createQueryKit({
+  adapter: drizzleAdapter,
+  schema: { tasks },
+  tolerant: true
+});
+
+// These auto-recover instead of throwing:
+await qk.query('tasks').where('status:active AND').execute();
+// → Autofixes to: 'status:active'
+
+await qk.query('tasks').where('status:"incomplete').execute();
+// → Autofixes to: 'status:"incomplete"'
+```
+
+Recovery types supported by tolerant mode:
+- **Trailing operators** — `status:active AND` → `status:active`
+- **Unclosed quotes** — `status:"active` → `status:"active"`
+- **Unbalanced parentheses** — `(status:active` → `(status:active)`
+
+If autofix also fails, an error is still thrown, ensuring silent data corruption never occurs.
 
 ## Installation
 
@@ -1045,7 +1122,7 @@ await qk.query('tasks')
 - [x] Implement Lucene-style query syntax parser using Liqe
 - [x] Create type-safe query building API
 - [x] Develop internal AST representation
-- [x] Implement consistent syntax for logical operators (AND, OR, NOT)
+- [x] Implement consistent syntax for logical operators (AND, OR, NOT) with case-insensitive support
 - [x] Support standard comparison operators (==, !=, >, >=, <, <=)
 - [x] Real-time input parsing for search UIs
 - [x] Autocomplete suggestions with schema awareness
