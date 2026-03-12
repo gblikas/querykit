@@ -183,8 +183,9 @@ export class QueryParser implements IQueryParser {
         if (part.quoted) {
           return part.text;
         }
-        return part.text.replace(/\b(and|or|not)\b/gi, match =>
-          match.toUpperCase()
+        return part.text.replace(
+          /(?<![^\s()])\b(and|or|not)\b(?![^\s()])/gi,
+          match => match.toUpperCase()
         );
       })
       .join('');

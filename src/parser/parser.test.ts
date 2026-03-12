@@ -918,6 +918,56 @@ describe('QueryParser', () => {
         expect(ast.type).toBe('logical');
         expect((ast as ILogicalExpression).operator).toBe('AND');
       });
+
+      it('should NOT uppercase "and" when it is a field value', () => {
+        const ast = parser.parse('name:and');
+        expect(ast.type).toBe('comparison');
+        expect((ast as IComparisonExpression).field).toBe('name');
+        expect((ast as IComparisonExpression).value).toBe('and');
+      });
+
+      it('should NOT uppercase "or" when it is a field value', () => {
+        const ast = parser.parse('type:or');
+        expect(ast.type).toBe('comparison');
+        expect((ast as IComparisonExpression).field).toBe('type');
+        expect((ast as IComparisonExpression).value).toBe('or');
+      });
+
+      it('should NOT uppercase "not" when it is a field value', () => {
+        const ast = parser.parse('gate:not');
+        expect(ast.type).toBe('comparison');
+        expect((ast as IComparisonExpression).field).toBe('gate');
+        expect((ast as IComparisonExpression).value).toBe('not');
+      });
+
+      it('should NOT uppercase boolean keywords after comparison operators', () => {
+        const ast = parser.parse('priority:>=or');
+        expect(ast.type).toBe('comparison');
+        expect((ast as IComparisonExpression).value).toBe('or');
+      });
+
+      it('should NOT uppercase "not" when used as a field name', () => {
+        const ast = parser.parse('not:disabled');
+        expect(ast.type).toBe('comparison');
+        expect((ast as IComparisonExpression).field).toBe('not');
+        expect((ast as IComparisonExpression).value).toBe('disabled');
+      });
+
+      it('should handle mixed value and operator usage', () => {
+        const ast = parser.parse('gate:and and gate:or');
+        expect(ast.type).toBe('logical');
+        expect((ast as ILogicalExpression).operator).toBe('AND');
+        const left = (ast as ILogicalExpression).left as IComparisonExpression;
+        const right = (ast as ILogicalExpression)
+          .right as IComparisonExpression;
+        expect(left.value).toBe('and');
+        expect(right.value).toBe('or');
+      });
+
+      it('should preserve boolean keywords in bracket array syntax', () => {
+        const ast = parser.parse('gate:[and, or, not]');
+        expect(ast.type).toBe('logical');
+      });
     });
 
     // IN operator syntax tests using consistent key:[values] pattern
