@@ -868,6 +868,58 @@ describe('QueryParser', () => {
       expect(parser.parse(query)).toEqual(expected);
     });
 
+    // Boolean operator case insensitivity (fixes #19)
+    describe('boolean operator case insensitivity', () => {
+      it('should parse lowercase "and"', () => {
+        const ast = parser.parse('status:active and name:test');
+        expect(ast.type).toBe('logical');
+        expect((ast as ILogicalExpression).operator).toBe('AND');
+      });
+
+      it('should parse lowercase "or"', () => {
+        const ast = parser.parse('a:1 or b:2');
+        expect(ast.type).toBe('logical');
+        expect((ast as ILogicalExpression).operator).toBe('OR');
+      });
+
+      it('should parse lowercase "not"', () => {
+        const ast = parser.parse('not status:archived');
+        expect(ast.type).toBe('logical');
+        expect((ast as ILogicalExpression).operator).toBe('NOT');
+      });
+
+      it('should parse mixed case "And", "Or"', () => {
+        const ast = parser.parse('a:1 And b:2 Or c:3');
+        expect(ast.type).toBe('logical');
+      });
+
+      it('should produce identical ASTs for case variants', () => {
+        const upper = parser.parse('status:active AND name:test');
+        const lower = parser.parse('status:active and name:test');
+        expect(JSON.stringify(upper)).toBe(JSON.stringify(lower));
+      });
+
+      it('should preserve lowercase "and" inside quoted values', () => {
+        const ast = parser.parse('name:"and"');
+        expect(ast.type).toBe('comparison');
+        expect((ast as IComparisonExpression).value).toBe('and');
+      });
+
+      it('should preserve lowercase "or" inside quoted values', () => {
+        const ast = parser.parse('title:"or not"');
+        expect(ast.type).toBe('comparison');
+        expect((ast as IComparisonExpression).value).toBe('or not');
+      });
+
+      it('should handle lowercase operators combined with parentheses', () => {
+        const ast = parser.parse(
+          '(status:active or status:pending) and priority:>2'
+        );
+        expect(ast.type).toBe('logical');
+        expect((ast as ILogicalExpression).operator).toBe('AND');
+      });
+    });
+
     // IN operator syntax tests using consistent key:[values] pattern
     describe('IN operator syntax (key:[values])', () => {
       it('should parse "field:[val1, val2, val3]" bracket array syntax', () => {

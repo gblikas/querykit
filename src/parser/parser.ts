@@ -81,6 +81,7 @@ export class QueryParser implements IQueryParser {
    * Pre-process a query string to convert non-standard syntax to Liqe-compatible syntax.
    * Supports:
    * - `field:[val1, val2, val3]` → `(field:val1 OR field:val2 OR field:val3)`
+   * - Lowercase boolean operators: `and` → `AND`, `or` → `OR`, `not` → `NOT`
    *
    * This keeps the syntax consistent with the `key:value` pattern used throughout QueryKit:
    * - `priority:>2` (comparison)
@@ -89,6 +90,11 @@ export class QueryParser implements IQueryParser {
    */
   private preprocessQuery(query: string): string {
     let result = query;
+
+    // Normalize lowercase boolean operators to uppercase.
+    // Liqe only recognizes uppercase AND, OR, NOT as boolean operators;
+    // lowercase variants are treated as bare search terms causing crashes.
+    result = this.normalizeBooleanOperators(result);
 
     // Handle `field:[val1, val2, ...]` syntax (array-like, not range)
     // Pattern: fieldName:[value1, value2, ...]
@@ -105,6 +111,83 @@ export class QueryParser implements IQueryParser {
     });
 
     return result;
+  }
+
+  /**
+   * Normalize lowercase boolean operators (and, or, not) to their uppercase
+   * equivalents (AND, OR, NOT) while preserving content inside quoted strings.
+   *
+   * Liqe only recognizes uppercase boolean operators. Without normalization,
+   * lowercase variants are parsed as bare search terms, which produces an
+   * incompatible AST that crashes during conversion.
+   */
+  private normalizeBooleanOperators(query: string): string {
+    const parts: Array<{ text: string; quoted: boolean }> = [];
+    let current = '';
+    let inDoubleQuotes = false;
+    let inSingleQuotes = false;
+
+    for (let i = 0; i < query.length; i++) {
+      const char = query[i];
+      const nextChar = query[i + 1];
+
+      if ((inDoubleQuotes || inSingleQuotes) && char === '\\' && nextChar) {
+        current += char + nextChar;
+        i++;
+        continue;
+      }
+
+      if (char === '"' && !inSingleQuotes) {
+        if (!inDoubleQuotes) {
+          if (current.length > 0) {
+            parts.push({ text: current, quoted: false });
+            current = '';
+          }
+          inDoubleQuotes = true;
+          current += char;
+        } else {
+          current += char;
+          parts.push({ text: current, quoted: true });
+          current = '';
+          inDoubleQuotes = false;
+        }
+        continue;
+      }
+
+      if (char === "'" && !inDoubleQuotes) {
+        if (!inSingleQuotes) {
+          if (current.length > 0) {
+            parts.push({ text: current, quoted: false });
+            current = '';
+          }
+          inSingleQuotes = true;
+          current += char;
+        } else {
+          current += char;
+          parts.push({ text: current, quoted: true });
+          current = '';
+          inSingleQuotes = false;
+        }
+        continue;
+      }
+
+      current += char;
+    }
+
+    if (current.length > 0) {
+      parts.push({ text: current, quoted: inDoubleQuotes || inSingleQuotes });
+    }
+
+    return parts
+      .map(part => {
+        if (part.quoted) {
+          return part.text;
+        }
+        return part.text.replace(/\b(and|or|not)\b/gi, match =>
+          match.toUpperCase()
+        );
+      })
+      .join('');
   }
 
   /**
