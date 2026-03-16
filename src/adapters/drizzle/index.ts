@@ -173,9 +173,12 @@ export class DrizzleAdapter<
               direction === 'asc' ? asc(schemaField) : desc(schemaField)
             );
           } else {
-            // Otherwise use raw SQL
+            // Security fix: Validate direction strictly before using sql.raw()
+            // This prevents SQL injection attacks via malicious direction values
+            const safeDirection =
+              direction.toLowerCase() === 'asc' ? 'ASC' : 'DESC';
             orderClauses.push(
-              sql`${sql.identifier(field)} ${sql.raw(direction.toUpperCase())}`
+              sql`${sql.identifier(field)} ${sql.raw(safeDirection)}`
             );
           }
         });
