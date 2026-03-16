@@ -155,8 +155,9 @@ describe('DrizzleAdapter', () => {
 
       // Simulate runtime input that bypasses TypeScript safety
       // This could come from: req.query.sort, JSON.parse(body), etc.
+      // Note: Uses 'todos' table from mock schema to demonstrate real threat
       await adapter.execute('todos', expression, {
-        orderBy: { unknownField: 'asc; DROP TABLE users;--' as 'asc' | 'desc' }
+        orderBy: { unknownField: 'asc; DROP TABLE todos;--' as 'asc' | 'desc' }
       });
 
       expect(mockOrderBy).toHaveBeenCalled();
@@ -171,9 +172,10 @@ describe('DrizzleAdapter', () => {
     it('should normalize malicious direction with SELECT injection to safe value', async () => {
       const expression = parser.parse('status:"active"');
 
+      // Attempts to exfiltrate data from the todos table being queried
       await adapter.execute('todos', expression, {
         orderBy: {
-          unknownField: 'asc; SELECT password FROM users--' as 'asc' | 'desc'
+          unknownField: 'asc; SELECT title FROM todos--' as 'asc' | 'desc'
         }
       });
 
@@ -181,16 +183,18 @@ describe('DrizzleAdapter', () => {
 
       const sqlString = getOrderBySqlString();
       expect(sqlString).not.toContain('SELECT');
-      expect(sqlString).not.toContain('password');
-      expect(sqlString).not.toContain('users');
+      expect(sqlString).not.toContain('title');
+      // Note: 'todos' may appear in schema context but not in injection payload
+      expect(sqlString).not.toContain('FROM todos');
     });
 
     it('should handle DESC with injection payload safely', async () => {
       const expression = parser.parse('status:"active"');
 
+      // Attempts to delete all records from the todos table
       await adapter.execute('todos', expression, {
         orderBy: {
-          unknownField: 'desc); DELETE FROM users;--' as 'asc' | 'desc'
+          unknownField: 'desc); DELETE FROM todos;--' as 'asc' | 'desc'
         }
       });
 
