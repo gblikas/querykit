@@ -169,4 +169,28 @@ describe('createQueryKit security limits', () => {
       queryKit.query('tasks').where('status:open').execute()
     ).resolves.toEqual([]);
   });
+
+  it('keeps the default timeout when queryTimeout is explicitly undefined', async () => {
+    const adapter = new RecordingAdapter();
+    adapter.hangMs = 15;
+    const queryKit = createQueryKit({
+      adapter,
+      schema: taskSchema,
+      security: { queryTimeout: undefined }
+    });
+    await expect(
+      queryKit.query('tasks').where('status:open').execute()
+    ).resolves.toEqual([]);
+  });
+
+  it('keeps the default limit when defaultLimit is explicitly undefined', async () => {
+    const adapter = new RecordingAdapter();
+    const queryKit = createQueryKit({
+      adapter,
+      schema: taskSchema,
+      security: { defaultLimit: undefined }
+    });
+    await queryKit.query('tasks').where('status:open').execute();
+    expect(adapter.executions[0]?.limit).toBe(100);
+  });
 });

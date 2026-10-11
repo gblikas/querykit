@@ -11,7 +11,7 @@ import {
   ILogicalExpression,
   QueryExpression
 } from '../../parser/types';
-import { toSqlLikePattern } from '../like-pattern';
+import { likeEscapeClause, toSqlLikePattern } from '../like-pattern';
 import { ITranslator, ITranslatorOptions } from '../types';
 
 /**
@@ -150,7 +150,7 @@ export class DrizzleTranslator implements ITranslator<SQL> {
             );
           }
           const sqlPattern = this.wildcardToSqlPattern(value);
-          return sql`${schemaField} LIKE ${sqlPattern} ESCAPE '\\'`;
+          return sql`${schemaField} LIKE ${sqlPattern} ${sql.raw(likeEscapeClause())}`;
         }
         case 'IN':
           if (!Array.isArray(value)) {
@@ -217,7 +217,7 @@ export class DrizzleTranslator implements ITranslator<SQL> {
           );
         }
         const sqlPattern = this.wildcardToSqlPattern(value);
-        return sql`${column} LIKE ${sqlPattern} ESCAPE '\\'`;
+        return sql`${column} LIKE ${sqlPattern} ${sql.raw(likeEscapeClause())}`;
       }
       case 'IN': {
         if (!Array.isArray(value)) {

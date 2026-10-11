@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { parse as liqeParse } from 'liqe';
 import type {
   BooleanOperatorToken,
@@ -68,6 +69,7 @@ export class QueryParser implements IQueryParser {
   private options: Required<IParserOptions>;
   private membershipPlaceholders: Map<string, IMembershipPlaceholder> | null =
     null;
+  private placeholderNonce = '';
 
   constructor(options: IParserOptions = {}) {
     this.options = {
@@ -81,7 +83,9 @@ export class QueryParser implements IQueryParser {
    */
   public parse(query: string): QueryExpression {
     const previousPlaceholders = this.membershipPlaceholders;
+    const previousNonce = this.placeholderNonce;
     this.membershipPlaceholders = new Map();
+    this.placeholderNonce = randomUUID();
     try {
       // Pre-process the query to handle IN operator syntax
       const preprocessedQuery = this.preprocessQuery(query);
@@ -93,6 +97,7 @@ export class QueryParser implements IQueryParser {
       );
     } finally {
       this.membershipPlaceholders = previousPlaceholders;
+      this.placeholderNonce = previousNonce;
     }
   }
 
@@ -246,7 +251,7 @@ export class QueryParser implements IQueryParser {
   ): string {
     const operator = /^not/i.test(operatorText) ? 'NOT IN' : 'IN';
     const value = this.parseMembershipValues(body);
-    const id = `\uE000qk${this.membershipPlaceholders?.size ?? 0}`;
+    const id = `\uE000qk${this.placeholderNonce}:${this.membershipPlaceholders?.size ?? 0}`;
     this.membershipPlaceholders?.set(id, { operator, value });
     return `${field}:"${id}"`;
   }
@@ -309,9 +314,9 @@ export class QueryParser implements IQueryParser {
       type: 'logical',
       operator: expression.operator,
       left: this.restoreMembership(expression.left),
-      right: expression.right
-        ? this.restoreMembership(expression.right)
-        : undefined
+      ...(expression.right && {
+        right: this.restoreMembership(expression.right)
+      })
     };
   }
 

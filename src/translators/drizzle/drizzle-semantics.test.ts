@@ -161,8 +161,8 @@ describe('DrizzleTranslator semantics', () => {
 
   it('does not let a literal backslash escape the following wildcard', (): void => {
     const compiled = compile(comparison('name', 'LIKE', 'foo\\*'));
-    expect(compiled.sql).toContain("ESCAPE '\\'");
-    expect(compiled.params).toEqual(['foo\\\\%']);
+    expect(compiled.sql).toContain("ESCAPE '!'");
+    expect(compiled.params).toEqual(['foo\\%']);
     expect(matchingIds(compiled)).toEqual([3]);
     expect(
       matchingIds(compile(comparison('name', 'LIKE', 'foo\\*'), itemSchema))

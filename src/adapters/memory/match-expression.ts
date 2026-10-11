@@ -4,7 +4,7 @@ import {
   QueryExpression,
   QueryValue
 } from '../../parser/types';
-import { toSqlLikePattern } from '../../translators/like-pattern';
+import { LIKE_ESCAPE, toSqlLikePattern } from '../../translators/like-pattern';
 import { InMemoryAdapterError } from './in-memory-adapter-error';
 
 /**
@@ -307,7 +307,7 @@ function applyOrder<T extends number | string>(
 
 /**
  * Match a whole string with SQL LIKE. `*` and `?` are converted by the
- * same helper the Drizzle translator uses, including a literal backslash.
+ * same helper the SQL and Drizzle translators use, including its escape.
  *
  * @param fieldValue Field value
  * @param pattern QueryKit wildcard pattern
@@ -339,7 +339,7 @@ function likePatternToRegExp(sqlPattern: string): RegExp {
   for (let index = 0; index < sqlPattern.length; index += 1) {
     const char = sqlPattern.charAt(index);
     const next = sqlPattern.charAt(index + 1);
-    if (char === '\\' && next) {
+    if (char === LIKE_ESCAPE && next) {
       source += escapeRegExp(next);
       index += 1;
       continue;

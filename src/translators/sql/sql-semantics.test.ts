@@ -163,9 +163,9 @@ describe('SqlTranslator semantics', () => {
     const parameterized = new SqlTranslator({ useParameters: true }).translate(
       expression
     ) as { sql: string; params: unknown[] };
-    expect(inline).toBe("\"name\" LIKE 'foo\\\\%' ESCAPE '\\'");
-    expect(parameterized.sql).toBe('"name" LIKE ? ESCAPE \'\\\'');
-    expect(parameterized.params).toEqual(['foo\\\\%']);
+    expect(inline).toBe("\"name\" LIKE 'foo\\%' ESCAPE '!'");
+    expect(parameterized.sql).toBe('"name" LIKE ? ESCAPE \'!\'');
+    expect(parameterized.params).toEqual(['foo\\%']);
     expect(matchingIds(expression, false)).toEqual([3]);
     expect(matchingIds(expression, true)).toEqual([3]);
   });

@@ -77,10 +77,10 @@ const preview = await qk.query('tasks').where('status:done AND priority:>2').exe
 
 ## Query Syntax
 
-QueryKit parses the string with Liqe. The Drizzle translator and the in-memory adapter then evaluate that AST with the same operators. `status:active` is case-sensitive equality with `active`: it does not match `inactive` or `Active`. `status:"Active"` is the same kind of equality with `Active`. `priority:2` and `priority:=2` are equality with the number `2`, so `12` does not match. `*` and `?` are case-sensitive LIKE, including inside quotes. `*` is any sequence, `?` is one character, and the pattern is anchored to the whole value. A regex parses as operator `REGEX`. `name:/Todo.*/` and `name:/foo/` are accepted by the parser. The Drizzle translator and the in-memory adapter reject that operator with an unsupported-operator error. A slash pattern that contains `*` or `?`, such as `title:/Ship.*/`, is that same `REGEX` operator and raises the error. A slash pattern without those characters, such as `name:/foo/`, is also `REGEX` and raises the same error.
+QueryKit parses the string with Liqe. The Drizzle translator and the in-memory adapter then evaluate that AST with the same operators. `status:active` is equality with `active`: it does not match `inactive` or `Active` when the comparison is case-sensitive. `status:"Active"` is the same kind of equality with `Active`. `priority:2` and `priority:=2` are equality with the number `2`, so `12` does not match. `*` and `?` are LIKE, including inside quotes. `*` is any sequence, `?` is one character, and the pattern is anchored to the whole value. Equality and LIKE are case-sensitive on PostgreSQL and in the in-memory adapter; on SQLite and MySQL they follow the column collation. A dotted field matches a literal key in memory, not a nested path. A regex parses as operator `REGEX`. `name:/Todo.*/` and `name:/foo/` are accepted by the parser. The Drizzle translator and the in-memory adapter reject that operator with an unsupported-operator error. A slash pattern that contains `*` or `?`, such as `title:/Ship.*/`, is that same `REGEX` operator and raises the error. A slash pattern without those characters, such as `name:/foo/`, is also `REGEX` and raises the same error.
 
 ```
-# Equality is case-sensitive
+# Equality
 status:active         # equals active; does not match inactive or Active
 status:"Active"       # equals Active
 
@@ -96,7 +96,7 @@ priority:<=2              # Less than or equal
 priority:[2 TO 3]         # Inclusive range
 priority:{2 TO 3}         # Exclusive range
 
-# Case-sensitive LIKE
+# LIKE
 title:intro*          # intro followed by anything
 title:Sh?p            # one character between Sh and p
 title:"Ship*"         # quotes keep the same LIKE

@@ -187,6 +187,32 @@ describe('QueryParser', () => {
       expect(parser.parse(query)).toEqual(expected);
     });
 
+    it('does not let a literal placeholder steal another membership list', () => {
+      const inputQuery = 'status:"\uE000qk0" AND tags:in[a]';
+      const actual = parser.parse(inputQuery);
+      expect(actual).toEqual({
+        type: 'logical',
+        operator: 'AND',
+        left: {
+          type: 'comparison',
+          field: 'status',
+          operator: '==',
+          value: '\uE000qk0'
+        },
+        right: {
+          type: 'comparison',
+          field: 'tags',
+          operator: 'IN',
+          value: ['a']
+        }
+      });
+    });
+
+    it('omits right on a unary NOT', () => {
+      const actual = parser.parse('NOT status:done');
+      expect('right' in actual).toBe(false);
+    });
+
     it('should parse NOT expressions', () => {
       const query = 'NOT status:inactive';
       const expected: QueryExpression = {

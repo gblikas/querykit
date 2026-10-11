@@ -245,7 +245,8 @@ export interface ISecurityOptions {
 
   /**
    * Timeout in milliseconds for query execution.
-   * Prevents long-running queries from consuming excessive resources.
+   * When execution exceeds this limit, the call rejects. The underlying
+   * statement is not cancelled.
    *
    * @default 30000 (30 seconds)
    *
@@ -254,7 +255,7 @@ export interface ISecurityOptions {
    * // Set shorter timeout for API endpoints
    * queryTimeout: 5000 // 5 seconds
    *
-   * // Queries taking longer than 5 seconds will be terminated
+   * // The call rejects after 5 seconds. The underlying statement is not cancelled.
    * ```
    */
   queryTimeout?: number;

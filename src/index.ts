@@ -231,8 +231,31 @@ function resolveSecurityOptions(
 ): Required<ISecurityOptions> {
   return {
     ...DEFAULT_SECURITY_OPTIONS,
-    ...security
+    ...definedSecurityOptions(security)
   };
+}
+
+/**
+ * Drop undefined security options so the QueryKit defaults stay in place.
+ *
+ * @param security - Caller security options, if any
+ * @returns Provided options with undefined values removed
+ */
+function definedSecurityOptions(
+  security: ISecurityOptions | undefined
+): Partial<ISecurityOptions> {
+  const provided: Partial<ISecurityOptions> = {};
+  if (security === undefined) {
+    return provided;
+  }
+  (Object.keys(security) as Array<keyof ISecurityOptions>).forEach(
+    (key: keyof ISecurityOptions): void => {
+      if (security[key] !== undefined) {
+        Object.assign(provided, { [key]: security[key] });
+      }
+    }
+  );
+  return provided;
 }
 
 /**

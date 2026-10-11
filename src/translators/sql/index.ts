@@ -10,7 +10,7 @@ import {
   ILogicalExpression,
   QueryExpression
 } from '../../parser/types';
-import { toSqlLikePattern } from '../like-pattern';
+import { likeEscapeClause, toSqlLikePattern } from '../like-pattern';
 import { ITranslator, ITranslatorOptions } from '../types';
 
 /**
@@ -169,7 +169,8 @@ export class SqlTranslator
           );
         }
         const sqlPattern = this.wildcardToSqlPattern(value);
-        return `${quotedField} LIKE ${this.formatValue(sqlPattern)} ${this.likeEscapeClause()}`;
+        const escapeClause = likeEscapeClause(this.options.stringLiteralQuote);
+        return `${quotedField} LIKE ${this.formatValue(sqlPattern)} ${escapeClause}`;
       }
       case 'IN': {
         if (!Array.isArray(value)) {
@@ -203,15 +204,6 @@ export class SqlTranslator
    */
   private wildcardToSqlPattern(pattern: string): string {
     return toSqlLikePattern(pattern);
-  }
-
-  /**
-   * ESCAPE clause paired with {@link toSqlLikePattern}.
-   * The escape character is one backslash, quoted with the configured literal quote.
-   */
-  private likeEscapeClause(): string {
-    const quote = this.options.stringLiteralQuote;
-    return `ESCAPE ${quote}\\${quote}`;
   }
 
   /**
