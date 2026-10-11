@@ -256,19 +256,34 @@ export class QueryBuilder<T> implements IQueryBuilder<T> {
     if (value === null) {
       return 'null';
     }
-
     if (Array.isArray(value)) {
-      return `[${value.map(v => this.formatValue(v)).join(',')}]`;
+      return `[${value.map(item => this.formatValue(item)).join(',')}]`;
     }
-
     if (typeof value === 'string') {
-      // For LIKE operator with wildcard patterns, don't add quotes to allow pattern matching
-      if (operator === 'LIKE' && (value.includes('*') || value.includes('?'))) {
+      if (this.isBareLikeToken(value, operator)) {
         return value;
       }
-      return `"${value}"`;
+      return `"${this.escapeQuotedValue(value)}"`;
     }
-
     return String(value);
+  }
+
+  /**
+   * Keep a simple wildcard token unquoted.
+   * Any other character is quoted so it cannot become another clause.
+   */
+  private isBareLikeToken(value: string, operator?: ComparisonOperator): boolean {
+    return (
+      operator === 'LIKE' &&
+      (value.includes('*') || value.includes('?')) &&
+      /^[A-Za-z0-9*?]+$/.test(value)
+    );
+  }
+
+  /**
+   * Escape a string that will be wrapped in double quotes.
+   */
+  private escapeQuotedValue(value: string): string {
+    return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
   }
 } 

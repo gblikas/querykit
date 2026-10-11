@@ -14,7 +14,7 @@
  *
  * @example
  * ```typescript
- * import { createQueryKit, type ISecurityOptions } from 'querykit';
+ * import { createQueryKit, type ISecurityOptions } from '@gblikas/querykit';
  *
  * // Configure security options
  * const securityOptions: ISecurityOptions = {
@@ -268,7 +268,7 @@ export interface ISecurityOptions {
  *
  * @example
  * ```typescript
- * import { DEFAULT_SECURITY_OPTIONS } from 'querykit';
+ * import { DEFAULT_SECURITY_OPTIONS } from '@gblikas/querykit';
  *
  * // Use defaults but override specific options
  * const securityOptions = {

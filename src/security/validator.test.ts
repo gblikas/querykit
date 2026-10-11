@@ -1022,4 +1022,26 @@ describe('QuerySecurityValidator', () => {
       }).not.toThrow();
     });
   });
+
+  describe('inherited property names', () => {
+    it('does not treat inherited deny lists as value denials', () => {
+      const subject = new QuerySecurityValidator({
+        denyValues: { status: ['deleted'] }
+      });
+      const inheritedName: IComparisonExpression = {
+        type: 'comparison',
+        field: 'constructor',
+        operator: '==',
+        value: 'active'
+      };
+      expect(() => subject.validate(inheritedName)).not.toThrow();
+      const denied: IComparisonExpression = {
+        type: 'comparison',
+        field: 'status',
+        operator: '==',
+        value: 'deleted'
+      };
+      expect(() => subject.validate(denied)).toThrow(QuerySecurityError);
+    });
+  });
 });

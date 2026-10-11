@@ -36,8 +36,7 @@ export class QuerySecurityError extends Error {
  *
  * @example
  * ```typescript
- * import { QuerySecurityValidator, ISecurityOptions } from 'querykit';
- * import { parseQuery } from 'querykit/parser';
+ * import { QueryParser, QuerySecurityValidator, ISecurityOptions } from '@gblikas/querykit';
  *
  * // Define security options
  * const securityOptions: ISecurityOptions = {
@@ -54,7 +53,7 @@ export class QuerySecurityError extends Error {
  *   try {
  *     // Parse the query from request
  *     const queryStr = req.query.filter || '';
- *     const parsedQuery = parseQuery(queryStr);
+ *     const parsedQuery = new QueryParser().parse(queryStr);
  *
  *     // Validate against security rules
  *     validator.validate(parsedQuery, userSchema);
@@ -112,13 +111,13 @@ export class QuerySecurityValidator {
    *
    * @example
    * ```typescript
-   * import { parseQuery } from 'querykit/parser';
+   * import { QueryParser, QuerySecurityValidator } from '@gblikas/querykit';
    *
    * const validator = new QuerySecurityValidator();
    *
    * // Simple validation
    * try {
-   *   const query = parseQuery('user.name == "John" && user.priority > 2');
+   *   const query = new QueryParser().parse('user.name == "John" && user.priority > 2');
    *   validator.validate(query);
    *   // Query is safe to execute
    * } catch (error) {
@@ -136,7 +135,7 @@ export class QuerySecurityValidator {
    * };
    *
    * try {
-   *   const query = parseQuery('user.email == "john@example.com"');
+   *   const query = new QueryParser().parse('user.email == "john@example.com"');
    *   validator.validate(query, userSchema);
    *   // Query is safe to execute
    * } catch (error) {
@@ -278,6 +277,11 @@ export class QuerySecurityValidator {
 
     if (expression.type === 'comparison') {
       const { field, value } = expression;
+      // Bracket access walks the prototype. `constructor` is a function
+      // whose `.length` is 1, so it was treated as a deny list and then crashed.
+      if (!Object.prototype.hasOwnProperty.call(this.options.denyValues, field)) {
+        return;
+      }
       const deniedValues = this.options.denyValues[field];
 
       if (deniedValues && deniedValues.length > 0) {

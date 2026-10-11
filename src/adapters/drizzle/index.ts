@@ -92,10 +92,13 @@ export class DrizzleAdapterError extends Error {
  */
 export class DrizzleAdapter<
   TSchema extends Record<string, unknown> = Record<string, unknown>
-> implements IAdapter<IDrizzleAdapterOptions<TSchema>> {
+> implements IAdapter<IDrizzleAdapterOptions<TSchema>>
+{
   private db!: unknown;
   private schema!: TSchema;
   private translator!: DrizzleTranslator;
+  private fieldMappings: Record<string, string> = {};
+  private normalizeFieldNames = false;
   private initialized: boolean = false;
 
   /**
@@ -121,6 +124,8 @@ export class DrizzleAdapter<
 
     this.db = options.db;
     this.schema = options.schema;
+    this.fieldMappings = options.fieldMappings ?? {};
+    this.normalizeFieldNames = options.normalizeFieldNames ?? false;
     this.translator = new DrizzleTranslator({
       normalizeFieldNames: options.normalizeFieldNames,
       fieldMappings: options.fieldMappings,
@@ -162,27 +167,9 @@ export class DrizzleAdapter<
       // Add ordering if specified
       if (options?.orderBy) {
         const orderClauses: SQL[] = [];
-
-        Object.entries(options.orderBy).forEach(([field, direction]) => {
-          // Try to find the field in the schema
-          const schemaField = this.getSchemaField(tableName, field);
-
-          if (schemaField) {
-            // If field exists in schema, use it directly
-            orderClauses.push(
-              direction === 'asc' ? asc(schemaField) : desc(schemaField)
-            );
-          } else {
-            // Security fix: Validate direction strictly before using sql.raw()
-            // This prevents SQL injection attacks via malicious direction values
-            const safeDirection =
-              direction.toLowerCase() === 'asc' ? 'ASC' : 'DESC';
-            orderClauses.push(
-              sql`${sql.identifier(field)} ${sql.raw(safeDirection)}`
-            );
-          }
-        });
-
+        for (const [field, direction] of Object.entries(options.orderBy)) {
+          orderClauses.push(this.orderClause(tableName, field, direction));
+        }
         if (orderClauses.length > 0) {
           query = query.orderBy(...orderClauses);
         }
@@ -230,6 +217,70 @@ export class DrizzleAdapter<
   /**
    * Get a field from the schema
    */
+  /**
+   * Build one ORDER BY clause.
+   * Direction is accepted only as ASC or DESC. Unmapped fields are validated
+   * before quoting because Drizzle's identifier escaping does not double quotes.
+   */
+  private orderClause(
+    tableName: string,
+    field: string,
+    direction: string
+  ): SQL {
+    const resolvedField = this.resolveFieldName(field);
+    const schemaField = this.getSchemaField(tableName, resolvedField);
+    const sortDirection = this.sortDirection(direction);
+    if (schemaField) {
+      return sortDirection === 'ASC' ? asc(schemaField) : desc(schemaField);
+    }
+    return sql`${this.quoteFieldName(resolvedField)} ${sql.raw(sortDirection)}`;
+  }
+
+  private resolveFieldName(fieldName: string): string {
+    const normalizedField = this.normalizeFieldNames
+      ? fieldName.toLowerCase()
+      : fieldName;
+    if (
+      Object.prototype.hasOwnProperty.call(this.fieldMappings, normalizedField)
+    ) {
+      return this.fieldMappings[normalizedField];
+    }
+    return normalizedField;
+  }
+
+  private sortDirection(direction: string): 'ASC' | 'DESC' {
+    return direction.toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+  }
+
+  /**
+   * Quote a field Drizzle will inline. Rejects names that can break out of
+   * the surrounding quotes.
+   */
+  private quoteFieldName(fieldName: string): SQL {
+    if (!this.isValidFieldName(fieldName)) {
+      throw new DrizzleAdapterError(`Invalid field name: ${fieldName}`);
+    }
+    const parts = fieldName.split('.');
+    if (parts.length === 1) {
+      return sql`${sql.identifier(parts[0])}`;
+    }
+    return sql`${sql.identifier(parts[0])}.${sql.identifier(parts[1])}`;
+  }
+
+  private isValidFieldName(fieldName: string): boolean {
+    const validFieldPattern = /^[a-zA-Z][a-zA-Z0-9._]*$/;
+    const parts = fieldName.split('.');
+    if (parts.length > 2) {
+      return false;
+    }
+    return parts.every(
+      (part: string): boolean =>
+        validFieldPattern.test(part) &&
+        part.length <= 64 &&
+        !part.includes('__')
+    );
+  }
+
   private getSchemaField(
     tableName: string,
     fieldName: string
@@ -239,8 +290,22 @@ export class DrizzleAdapter<
       Record<string, SQLWrapper>
     >;
     const table = schemaAsColumns[tableName];
-    if (table && fieldName in table) {
+    if (!table) {
+      return null;
+    }
+    if (Object.prototype.hasOwnProperty.call(table, fieldName)) {
       return table[fieldName];
+    }
+    const separator = fieldName.indexOf('.');
+    if (separator > 0) {
+      const prefix = fieldName.slice(0, separator);
+      const columnName = fieldName.slice(separator + 1);
+      if (
+        prefix === tableName &&
+        Object.prototype.hasOwnProperty.call(table, columnName)
+      ) {
+        return table[columnName];
+      }
     }
     return null;
   }

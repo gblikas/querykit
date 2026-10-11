@@ -10,7 +10,12 @@
 import { QueryBuilder, IQueryBuilderOptions } from './query';
 import { QueryParser, IParserOptions } from './parser';
 import { SqlTranslator } from './translators/sql';
-import { ISecurityOptions, QuerySecurityValidator } from './security';
+import {
+  DEFAULT_SECURITY_OPTIONS,
+  ISecurityOptions,
+  QuerySecurityError,
+  QuerySecurityValidator
+} from './security';
 import { IAdapter, IAdapterOptions } from './adapters';
 import {
   IQueryContext,
@@ -216,6 +221,76 @@ function applyEnforcedExclusions(
 }
 
 /**
+ * Merge caller security options with QueryKit defaults.
+ *
+ * @param security - Caller security options, if any
+ * @returns Fully populated security settings
+ */
+function resolveSecurityOptions(
+  security: ISecurityOptions | undefined
+): Required<ISecurityOptions> {
+  return {
+    ...DEFAULT_SECURITY_OPTIONS,
+    ...security
+  };
+}
+
+/**
+ * Choose the limit forwarded to the adapter.
+ *
+ * An omitted limit uses `defaultLimit`. A limit above `maxLimit` is capped.
+ * The chosen limit is always less than or equal to `maxLimit`.
+ *
+ * @param requestedLimit - Limit supplied by the caller, if any
+ * @param security - Resolved security settings
+ * @returns The limit to send to the adapter
+ * @throws {QuerySecurityError} When the limit is negative or non-finite
+ */
+function resolveResultLimit(
+  requestedLimit: number | undefined,
+  security: Required<ISecurityOptions>
+): number {
+  const chosenLimit =
+    requestedLimit === undefined ? security.defaultLimit : requestedLimit;
+  if (!Number.isFinite(chosenLimit) || chosenLimit < 0) {
+    throw new QuerySecurityError('Invalid query limit');
+  }
+  if (chosenLimit > security.maxLimit) {
+    return security.maxLimit;
+  }
+  return chosenLimit;
+}
+
+/**
+ * Stop waiting when execution exceeds the configured timeout.
+ *
+ * @param operation - Adapter execution already in progress
+ * @param timeoutMs - Maximum time to wait, in milliseconds
+ * @returns The adapter result
+ * @throws {QuerySecurityError} When the operation exceeds timeoutMs
+ */
+async function executeWithTimeout<T>(
+  operation: Promise<T>,
+  timeoutMs: number
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      reject(
+        new QuerySecurityError(`Query exceeded timeout of ${timeoutMs}ms`)
+      );
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([operation, timeout]);
+  } finally {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
+  }
+}
+
+/**
  * Create a new QueryKit instance
  */
 export function createQueryKit<
@@ -226,7 +301,8 @@ export function createQueryKit<
   }
 >(options: IQueryKitOptions<TSchema, TContext>): QueryKit<TSchema, TRows> {
   const parser = new QueryParser(options.parserOptions);
-  const securityValidator = new QuerySecurityValidator(options.security);
+  const securityOptions = resolveSecurityOptions(options.security);
+  const securityValidator = new QuerySecurityValidator(securityOptions);
   const isTolerant = options.tolerant ?? false;
 
   // Initialize adapter if options provided. If adapter is already initialized,
@@ -345,18 +421,21 @@ export function createQueryKit<
                     )
                   : resolvedExpression;
 
-              // Delegate to adapter
-              const results = await options.adapter.execute(
-                table,
-                finalExpression,
-                {
+              // Delegate to adapter with resource limits from security settings
+              const effectiveLimit = resolveResultLimit(
+                limitState,
+                securityOptions
+              );
+              const results = await executeWithTimeout(
+                options.adapter.execute(table, finalExpression, {
                   orderBy:
                     Object.keys(orderByState).length > 0
                       ? orderByState
                       : undefined,
-                  limit: limitState,
+                  limit: effectiveLimit,
                   offset: offsetState
-                }
+                }),
+                securityOptions.queryTimeout
               );
               return results as TRows[K][];
             }

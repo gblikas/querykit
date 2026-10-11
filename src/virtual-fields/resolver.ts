@@ -68,12 +68,12 @@ function resolveComparisonExpression<
   context: TContext
 ): QueryExpression {
   const fieldName = expr.field;
-  const virtualFieldDef = virtualFields[fieldName];
-
-  // Not a virtual field, return as-is
-  if (!virtualFieldDef) {
+  // Bracket access walks the prototype, so `toString` is a function and
+  // crashes when a real virtual field is configured beside it.
+  if (!Object.prototype.hasOwnProperty.call(virtualFields, fieldName)) {
     return expr;
   }
+  const virtualFieldDef = virtualFields[fieldName];
 
   // Validate the value type (virtual fields accept string, number, or boolean values)
   const valueType = typeof expr.value;

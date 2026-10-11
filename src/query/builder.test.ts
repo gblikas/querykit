@@ -269,4 +269,83 @@ describe('QueryBuilder', () => {
       expect(query).toBe('title:"Bug fix"');
     });
   });
+
+  describe('string values stay data', () => {
+    it('keeps a quote inside a value from changing the query', () => {
+      const expression = builder
+        .where('status', '==', 'a" OR priority:>0')
+        .getExpression();
+      expect(expression).toEqual({
+        type: 'comparison',
+        field: 'status',
+        operator: '==',
+        value: 'a" OR priority:>0'
+      });
+    });
+
+    it('keeps a wildcard value from adding another clause', () => {
+      const expression = builder
+        .where('title', 'LIKE', 'a* OR status:done')
+        .getExpression();
+      expect(expression).toEqual({
+        type: 'comparison',
+        field: 'title',
+        operator: 'LIKE',
+        value: 'a* OR status:done'
+      });
+    });
+
+    it('keeps a quote inside an IN member', () => {
+      const expression = builder
+        .where('status', 'IN', ['a"b', 'c'])
+        .getExpression();
+      expect(expression).toEqual({
+        type: 'comparison',
+        field: 'status',
+        operator: 'IN',
+        value: ['a"b', 'c']
+      });
+      expect(builder.where('priority', 'IN', [1, null]).getExpression()).toEqual({
+        type: 'comparison',
+        field: 'priority',
+        operator: 'IN',
+        value: [1, null]
+      });
+      expect(builder.where('status', 'IN', []).getExpression()).toEqual({
+        type: 'comparison',
+        field: 'status',
+        operator: 'IN',
+        value: []
+      });
+      expect(
+        builder.where('status', 'NOT IN', ['a"b']).getExpression()
+      ).toEqual({
+        type: 'comparison',
+        field: 'status',
+        operator: 'NOT IN',
+        value: ['a"b']
+      });
+      expect(
+        builder
+          .where('priority', '>', 1)
+          .andWhere('status', 'IN', ['a"b', 'c'])
+          .getExpression()
+      ).toEqual({
+        type: 'logical',
+        operator: 'AND',
+        left: {
+          type: 'comparison',
+          field: 'priority',
+          operator: '>',
+          value: 1
+        },
+        right: {
+          type: 'comparison',
+          field: 'status',
+          operator: 'IN',
+          value: ['a"b', 'c']
+        }
+      });
+    });
+  });
 });

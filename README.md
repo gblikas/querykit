@@ -1,16 +1,16 @@
 # QueryKit
 
-QueryKit is a modern query toolkit for Lucene-style search, designed to give developers a head-start for dynamic search. QueryKit simplifies how you build and execute fielded searchs across different databases and ORMs. It provides a unified, intuitive SDK for filtering, sorting, and transforming data, and handles the heavy lifting of parsing and translating those queries to your data source. 
+QueryKit compiles a Liqe / GitHub-like filter string into a Drizzle query or an in-memory filter, with field allowlists, clause limits, request-context virtual fields, and a token parser for a search box. Other ORMs, a CLI, and HTTP middleware are not implemented.
 
 ## What Does QueryKit Do?
 
-QueryKit allows developers to define queries in a high-level, readable format and then run those queries anywhere (in the browser, on the server, or via CLI). Instead of writing different query logic for each layer of your stack, you can use QueryKit's consistent API to:
+QueryKit takes one filter string and evaluates it with the Drizzle adapter or with `filterInMemory`.
 
-- **Filter and sort data with a Lucene-like query language** – For example, `status:done AND in:todos`. 
+- **Filter and sort with a Liqe query** – For example, `status:done AND priority:>2`.
 
-- **Translate high-level queries to concrete implementations** – QueryKit takes your schema definition and converts it into the appropriate form for the environment. 
+- **Translate that string to Drizzle, or apply it in memory** – `drizzleAdapter` builds a Drizzle query. `filterInMemory` and `inMemoryAdapter` keep rows that match the same operators.
 
-- **Unify front‑end and back‑end filtering logic** – The same QueryKit query can be run in a front-end app for client-side filtering or on a server for database queries. This ensures consistency in how data is filtered across your application.
+- **Share the string between a database query and a fetched array** – The Query Syntax section is the contract for both.
 
 ## Quick Start
 
@@ -34,8 +34,7 @@ type SelectUser = InferSelectModel<typeof users>;
 
 // example.ts
 import { SelectUser } from './schema';
-import { createQueryKit } from 'querykit';
-import { drizzleAdapter } from 'querykit/adapters/drizzle';
+import { createQueryKit, drizzleAdapter } from '@gblikas/querykit';
 
 // Create a QueryKit instance with Drizzle adapter
 const qk = createQueryKit({
@@ -53,29 +52,58 @@ const query = qk.query('users')
 const results = await query.execute();
 ```
 
+**In-memory**
+
+The same query string can filter a fetched array. QueryKit parses it with the existing parser and keeps a row when it satisfies the same operators the Drizzle translator emits. `status:active` keeps `active`. `priority:2` keeps `2`. `*` and `?` are case-sensitive SQL LIKE, including inside quotes. Order, limit, and offset then run as field order on that result.
+
+```typescript
+import { createQueryKit, filterInMemory, inMemoryAdapter } from '@gblikas/querykit';
+
+const tasks = [
+  { title: 'Ship release', status: 'done', priority: 3 },
+  { title: 'Fix bug', status: 'inactive', priority: 1 }
+];
+
+filterInMemory('status:done AND priority:>2', tasks);
+// [{ title: 'Ship release', status: 'done', priority: 3 }]
+
+const qk = createQueryKit({
+  adapter: inMemoryAdapter({ records: { tasks } }),
+  schema: { tasks: { title: {}, status: {}, priority: {} } }
+});
+
+const preview = await qk.query('tasks').where('status:done AND priority:>2').execute();
+```
+
 ## Query Syntax
 
-QueryKit uses Liqe Query Language (LQL), which is a Lucene-like syntax for filtering data:
+QueryKit parses the string with Liqe. The Drizzle translator and the in-memory adapter then evaluate that AST with the same operators. `status:active` is case-sensitive equality with `active`: it does not match `inactive` or `Active`. `status:"Active"` is the same kind of equality with `Active`. `priority:2` and `priority:=2` are equality with the number `2`, so `12` does not match. `*` and `?` are case-sensitive LIKE, including inside quotes. `*` is any sequence, `?` is one character, and the pattern is anchored to the whole value. A regex parses as operator `REGEX`. `name:/Todo.*/` and `name:/foo/` are accepted by the parser. The Drizzle translator and the in-memory adapter reject that operator with an unsupported-operator error. A slash pattern that contains `*` or `?`, such as `title:/Ship.*/`, is that same `REGEX` operator and raises the error. A slash pattern without those characters, such as `name:/foo/`, is also `REGEX` and raises the same error.
 
 ```
-# Basic field queries
-status:active         # Field equals value (case insensitive)
-status:"Active"       # Field equals value (case sensitive)
+# Equality is case-sensitive
+status:active         # equals active; does not match inactive or Active
+status:"Active"       # equals Active
 
 # Comparison operators
+priority:2                # equals 2; does not match 12
+priority:=2               # same equality as priority:2
 priority:>2               # Greater than
 priority:>=2              # Greater than or equal
 priority:<2               # Less than
 priority:<=2              # Less than or equal
-priority:=2               # Exact equals
 
-# Ranges
-dueDate:[2023-01-01 TO 2023-01-31]      # Inclusive range
-dueDate:{2023-01-01 TO 2023-01-31}      # Exclusive range
+# Numeric ranges
+priority:[2 TO 3]         # Inclusive range
+priority:{2 TO 3}         # Exclusive range
 
-# Pattern matching
-name:/Todo.*/         # Regular expression
-title:intro*          # Wildcard matching
+# Case-sensitive LIKE
+title:intro*          # intro followed by anything
+title:Sh?p            # one character between Sh and p
+title:"Ship*"         # quotes keep the same LIKE
+
+# Regex parses as operator REGEX and is rejected by translators and in-memory
+name:/Todo.*/         # unsupported operator REGEX
+name:/foo/            # unsupported operator REGEX
 
 # Boolean operators (case insensitive)
 status:active AND priority:>2     # AND operator
@@ -170,18 +198,16 @@ If autofix also fails, an error is still thrown, ensuring silent data corruption
 ## Installation
 
 ```bash
-npm install querykit
+npm install @gblikas/querykit
 ```
 
 ## Dependencies
 
 QueryKit leverages several key dependencies to provide its functionality:
 
-- [**Liqe**](https://github.com/gajus/liqe): A lightweight and performant Lucene-like parser, serializer, and search engine. QueryKit uses Liqe for parsing the query syntax into an abstract syntax tree (AST) that can then be translated to various target languages.
+- [**Liqe**](https://github.com/gajus/liqe): A lightweight Lucene-like parser. QueryKit uses Liqe to parse the query string into an AST. The Drizzle translator and the in-memory adapter evaluate that AST.
 
-- [**Drizzle ORM**](https://github.com/drizzle-team/drizzle-orm): A TypeScript ORM that's used for SQL database interactions. QueryKit's Drizzle adapter translates queries into Drizzle ORM queries.
-
-Additional dependencies will be added as the project evolves.
+- [**Drizzle ORM**](https://github.com/drizzle-team/drizzle-orm): A TypeScript ORM for SQL databases. QueryKit peers `drizzle-orm` `>=0.30.2 <0.46.0`. The Drizzle adapter translates queries into Drizzle queries. Install Drizzle in the app; QueryKit does not bundle its own copy.
 
 ## Security Features
 
@@ -190,8 +216,7 @@ QueryKit provides configurable security guardrails to protect your database from
 > **IMPORTANT DISCLAIMER**: While QueryKit provides guardrails to help protect against common query-related vulnerabilities, it is not a comprehensive security solution. These features are provided as helpful tools, not guarantees. You are still responsible for implementing proper authentication, authorization, and other security measures in your application. QueryKit does not guarantee protection against all forms of database attacks or query exploits.
 
 ```typescript
-import { createQueryKit } from 'querykit';
-import { drizzleAdapter } from 'querykit/adapters/drizzle';
+import { createQueryKit, drizzleAdapter } from '@gblikas/querykit';
 
 const qk = createQueryKit({
   adapter: drizzleAdapter,
@@ -528,8 +553,7 @@ Virtual fields are useful when:
 Define virtual fields when creating your QueryKit instance:
 
 ```typescript
-import { createQueryKit } from '@gblikas/querykit';
-import { drizzleAdapter } from '@gblikas/querykit/adapters/drizzle';
+import { createQueryKit, drizzleAdapter } from '@gblikas/querykit';
 
 const qk = createQueryKit({
   adapter: drizzleAdapter,
@@ -757,8 +781,7 @@ qk.query('tasks').where('my:>assigned')
 Here's a full example with multiple virtual fields:
 
 ```typescript
-import { createQueryKit, IQueryContext, ComparisonOperator } from '@gblikas/querykit';
-import { drizzleAdapter } from '@gblikas/querykit/adapters/drizzle';
+import { createQueryKit, drizzleAdapter, IQueryContext, ComparisonOperator } from '@gblikas/querykit';
 
 // Define your context type
 interface TaskQueryContext extends IQueryContext {
@@ -940,9 +963,7 @@ Use raw SQL expressions when you need to:
 #### Basic Example
 
 ```typescript
-import { createQueryKit } from '@gblikas/querykit';
-import { drizzleAdapter } from '@gblikas/querykit/adapters/drizzle';
-import { jsonbContains, dateWithinDays } from '@gblikas/querykit/virtual-fields';
+import { createQueryKit, dateWithinDays, drizzleAdapter, jsonbContains } from '@gblikas/querykit';
 import { sql } from 'drizzle-orm';
 
 interface MyContext extends IQueryContext {
@@ -1006,7 +1027,7 @@ QueryKit provides helper functions for common raw SQL patterns:
 Checks if a JSONB array field contains the given value:
 
 ```typescript
-import { jsonbContains } from '@gblikas/querykit/virtual-fields';
+import { jsonbContains } from '@gblikas/querykit';
 
 // Check if assignedTo contains the current user ID
 jsonbContains('assigned_to', ctx.currentUserId)
@@ -1022,7 +1043,7 @@ jsonbContains('tags', ['urgent', 'review'])
 Checks if a timestamp field is within the specified number of days from now:
 
 ```typescript
-import { dateWithinDays } from '@gblikas/querykit/virtual-fields';
+import { dateWithinDays } from '@gblikas/querykit';
 
 // Check if created within last day
 dateWithinDays('created_at', 1)
@@ -1064,6 +1085,7 @@ Here's a complete example with a Drizzle schema that uses JSONB:
 ```typescript
 import { pgTable, serial, varchar, timestamp, jsonb } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
+import { createQueryKit, drizzleAdapter, jsonbContains } from '@gblikas/querykit';
 
 export const tasks = pgTable('tasks', {
   id: serial('id').primaryKey(),
@@ -1131,24 +1153,15 @@ await qk.query('tasks')
 ### First Adapters
 - [x] Drizzle ORM integration
 - [x] Implement SQL translation layer
-- [ ] In-memory JavaScript filtering
+- [x] In-memory JavaScript filtering
 - [x] Query validation and error handling
 - [x] Support for schema-aware queries
 
 ### Advanced Features
-- [ ] CLI tools for testing and debugging
 - [x] Performance optimizations for SQL generation
 - [x] Support for complex nested expressions
 - [x] Raw SQL expressions for virtual fields (JSONB, computed fields, custom SQL)
-- [ ] Custom function support
-- [ ] Pagination helpers
 - [x] Virtual fields for context-aware query expansion
-
-### Ecosystem Expansion
-- [x] Frontend query builder components (input parser)
-- [ ] Additional ORM adapters
-- [ ] Server middleware for Express/Fastify
-- [ ] TypeScript SDK generation
 
 ## Contributing
 

@@ -1,7 +1,8 @@
 import { DrizzleAdapter, IDrizzleDatabase } from './index';
 import { QueryParser } from '../../parser';
 import { QueryExpression } from '../../parser/types';
-import { SQLWrapper, sql } from 'drizzle-orm';
+import { SQL, SQLWrapper, sql } from 'drizzle-orm';
+import { SQLiteSyncDialect } from 'drizzle-orm/sqlite-core';
 
 // Create mocks
 const mockWhere = jest.fn().mockReturnThis();
@@ -253,6 +254,74 @@ describe('DrizzleAdapter', () => {
       expect(sqlString).not.toContain('INVALID_DIRECTION');
       // Should contain the safe fallback value (DESC when input is not 'asc')
       expect(sqlString).toContain('DESC');
+    });
+  });
+
+  describe('orderBy field resolution', () => {
+    const dialect = new SQLiteSyncDialect();
+
+    function compiledOrderBy(): string {
+      const clause = mockOrderBy.mock.calls[0][0] as SQL;
+      return dialect.sqlToQuery(clause).sql;
+    }
+
+    it('sorts ASC when the runtime direction is uppercase and the field is in the schema', async (): Promise<void> => {
+      const expression = parser.parse('status:"active"');
+      await adapter.execute('todos', expression, {
+        orderBy: { title: 'ASC' as 'asc' }
+      });
+      expect(compiledOrderBy().toLowerCase()).toBe('title asc');
+    });
+
+    it('applies field mappings before choosing an order column', async (): Promise<void> => {
+      adapter.initialize({
+        db: mockDb,
+        schema: mockSchema,
+        fieldMappings: { displayName: 'title' }
+      });
+      const expression = parser.parse('status:"active"');
+      await adapter.execute('todos', expression, {
+        orderBy: { displayName: 'asc' }
+      });
+      expect(compiledOrderBy().toLowerCase()).toBe('title asc');
+    });
+
+    it('normalizes field names before choosing an order column', async (): Promise<void> => {
+      adapter.initialize({
+        db: mockDb,
+        schema: mockSchema,
+        normalizeFieldNames: true
+      });
+      const expression = parser.parse('status:"active"');
+      await adapter.execute('todos', expression, {
+        orderBy: { Title: 'asc' }
+      });
+      expect(compiledOrderBy().toLowerCase()).toBe('title asc');
+    });
+
+    it('resolves a table-qualified order field onto the current table column', async (): Promise<void> => {
+      const expression = parser.parse('status:"active"');
+      await adapter.execute('todos', expression, {
+        orderBy: { 'todos.title': 'asc' }
+      });
+      expect(compiledOrderBy().toLowerCase()).toBe('title asc');
+    });
+
+    it('rejects order fields that break out of a quoted identifier', async (): Promise<void> => {
+      const expression = parser.parse('status:"active"');
+      await expect(
+        adapter.execute('todos', expression, {
+          orderBy: { 'title"; DROP TABLE todos;--': 'asc' }
+        })
+      ).rejects.toThrow(/Invalid field name/);
+    });
+
+    it('does not treat inherited properties as order columns', async (): Promise<void> => {
+      const expression = parser.parse('status:"active"');
+      await adapter.execute('todos', expression, {
+        orderBy: { toString: 'asc' }
+      });
+      expect(compiledOrderBy()).toBe('"toString" ASC');
     });
   });
 });
