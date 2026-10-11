@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev --turbopack",
+    "prebuild": "sh ./scripts/build-querykit.sh",
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
