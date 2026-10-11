@@ -154,12 +154,44 @@ export class QueryParser implements IQueryParser {
 
   /**
    * Rewrite `field:!=value` to `NOT field:value` outside of literals.
-   * Liqe's comparison operators do not include not-equals.
+   * Liqe's comparison operators do not include not-equals. The field may be
+   * bare or quoted, so this scans with the same field reader the bracket
+   * rewrite uses instead of a regex over the unquoted text.
    */
   private rewriteInequalityOperators(query: string): string {
-    return transformCodeSegments(query, code =>
-      code.replace(/([A-Za-z_$][\w$.]*):!=/g, 'NOT $1:')
-    );
+    let result = '';
+    let index = 0;
+    while (index < query.length) {
+      const rewritten = this.matchInequality(query, index);
+      if (rewritten) {
+        result += rewritten.text;
+        index = rewritten.end;
+        continue;
+      }
+      const literal = readLiteralAt(query, index);
+      if (literal.kind !== 'none') {
+        result += query.slice(index, literal.end);
+        index = literal.end;
+        continue;
+      }
+      result += query[index] ?? '';
+      index += 1;
+    }
+    return result;
+  }
+
+  private matchInequality(
+    query: string,
+    index: number
+  ): { text: string; end: number } | null {
+    if (index > 0 && /[\w$.]/.test(query[index - 1] ?? '')) {
+      return null;
+    }
+    const field = this.readFieldToken(query, index);
+    if (!field || !query.startsWith(':!=', field.end)) {
+      return null;
+    }
+    return { text: `NOT ${field.text}:`, end: field.end + 3 };
   }
 
   /**
@@ -205,7 +237,8 @@ export class QueryParser implements IQueryParser {
     const membership = this.matchMembershipOperator(query, field.end + 1);
     if (membership) {
       const closeIndex = this.readBracketEnd(query, membership.openIndex);
-      if (closeIndex === null) {
+      // Membership always opens with `[`; a `}` closer is not a list.
+      if (closeIndex === null || query[closeIndex] !== ']') {
         return null;
       }
       const body = query.slice(membership.openIndex + 1, closeIndex);
@@ -617,6 +650,22 @@ export class QueryParser implements IQueryParser {
   }
 
   /**
+   * Nesting depth of a parsed expression, counted the way
+   * QuerySecurityValidator counts it: each logical node adds one level and a
+   * comparison adds none, so `a AND b` is 1 and `(a OR b) AND c` is 2.
+   */
+  private measureAstDepth(expression: QueryExpression): number {
+    if (expression.type !== 'logical') {
+      return 0;
+    }
+    const leftDepth = this.measureAstDepth(expression.left);
+    const rightDepth = expression.right
+      ? this.measureAstDepth(expression.right)
+      : 0;
+    return 1 + Math.max(leftDepth, rightDepth);
+  }
+
+  /**
    * Convert a Liqe AST node to a QueryKit expression
    */
   private convertLiqeAst(node: LiqeQuery): QueryExpression {
@@ -956,6 +1005,12 @@ export class QueryParser implements IQueryParser {
         structure.depth
       );
     }
+    // `structure.depth` is the parenthesis depth of the text. Rewrites such as
+    // `status:[a,b,c]` nest logical nodes without parentheses, and
+    // QuerySecurityValidator measures the AST, so the pre-check must too.
+    const securityDepth = ast
+      ? Math.max(structure.depth, this.measureAstDepth(ast))
+      : structure.depth;
 
     // Determine active token
     const activeToken = tokenResult.activeToken
@@ -985,7 +1040,7 @@ export class QueryParser implements IQueryParser {
     // Perform security pre-check if security options provided
     if (options.securityOptions) {
       result.security = this.performSecurityCheck(
-        structure,
+        { ...structure, depth: securityDepth },
         options.securityOptions
       );
     }

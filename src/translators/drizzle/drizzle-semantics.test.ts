@@ -235,3 +235,22 @@ describe('DrizzleTranslator semantics', () => {
     }
   });
 });
+
+describe('DrizzleTranslator schema table lookup', () => {
+  it('does not resolve inherited object properties as schema tables', (): void => {
+    const schema = { items: { name: sql.raw('name') } };
+    for (const field of [
+      'constructor.name',
+      'toString.name',
+      'hasOwnProperty.name'
+    ]) {
+      const compiled = compile(comparison(field, '==', 'x'), schema);
+      const [tableName, columnName] = field.split('.');
+      expect(compiled.sql).toBe(`"${tableName}"."${columnName}" = ?`);
+      expect(compiled.params).toEqual(['x']);
+    }
+    expect(compile(comparison('items.name', '==', 'x'), schema).sql).toBe(
+      'name = ?'
+    );
+  });
+});

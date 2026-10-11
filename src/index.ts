@@ -229,10 +229,33 @@ function applyEnforcedExclusions(
 function resolveSecurityOptions(
   security: ISecurityOptions | undefined
 ): Required<ISecurityOptions> {
-  return {
+  const resolved: Required<ISecurityOptions> = {
     ...DEFAULT_SECURITY_OPTIONS,
     ...definedSecurityOptions(security)
   };
+  if (!isResultLimit(resolved.defaultLimit)) {
+    throw new QuerySecurityError(
+      'Invalid security option: defaultLimit must be a non-negative integer'
+    );
+  }
+  if (!isResultLimit(resolved.maxLimit)) {
+    throw new QuerySecurityError(
+      'Invalid security option: maxLimit must be a non-negative integer'
+    );
+  }
+  return resolved;
+}
+
+/**
+ * Whether a value can be forwarded as a row limit. SQL `LIMIT` and the
+ * in-memory window both need a non-negative integer, and `NaN` or a negative
+ * `maxLimit` would otherwise switch the cap off or forward a bad value.
+ *
+ * @param value - Candidate limit
+ * @returns True for a non-negative safe integer
+ */
+function isResultLimit(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
 
 /**
@@ -267,7 +290,7 @@ function definedSecurityOptions(
  * @param requestedLimit - Limit supplied by the caller, if any
  * @param security - Resolved security settings
  * @returns The limit to send to the adapter
- * @throws {QuerySecurityError} When the limit is negative or non-finite
+ * @throws {QuerySecurityError} When the limit is not a non-negative integer
  */
 function resolveResultLimit(
   requestedLimit: number | undefined,
@@ -275,7 +298,7 @@ function resolveResultLimit(
 ): number {
   const chosenLimit =
     requestedLimit === undefined ? security.defaultLimit : requestedLimit;
-  if (!Number.isFinite(chosenLimit) || chosenLimit < 0) {
+  if (!isResultLimit(chosenLimit)) {
     throw new QuerySecurityError('Invalid query limit');
   }
   if (chosenLimit > security.maxLimit) {

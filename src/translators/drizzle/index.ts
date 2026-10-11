@@ -363,9 +363,15 @@ export class DrizzleTranslator implements ITranslator<SQL> {
     const parts = fieldName.split('.');
     if (parts.length === 2) {
       const [tableName, columnName] = parts;
-      const table = this.options.schema[tableName] as
-        | Record<string, unknown>
-        | undefined;
+      // Own-property check: `constructor.name` must not resolve the inherited
+      // Object constructor as a table and its `name` as a column.
+      const table =
+        tableName !== undefined &&
+        Object.prototype.hasOwnProperty.call(this.options.schema, tableName)
+          ? (this.options.schema[tableName] as
+              | Record<string, unknown>
+              | undefined)
+          : undefined;
       if (
         table &&
         columnName !== undefined &&

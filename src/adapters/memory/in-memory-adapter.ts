@@ -89,12 +89,17 @@ export class InMemoryAdapter implements IAdapter<IInMemoryAdapterOptions> {
   }
 
   /**
-   * Reject limits and offsets that are not safe windows.
+   * Reject limits, offsets, and sort directions that are not safe windows.
    *
    * @param options Result window
-   * @throws {InMemoryAdapterError} When limit or offset is not a non-negative integer
+   * @throws {InMemoryAdapterError} When limit or offset is not a non-negative integer, or a sort direction is not asc or desc
    */
   private assertWindow(options?: IInMemoryQueryExecutionOptions): void {
+    if (options?.orderBy) {
+      for (const direction of Object.values(options.orderBy)) {
+        normalizeDirection(direction);
+      }
+    }
     if (
       options?.limit !== undefined &&
       (!Number.isInteger(options.limit) || options.limit < 0)
@@ -148,7 +153,12 @@ function applyResultWindow<T extends object>(
   const rows = [...records];
   const orderBy = options?.orderBy;
   if (orderBy && Object.keys(orderBy).length > 0) {
-    const fields = Object.entries(orderBy);
+    const fields: Array<[string, 'asc' | 'desc']> = Object.entries(orderBy).map(
+      ([field, direction]): [string, 'asc' | 'desc'] => [
+        field,
+        normalizeDirection(direction)
+      ]
+    );
     rows.sort((left, right) => compareRows(left, right, fields));
   }
   const offset = options?.offset ?? 0;
@@ -156,6 +166,25 @@ function applyResultWindow<T extends object>(
     return rows.slice(offset);
   }
   return rows.slice(offset, offset + options.limit);
+}
+
+/**
+ * Accept only `asc` or `desc`, in any letter case. Anything else is a
+ * caller error rather than a request for ascending order.
+ *
+ * @param direction Requested sort direction
+ * @returns The direction in lower case
+ * @throws {InMemoryAdapterError} When the direction is not asc or desc
+ */
+function normalizeDirection(direction: unknown): 'asc' | 'desc' {
+  const normalized =
+    typeof direction === 'string' ? direction.toLowerCase() : '';
+  if (normalized === 'asc' || normalized === 'desc') {
+    return normalized;
+  }
+  throw new InMemoryAdapterError(
+    `Invalid sort direction: ${String(direction)}`
+  );
 }
 
 /**

@@ -1397,3 +1397,40 @@ describe('QueryParser', () => {
     });
   });
 });
+
+describe('QueryParser rewrite edge cases', () => {
+  const parser = new QueryParser();
+
+  it('rewrites :!= after a quoted field name', () => {
+    expect(parser.parse('"status":!=active')).toEqual({
+      type: 'logical',
+      operator: 'NOT',
+      left: {
+        type: 'comparison',
+        field: 'status',
+        operator: '==',
+        value: 'active'
+      }
+    });
+  });
+
+  it('still leaves :!= inside a quoted value alone', () => {
+    expect(parser.parse('note:"a:!=b"')).toEqual({
+      type: 'comparison',
+      field: 'note',
+      operator: '==',
+      value: 'a:!=b'
+    });
+  });
+
+  it('rejects a membership list that closes with a brace', () => {
+    expect(() => parser.parse('tags:in[a}')).toThrow(QueryParseError);
+    expect(() => parser.parse('tags:not in[a, b}')).toThrow(QueryParseError);
+    expect(parser.parse('tags:in[a]')).toEqual({
+      type: 'comparison',
+      field: 'tags',
+      operator: 'IN',
+      value: ['a']
+    });
+  });
+});

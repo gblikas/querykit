@@ -248,8 +248,22 @@ export class DrizzleAdapter<
     return normalizedField;
   }
 
-  private sortDirection(direction: string): 'ASC' | 'DESC' {
-    return direction.toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+  /**
+   * Accept only `asc` or `desc`, in any letter case. Anything else is a
+   * caller error rather than a request for DESC.
+   */
+  private sortDirection(direction: unknown): 'ASC' | 'DESC' {
+    const normalized =
+      typeof direction === 'string' ? direction.toLowerCase() : '';
+    if (normalized === 'asc') {
+      return 'ASC';
+    }
+    if (normalized === 'desc') {
+      return 'DESC';
+    }
+    throw new DrizzleAdapterError(
+      `Invalid sort direction: ${String(direction)}`
+    );
   }
 
   /**

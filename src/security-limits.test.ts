@@ -194,3 +194,49 @@ describe('createQueryKit security limits', () => {
     expect(adapter.executions[0]?.limit).toBe(100);
   });
 });
+
+describe('createQueryKit limit validation', () => {
+  it('rejects a fractional caller limit before the adapter runs', async () => {
+    const adapter = new RecordingAdapter();
+    const queryKit = createQueryKit({ adapter, schema: taskSchema });
+    await expect(
+      queryKit.query('tasks').where('status:open').limit(2.5).execute()
+    ).rejects.toThrow(QuerySecurityError);
+    expect(adapter.executions).toHaveLength(0);
+  });
+
+  it('rejects a maxLimit that is not a non-negative integer when the kit is created', () => {
+    for (const maxLimit of [Number.NaN, -1, 2.5, Number.POSITIVE_INFINITY]) {
+      expect(() =>
+        createQueryKit({
+          adapter: new RecordingAdapter(),
+          schema: taskSchema,
+          security: { maxLimit }
+        })
+      ).toThrow(QuerySecurityError);
+    }
+  });
+
+  it('rejects a defaultLimit that is not a non-negative integer when the kit is created', () => {
+    for (const defaultLimit of [Number.NaN, -1, 2.5]) {
+      expect(() =>
+        createQueryKit({
+          adapter: new RecordingAdapter(),
+          schema: taskSchema,
+          security: { defaultLimit }
+        })
+      ).toThrow(QuerySecurityError);
+    }
+  });
+
+  it('still caps with a valid maxLimit', async () => {
+    const adapter = new RecordingAdapter();
+    const queryKit = createQueryKit({
+      adapter,
+      schema: taskSchema,
+      security: { maxLimit: 3 }
+    });
+    await queryKit.query('tasks').where('status:open').limit(10).execute();
+    expect(adapter.executions[0]?.limit).toBe(3);
+  });
+});

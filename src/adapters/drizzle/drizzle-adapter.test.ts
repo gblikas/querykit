@@ -126,7 +126,9 @@ describe('DrizzleAdapter', () => {
      *
      * While TypeScript provides compile-time safety, runtime validation is
      * essential for defense-in-depth, especially when QueryKit is used with
-     * external/untrusted input sources.
+     * external/untrusted input sources. Anything other than asc or desc is
+     * rejected before an ORDER BY clause is built; it is never coerced to a
+     * default direction.
      */
 
     // Helper function to extract the SQL string from the orderBy call
@@ -151,109 +153,45 @@ describe('DrizzleAdapter', () => {
       // When field exists in schema, the safe asc/desc functions are used
     });
 
-    it('should normalize direction to ASC/DESC only when field is NOT in schema', async () => {
+    const rejectedDirections: string[] = [
+      'asc; DROP TABLE todos;--',
+      'asc; SELECT title FROM todos--',
+      'desc); DELETE FROM todos;--',
+      'ASC LIMIT 1; --',
+      '" OR 1=1 --',
+      'invalid_direction'
+    ];
+
+    it.each(rejectedDirections)(
+      'rejects direction %p before any ORDER BY is built',
+      async (direction: string) => {
+        const expression = parser.parse('status:"active"');
+        await expect(
+          adapter.execute('todos', expression, {
+            orderBy: { unknownField: direction as 'asc' | 'desc' }
+          })
+        ).rejects.toThrow(`Invalid sort direction: ${direction}`);
+        expect(mockOrderBy).not.toHaveBeenCalled();
+      }
+    );
+
+    it('rejects an invalid direction for a schema field as well', async () => {
       const expression = parser.parse('status:"active"');
-
-      // Simulate runtime input that bypasses TypeScript safety
-      // This could come from: req.query.sort, JSON.parse(body), etc.
-      // Note: Uses 'todos' table from mock schema to demonstrate real threat
-      await adapter.execute('todos', expression, {
-        orderBy: { unknownField: 'asc; DROP TABLE todos;--' as 'asc' | 'desc' }
-      });
-
-      expect(mockOrderBy).toHaveBeenCalled();
-
-      // The SQL generated should NOT contain the injection payload
-      const sqlString = getOrderBySqlString();
-      expect(sqlString).not.toContain('DROP TABLE');
-      expect(sqlString).not.toContain(';');
-      expect(sqlString).not.toContain('--');
+      await expect(
+        adapter.execute('todos', expression, {
+          orderBy: { title: 'invalid_direction' as 'asc' | 'desc' }
+        })
+      ).rejects.toThrow('Invalid sort direction: invalid_direction');
+      expect(mockOrderBy).not.toHaveBeenCalled();
     });
 
-    it('should normalize malicious direction with SELECT injection to safe value', async () => {
+    it('accepts DESC in upper case for an unmapped field', async () => {
       const expression = parser.parse('status:"active"');
-
-      // Attempts to exfiltrate data from the todos table being queried
       await adapter.execute('todos', expression, {
-        orderBy: {
-          unknownField: 'asc; SELECT title FROM todos--' as 'asc' | 'desc'
-        }
+        orderBy: { unknownField: 'DESC' as 'desc' }
       });
-
       expect(mockOrderBy).toHaveBeenCalled();
-
-      const sqlString = getOrderBySqlString();
-      expect(sqlString).not.toContain('SELECT');
-      expect(sqlString).not.toContain('title');
-      // Note: 'todos' may appear in schema context but not in injection payload
-      expect(sqlString).not.toContain('FROM todos');
-    });
-
-    it('should handle DESC with injection payload safely', async () => {
-      const expression = parser.parse('status:"active"');
-
-      // Attempts to delete all records from the todos table
-      await adapter.execute('todos', expression, {
-        orderBy: {
-          unknownField: 'desc); DELETE FROM todos;--' as 'asc' | 'desc'
-        }
-      });
-
-      expect(mockOrderBy).toHaveBeenCalled();
-
-      const sqlString = getOrderBySqlString();
-      expect(sqlString).not.toContain('DELETE');
-      expect(sqlString).not.toContain(');');
-    });
-
-    it('should handle uppercase ASC with injection safely', async () => {
-      const expression = parser.parse('status:"active"');
-
-      await adapter.execute('todos', expression, {
-        orderBy: {
-          unknownField: 'ASC LIMIT 1; --' as 'asc' | 'desc'
-        }
-      });
-
-      expect(mockOrderBy).toHaveBeenCalled();
-
-      const sqlString = getOrderBySqlString();
-      expect(sqlString).not.toContain('LIMIT');
-    });
-
-    it('should handle OR injection attempt safely', async () => {
-      const expression = parser.parse('status:"active"');
-
-      await adapter.execute('todos', expression, {
-        orderBy: {
-          unknownField: '" OR 1=1 --' as 'asc' | 'desc'
-        }
-      });
-
-      expect(mockOrderBy).toHaveBeenCalled();
-
-      const sqlString = getOrderBySqlString();
-      expect(sqlString).not.toContain(' OR ');
-      expect(sqlString).not.toContain('1=1');
-    });
-
-    it('should default invalid direction to DESC (safe fallback)', async () => {
-      const expression = parser.parse('status:"active"');
-
-      await adapter.execute('todos', expression, {
-        orderBy: {
-          unknownField: 'invalid_direction' as 'asc' | 'desc'
-        }
-      });
-
-      expect(mockOrderBy).toHaveBeenCalled();
-
-      // The direction should be normalized - either ASC or DESC only
-      const sqlString = getOrderBySqlString();
-      // Should NOT contain the raw invalid direction
-      expect(sqlString).not.toContain('INVALID_DIRECTION');
-      // Should contain the safe fallback value (DESC when input is not 'asc')
-      expect(sqlString).toContain('DESC');
+      expect(getOrderBySqlString()).toContain('DESC');
     });
   });
 
@@ -323,5 +261,41 @@ describe('DrizzleAdapter', () => {
       });
       expect(compiledOrderBy()).toBe('"toString" ASC');
     });
+  });
+});
+
+describe('DrizzleAdapter sort direction validation', () => {
+  it('rejects a direction that is neither asc nor desc instead of sorting DESC', async () => {
+    jest.clearAllMocks();
+    const directionAdapter = new DrizzleAdapter();
+    directionAdapter.initialize({ db: mockDb, schema: mockSchema });
+    const expression: QueryExpression = {
+      type: 'comparison',
+      field: 'status',
+      operator: '==',
+      value: 'active'
+    };
+    await expect(
+      directionAdapter.execute('todos', expression, {
+        orderBy: { title: 'invalid' as 'asc' }
+      })
+    ).rejects.toThrow('Invalid sort direction: invalid');
+    expect(mockOrderBy).not.toHaveBeenCalled();
+  });
+
+  it('accepts asc and desc in any letter case', async () => {
+    jest.clearAllMocks();
+    const directionAdapter = new DrizzleAdapter();
+    directionAdapter.initialize({ db: mockDb, schema: mockSchema });
+    const expression: QueryExpression = {
+      type: 'comparison',
+      field: 'status',
+      operator: '==',
+      value: 'active'
+    };
+    await directionAdapter.execute('todos', expression, {
+      orderBy: { title: 'DESC' as 'desc', priority: 'asc' }
+    });
+    expect(mockOrderBy).toHaveBeenCalledTimes(1);
   });
 });

@@ -205,9 +205,9 @@ describe('in-memory filtering', () => {
       expect(filterInMemory('title:Sh?p', titles).map(row => row.id)).toEqual([
         1, 2
       ]);
-      expect(
-        filterInMemory('note:"100%*"', notes).map(row => row.id)
-      ).toEqual([1, 3]);
+      expect(filterInMemory('note:"100%*"', notes).map(row => row.id)).toEqual([
+        1, 3
+      ]);
       expect(filterInMemory('title:<s', titles).map(row => row.id)).toEqual([
         1, 2, 3
       ]);
@@ -608,7 +608,7 @@ describe('in-memory filtering', () => {
         { id: 3, status: 'closed' }
       ];
       const rowsAdapter = inMemoryAdapter({ records: { items: inputRows } });
-      const equalsNull = await rowsAdapter.execute<typeof inputRows[number]>(
+      const equalsNull = await rowsAdapter.execute<(typeof inputRows)[number]>(
         'items',
         {
           type: 'comparison',
@@ -617,7 +617,7 @@ describe('in-memory filtering', () => {
           value: null
         }
       );
-      const notNull = await rowsAdapter.execute<typeof inputRows[number]>(
+      const notNull = await rowsAdapter.execute<(typeof inputRows)[number]>(
         'items',
         {
           type: 'comparison',
@@ -626,7 +626,7 @@ describe('in-memory filtering', () => {
           value: null
         }
       );
-      const onlyNull = await rowsAdapter.execute<typeof inputRows[number]>(
+      const onlyNull = await rowsAdapter.execute<(typeof inputRows)[number]>(
         'items',
         {
           type: 'comparison',
@@ -635,7 +635,7 @@ describe('in-memory filtering', () => {
           value: [null]
         }
       );
-      const openOrNull = await rowsAdapter.execute<typeof inputRows[number]>(
+      const openOrNull = await rowsAdapter.execute<(typeof inputRows)[number]>(
         'items',
         {
           type: 'comparison',
@@ -644,7 +644,7 @@ describe('in-memory filtering', () => {
           value: [null, 'open']
         }
       );
-      const notClosed = await rowsAdapter.execute<typeof inputRows[number]>(
+      const notClosed = await rowsAdapter.execute<(typeof inputRows)[number]>(
         'items',
         {
           type: 'comparison',
@@ -653,7 +653,7 @@ describe('in-memory filtering', () => {
           value: [null, 'closed']
         }
       );
-      const aboveNull = await rowsAdapter.execute<typeof inputRows[number]>(
+      const aboveNull = await rowsAdapter.execute<(typeof inputRows)[number]>(
         'items',
         {
           type: 'comparison',
@@ -677,7 +677,7 @@ describe('in-memory filtering', () => {
         { id: 3, name: 'foobar' }
       ];
       const rowsAdapter = inMemoryAdapter({ records: { items: inputRows } });
-      const actual = await rowsAdapter.execute<typeof inputRows[number]>(
+      const actual = await rowsAdapter.execute<(typeof inputRows)[number]>(
         'items',
         {
           type: 'comparison',
@@ -696,7 +696,7 @@ describe('in-memory filtering', () => {
         { id: 3, toString: 'beta' }
       ];
       const rowsAdapter = inMemoryAdapter({ records: { items: inputRows } });
-      const actual = await rowsAdapter.execute<typeof inputRows[number]>(
+      const actual = await rowsAdapter.execute<(typeof inputRows)[number]>(
         'items',
         {
           type: 'comparison',
@@ -721,12 +721,12 @@ describe('in-memory filtering', () => {
         operator: '>',
         value: 0
       };
-      const ascending = await rowsAdapter.execute<typeof inputRows[number]>(
+      const ascending = await rowsAdapter.execute<(typeof inputRows)[number]>(
         'items',
         expression,
         { orderBy: { priority: 'asc' } }
       );
-      const descending = await rowsAdapter.execute<typeof inputRows[number]>(
+      const descending = await rowsAdapter.execute<(typeof inputRows)[number]>(
         'items',
         expression,
         { orderBy: { priority: 'desc' } }
@@ -746,5 +746,109 @@ describe('in-memory filtering', () => {
         'Table toString not found in records'
       );
     });
+  });
+});
+
+describe('InMemoryAdapter sort direction validation', () => {
+  const rows = [{ id: 2 }, { id: 1 }, { id: 3 }];
+  const expression: QueryExpression = {
+    type: 'comparison',
+    field: 'id',
+    operator: '>',
+    value: 0
+  };
+
+  it('rejects a direction that is neither asc nor desc instead of sorting ascending', async () => {
+    const rowsAdapter = inMemoryAdapter({ records: { items: rows } });
+    await expect(
+      rowsAdapter.execute('items', expression, {
+        orderBy: { id: 'invalid' as 'asc' }
+      })
+    ).rejects.toThrow('Invalid sort direction: invalid');
+  });
+
+  it('accepts asc and desc in any letter case', async () => {
+    const rowsAdapter = inMemoryAdapter({ records: { items: rows } });
+    const descending = await rowsAdapter.execute<{ id: number }>(
+      'items',
+      expression,
+      { orderBy: { id: 'DESC' as 'desc' } }
+    );
+    expect(descending.map(row => row.id)).toEqual([3, 2, 1]);
+  });
+});
+
+describe('InMemoryAdapter canExecute shape checks', () => {
+  const rowsAdapter = inMemoryAdapter({ records: { items: [{ name: 'x' }] } });
+
+  it('reports false for comparisons execute() would reject', async () => {
+    const rejected: QueryExpression[] = [
+      { type: 'comparison', field: 'name', operator: 'REGEX', value: 'x' },
+      { type: 'comparison', field: 'name', operator: 'LIKE', value: 5 },
+      { type: 'comparison', field: 'name', operator: 'IN', value: 'x' },
+      { type: 'comparison', field: 'name', operator: 'NOT IN', value: 'x' }
+    ];
+    for (const expression of rejected) {
+      expect(rowsAdapter.canExecute(expression)).toBe(false);
+      await expect(rowsAdapter.execute('items', expression)).rejects.toThrow(
+        InMemoryAdapterError
+      );
+    }
+  });
+
+  it('reports true for comparisons execute() accepts', () => {
+    const accepted: QueryExpression[] = [
+      { type: 'comparison', field: 'name', operator: 'LIKE', value: 'x*' },
+      { type: 'comparison', field: 'name', operator: 'IN', value: ['x'] },
+      { type: 'comparison', field: 'name', operator: '==', value: null }
+    ];
+    for (const expression of accepted) {
+      expect(rowsAdapter.canExecute(expression)).toBe(true);
+    }
+  });
+});
+
+describe('InMemoryAdapter LIKE matching is linear', () => {
+  it('does not backtrack catastrophically on repeated wildcards', () => {
+    const rows = [{ name: 'a'.repeat(5000) }, { name: 'a'.repeat(50) + 'b' }];
+    const started = Date.now();
+    const unmatched = filterInMemory(`name:${'*a'.repeat(10)}b`, rows);
+    const elapsed = Date.now() - started;
+    expect(unmatched.map(row => row.name.length)).toEqual([51]);
+    expect(elapsed).toBeLessThan(2000);
+  });
+
+  it('stays fast through createQueryKit with a pattern the validator allows', async () => {
+    const rows = [{ name: 'a'.repeat(20000) }];
+    const queryKit = createQueryKit({
+      adapter: inMemoryAdapter({ records: { items: rows } }),
+      schema: { items: { name: '' } }
+    });
+    const started = Date.now();
+    await expect(
+      queryKit.query('items').where('name:*a*a*a*ab').execute()
+    ).resolves.toEqual([]);
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
+  it('keeps LIKE semantics after the engine change', () => {
+    const rows = [
+      { id: 1, name: 'abc' },
+      { id: 2, name: 'aXc' },
+      { id: 3, name: 'ac' },
+      { id: 4, name: 'abbc' },
+      { id: 5, name: 'xabc' },
+      { id: 6, name: 'ab\nc' },
+      { id: 7, name: '😀bc' }
+    ];
+    const ids = (query: string): number[] =>
+      filterInMemory(query, rows).map(row => row.id);
+    expect(ids('name:a*c')).toEqual([1, 2, 3, 4, 6]);
+    expect(ids('name:a?c')).toEqual([1, 2]);
+    expect(ids('name:*bc')).toEqual([1, 4, 5, 7]);
+    expect(ids('name:?bc')).toEqual([1, 7]);
+    expect(ids('name:a**c')).toEqual([1, 2, 3, 4, 6]);
+    expect(ids('name:*')).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(ids('name:"ab*"')).toEqual([1, 4, 6]);
   });
 });

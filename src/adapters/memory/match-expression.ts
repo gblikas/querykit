@@ -43,14 +43,15 @@ export function filterByExpression<T extends object>(
 
 /**
  * Report whether an expression can be applied to plain objects.
- * Raw SQL cannot. The check does not look at row values.
+ * Raw SQL cannot, nor can `REGEX`, a `LIKE` without a string pattern, or a
+ * membership test without a list. The check does not look at row values.
  *
  * @param expression Expression to check
- * @returns True when every node is a comparison or a complete boolean
+ * @returns True when every node is a comparison this engine applies or a complete boolean
  */
 export function canMatchExpression(expression: QueryExpression): boolean {
   if (expression.type === 'comparison') {
-    return true;
+    return canMatchComparison(expression);
   }
   if (expression.type !== 'logical') {
     return false;
@@ -62,6 +63,27 @@ export function canMatchExpression(expression: QueryExpression): boolean {
     return true;
   }
   return expression.right ? canMatchExpression(expression.right) : false;
+}
+
+/**
+ * Report whether one comparison has an operator and value shape that
+ * `comparisonTruth` accepts without throwing.
+ *
+ * @param expression Comparison node
+ * @returns True when execution would not reject the node up front
+ */
+function canMatchComparison(expression: IComparisonExpression): boolean {
+  switch (expression.operator) {
+    case 'LIKE':
+      return typeof expression.value === 'string';
+    case 'IN':
+    case 'NOT IN':
+      return Array.isArray(expression.value);
+    case 'REGEX':
+      return false;
+    default:
+      return true;
+  }
 }
 
 /**
@@ -324,47 +346,94 @@ function likeTruth(fieldValue: unknown, pattern: QueryValue): SqlTruth {
   if (typeof fieldValue !== 'string') {
     return false;
   }
-  return likePatternToRegExp(toSqlLikePattern(pattern)).test(fieldValue);
+  return matchesLikePattern(toSqlLikePattern(pattern), fieldValue);
 }
 
 /**
- * Compile a SQL LIKE pattern to an anchored, case-sensitive regular expression.
- * This is the LIKE engine, not a query parser.
+ * One unit of a SQL LIKE pattern: `%`, `_`, or a literal character.
+ */
+type LikeToken =
+  | { kind: 'any' }
+  | { kind: 'one' }
+  | { kind: 'char'; value: string };
+
+/**
+ * Split a SQL LIKE pattern into tokens. {@link LIKE_ESCAPE} makes the next
+ * character literal, matching the `ESCAPE` clause the translators emit.
  *
  * @param sqlPattern SQL LIKE pattern
- * @returns Regular expression that tests one whole value
+ * @returns Tokens in pattern order
  */
-function likePatternToRegExp(sqlPattern: string): RegExp {
-  let source = '^';
-  for (let index = 0; index < sqlPattern.length; index += 1) {
-    const char = sqlPattern.charAt(index);
-    const next = sqlPattern.charAt(index + 1);
-    if (char === LIKE_ESCAPE && next) {
-      source += escapeRegExp(next);
+function tokenizeLikePattern(sqlPattern: string): LikeToken[] {
+  const tokens: LikeToken[] = [];
+  const chars = Array.from(sqlPattern);
+  for (let index = 0; index < chars.length; index += 1) {
+    const char = chars[index] ?? '';
+    const next = chars[index + 1];
+    if (char === LIKE_ESCAPE && next !== undefined) {
+      tokens.push({ kind: 'char', value: next });
       index += 1;
       continue;
     }
     if (char === '%') {
-      source += '[\\s\\S]*';
+      tokens.push({ kind: 'any' });
       continue;
     }
     if (char === '_') {
-      source += '[\\s\\S]';
+      tokens.push({ kind: 'one' });
       continue;
     }
-    source += escapeRegExp(char);
+    tokens.push({ kind: 'char', value: char });
   }
-  return new RegExp(`${source}$`);
+  return tokens;
 }
 
 /**
- * Escape a literal character for a regular expression.
+ * Match a whole value against a SQL LIKE pattern, case-sensitively, in
+ * O(pattern × value) time. The matcher remembers the last `%` and resumes
+ * from it instead of backtracking through every split, so a pattern such as
+ * `*a*a*a*ab` cannot stall the event loop on a long value the way a compiled
+ * regular expression with repeated `.*` groups does.
  *
- * @param value One or more literal characters
- * @returns Escaped text
+ * @param sqlPattern SQL LIKE pattern
+ * @param value Field value
+ * @returns True when the whole value matches
  */
-function escapeRegExp(value: string): string {
-  return value.replace(/[\\^$+.*?()|[\]{}]/g, '\\$&');
+function matchesLikePattern(sqlPattern: string, value: string): boolean {
+  const tokens = tokenizeLikePattern(sqlPattern);
+  const chars = Array.from(value);
+  let tokenIndex = 0;
+  let charIndex = 0;
+  let lastAnyToken = -1;
+  let lastAnyChar = -1;
+  while (charIndex < chars.length) {
+    const token = tokens[tokenIndex];
+    if (token?.kind === 'any') {
+      lastAnyToken = tokenIndex;
+      lastAnyChar = charIndex;
+      tokenIndex += 1;
+      continue;
+    }
+    if (
+      token &&
+      (token.kind === 'one' ||
+        (token.kind === 'char' && token.value === chars[charIndex]))
+    ) {
+      tokenIndex += 1;
+      charIndex += 1;
+      continue;
+    }
+    if (lastAnyToken === -1) {
+      return false;
+    }
+    lastAnyChar += 1;
+    charIndex = lastAnyChar;
+    tokenIndex = lastAnyToken + 1;
+  }
+  while (tokens[tokenIndex]?.kind === 'any') {
+    tokenIndex += 1;
+  }
+  return tokenIndex === tokens.length;
 }
 
 /**
