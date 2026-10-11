@@ -246,7 +246,8 @@ export interface ISecurityOptions {
   /**
    * Timeout in milliseconds for query execution.
    * When execution exceeds this limit, the call rejects. The underlying
-   * statement is not cancelled.
+   * statement is not cancelled. `0` is a zero-millisecond budget, not
+   * "no timeout".
    *
    * @default 30000 (30 seconds)
    *

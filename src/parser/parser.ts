@@ -1,4 +1,3 @@
-import { randomUUID } from 'crypto';
 import { parse as liqeParse } from 'liqe';
 import type {
   BooleanOperatorToken,
@@ -65,11 +64,20 @@ interface IMembershipPlaceholder {
   value: Array<string | number | boolean | null>;
 }
 
+/**
+ * Private-use code point that starts every membership placeholder. The raw
+ * query is rejected when it already contains this character, so a
+ * caller-controlled value can never be mistaken for a placeholder when the
+ * membership clauses are restored after Liqe parsing. No randomness is
+ * needed, and the parser keeps working in browsers, where Node's `crypto`
+ * module is not available.
+ */
+const MEMBERSHIP_PLACEHOLDER_PREFIX = '\uE000';
+
 export class QueryParser implements IQueryParser {
   private options: Required<IParserOptions>;
   private membershipPlaceholders: Map<string, IMembershipPlaceholder> | null =
     null;
-  private placeholderNonce = '';
 
   constructor(options: IParserOptions = {}) {
     this.options = {
@@ -83,9 +91,7 @@ export class QueryParser implements IQueryParser {
    */
   public parse(query: string): QueryExpression {
     const previousPlaceholders = this.membershipPlaceholders;
-    const previousNonce = this.placeholderNonce;
     this.membershipPlaceholders = new Map();
-    this.placeholderNonce = randomUUID();
     try {
       // Pre-process the query to handle IN operator syntax
       const preprocessedQuery = this.preprocessQuery(query);
@@ -97,7 +103,6 @@ export class QueryParser implements IQueryParser {
       );
     } finally {
       this.membershipPlaceholders = previousPlaceholders;
-      this.placeholderNonce = previousNonce;
     }
   }
 
@@ -113,6 +118,9 @@ export class QueryParser implements IQueryParser {
    * - `status:[todo, doing, done]` (IN / multiple values)
    */
   private preprocessQuery(query: string): string {
+    if (query.includes(MEMBERSHIP_PLACEHOLDER_PREFIX)) {
+      throw new QueryParseError('Query contains the reserved character U+E000');
+    }
     let result = query;
     // Normalize lowercase boolean operators to uppercase.
     // Liqe only recognizes uppercase AND, OR, NOT as boolean operators;
@@ -138,9 +146,8 @@ export class QueryParser implements IQueryParser {
    */
   private normalizeBooleanOperators(query: string): string {
     return transformCodeSegments(query, code =>
-      code.replace(
-        /(?<![^\s()])\b(and|or|not)\b(?![^\s()])/gi,
-        match => match.toUpperCase()
+      code.replace(/(?<![^\s()])\b(and|or|not)\b(?![^\s()])/gi, match =>
+        match.toUpperCase()
       )
     );
   }
@@ -218,7 +225,12 @@ export class QueryParser implements IQueryParser {
     }
     const closer = query[closeIndex] ?? '';
     const body = query.slice(openerIndex + 1, closeIndex);
-    const replacement = this.rewriteBracketBody(field.text, opener, closer, body);
+    const replacement = this.rewriteBracketBody(
+      field.text,
+      opener,
+      closer,
+      body
+    );
     if (replacement === null) {
       return null;
     }
@@ -251,7 +263,7 @@ export class QueryParser implements IQueryParser {
   ): string {
     const operator = /^not/i.test(operatorText) ? 'NOT IN' : 'IN';
     const value = this.parseMembershipValues(body);
-    const id = `\uE000qk${this.placeholderNonce}:${this.membershipPlaceholders?.size ?? 0}`;
+    const id = `${MEMBERSHIP_PLACEHOLDER_PREFIX}qk${this.membershipPlaceholders?.size ?? 0}`;
     this.membershipPlaceholders?.set(id, { operator, value });
     return `${field}:"${id}"`;
   }
@@ -274,7 +286,9 @@ export class QueryParser implements IQueryParser {
       (token.startsWith('"') && token.endsWith('"') && token.length >= 2) ||
       (token.startsWith("'") && token.endsWith("'") && token.length >= 2);
     if (quoted) {
-      return token.slice(1, -1).replace(/\\(.)/g, (_match, char: string) => char);
+      return token
+        .slice(1, -1)
+        .replace(/\\(.)/g, (_match, char: string) => char);
     }
     if (token === 'null') {
       return null;
@@ -396,9 +410,7 @@ export class QueryParser implements IQueryParser {
     return false;
   }
 
-  private splitRangeBounds(
-    body: string
-  ): { min: string; max: string } | null {
+  private splitRangeBounds(body: string): { min: string; max: string } | null {
     const matches: Array<{ start: number; end: number }> = [];
     let index = 0;
     while (index < body.length) {
@@ -438,7 +450,10 @@ export class QueryParser implements IQueryParser {
     if (min === '*' && max === '*') {
       return null;
     }
-    if ((min !== '*' && min.length === 0) || (max !== '*' && max.length === 0)) {
+    if (
+      (min !== '*' && min.length === 0) ||
+      (max !== '*' && max.length === 0)
+    ) {
       return null;
     }
     const minOperator = opener === '{' ? '>' : '>=';
@@ -1054,9 +1069,7 @@ export class QueryParser implements IQueryParser {
       }
     }
     const depth =
-      query.trim().length > 0
-        ? Math.max(1, delimiters.maxParenthesisDepth)
-        : 0;
+      query.trim().length > 0 ? Math.max(1, delimiters.maxParenthesisDepth) : 0;
     const isComplete = isInputComplete(query);
     const complexity = this.determineComplexity(
       clauseCount,
