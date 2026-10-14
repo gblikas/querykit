@@ -10,7 +10,7 @@ import {
   InMemoryAdapterError,
   inMemoryAdapter
 } from './index';
-import { filterByExpression } from './match-expression';
+import { canMatchExpression, filterByExpression } from './match-expression';
 
 interface ITask {
   id: number;
@@ -849,16 +849,83 @@ describe('InMemoryAdapter validates expressions before reading rows', () => {
         message: 'Logical expression is missing a right operand'
       },
       {
-        expression: {
-          type: 'raw',
-          toSql: (): string => ''
-        } as unknown as QueryExpression,
+        expression: { type: 'raw', toSql: (): string => '' },
         message: 'Raw SQL expressions cannot be filtered in memory'
+      },
+      {
+        expression: {
+          type: 'comparison',
+          field: 'name',
+          operator: 'CONTAINS',
+          value: 'x'
+        } as unknown as QueryExpression,
+        message: 'Unsupported operator: CONTAINS'
+      },
+      {
+        expression: {
+          type: 'logical',
+          operator: 'XOR',
+          left: nameIsX,
+          right: nameIsX
+        } as unknown as QueryExpression,
+        message: 'Unsupported logical operator: XOR'
+      },
+      {
+        expression: {
+          type: 'logical',
+          operator: 'AND',
+          right: nameIsX
+        } as unknown as QueryExpression,
+        message: 'Logical expression is missing a left operand'
       }
     ];
     for (const { expression, message } of rejected) {
       expect(() => filterByExpression(expression, noRows)).toThrow(message);
+      expect(() => filterByExpression(expression, [{ name: 'x' }])).toThrow(
+        message
+      );
+      expect(canMatchExpression(expression)).toBe(false);
     }
+  });
+
+  it('rejects through the adapter on an empty table and reports canExecute false', async () => {
+    const adapter = inMemoryAdapter({ records: { tasks: noRows } });
+    const regex: QueryExpression = {
+      type: 'comparison',
+      field: 'title',
+      operator: 'REGEX',
+      value: '/foo/'
+    };
+    expect(adapter.canExecute(regex)).toBe(false);
+    await expect(adapter.execute('tasks', regex)).rejects.toThrow(
+      'Unsupported operator: REGEX'
+    );
+  });
+
+  it('rejects an offending node nested under NOT and OR on an empty table', () => {
+    const nested: QueryExpression = {
+      type: 'logical',
+      operator: 'NOT',
+      left: {
+        type: 'logical',
+        operator: 'OR',
+        left: {
+          type: 'comparison',
+          field: 'title',
+          operator: '==',
+          value: 'x'
+        },
+        right: {
+          type: 'comparison',
+          field: 'title',
+          operator: 'LIKE',
+          value: 5
+        }
+      }
+    };
+    expect(() => filterByExpression(nested, noRows)).toThrow(
+      'LIKE operator requires a string value'
+    );
   });
 
   it('still accepts a well-formed expression against an empty table', () => {

@@ -1,6 +1,7 @@
 import { parse as liqeParse } from 'liqe';
 import type {
   BooleanOperatorToken,
+  ExpressionToken,
   ImplicitBooleanOperatorToken,
   LiqeQuery,
   LogicalExpressionToken,
@@ -65,26 +66,33 @@ interface IMembershipPlaceholder {
 }
 
 /**
- * Membership clauses lifted out of one `parse()` call, keyed by the
- * placeholder written into the Liqe query in their place.
+ * Membership clauses lifted out of one `parse()` call, keyed by the start
+ * offset of their placeholder literal in the text handed to Liqe. A node is
+ * matched by that location, never by its value, so no query content can
+ * imitate a placeholder and the placeholder text stays constant.
  */
 interface IMembershipState {
-  prefix: string;
-  placeholders: Map<string, IMembershipPlaceholder>;
+  placeholders: Map<number, IMembershipPlaceholder>;
 }
 
 /**
- * Private-use code point that membership placeholders are built from. Each
- * `parse()` call repeats it once more than the raw query can produce, so no
- * decoded value can equal a placeholder and no character has to be rejected
- * from queries. Liqe decodes `\uXXXX` escapes inside quoted strings, in
- * either hex case, so an escape counts the same as the character itself;
- * unquoted values and regex patterns are not decoded. No randomness is
+ * One rewrite of the query text. `placeholder` is set when the rewrite
+ * lifted a membership clause: `offset` locates the placeholder inside `text`.
+ */
+interface IQueryRewrite {
+  text: string;
+  end: number;
+  placeholder?: { offset: number; clause: IMembershipPlaceholder };
+}
+
+/**
+ * Inert quoted value written where a membership clause was lifted out. It
+ * is found again by position, so it never has to be unique, and a caller
+ * value that decodes to the same text is left alone. No randomness is
  * needed, and the parser keeps working in browsers, where Node's `crypto`
  * module is not available.
  */
-const PLACEHOLDER_CHARACTER = '\uE000';
-const PLACEHOLDER_SOURCES = /\uE000|\\ue000/gi;
+const MEMBERSHIP_PLACEHOLDER = '"\uE000"';
 
 export class QueryParser implements IQueryParser {
   private options: Required<IParserOptions>;
@@ -102,15 +110,14 @@ export class QueryParser implements IQueryParser {
    */
   public parse(query: string): QueryExpression {
     const previousState = this.membershipState;
-    this.membershipState = {
-      prefix: this.createPlaceholderPrefix(query),
-      placeholders: new Map()
-    };
+    this.membershipState = { placeholders: new Map() };
     try {
       // Pre-process the query to handle IN operator syntax
       const preprocessedQuery = this.preprocessQuery(query);
       const liqeAst = liqeParse(preprocessedQuery);
-      return this.restoreMembership(this.convertLiqeAst(liqeAst));
+      const expression = this.convertLiqeAst(liqeAst);
+      this.assertMembershipRestored();
+      return expression;
     } catch (error) {
       throw new QueryParseError(
         `Failed to parse query: ${error instanceof Error ? error.message : String(error)}`
@@ -121,14 +128,36 @@ export class QueryParser implements IQueryParser {
   }
 
   /**
-   * Build the placeholder prefix for one parse: the placeholder character
-   * repeated once more than the number of literal copies and `\uE000`
-   * escapes in the raw query. Every placeholder character in a decoded value
-   * comes from one of those, so no value can contain as many as the prefix.
+   * Fail instead of dropping a clause when Liqe produced no node at a
+   * placeholder's position, which happens when a regex literal swallows the
+   * text around it.
+   *
+   * @throws {QueryParseError} When a lifted membership clause was not placed
    */
-  private createPlaceholderPrefix(query: string): string {
-    const sources = query.match(PLACEHOLDER_SOURCES) ?? [];
-    return PLACEHOLDER_CHARACTER.repeat(sources.length + 1);
+  private assertMembershipRestored(): void {
+    if (this.membershipState && this.membershipState.placeholders.size > 0) {
+      throw new QueryParseError(
+        'A membership list could not be placed in the parsed query'
+      );
+    }
+  }
+
+  /**
+   * Return the membership clause whose placeholder starts where this literal
+   * starts, and forget it. Location, not value, identifies the placeholder.
+   */
+  private takeMembership(
+    expression: ExpressionToken
+  ): IMembershipPlaceholder | undefined {
+    if (expression.type !== 'LiteralExpression' || !expression.quoted) {
+      return undefined;
+    }
+    const start = expression.location.start;
+    const lifted = this.membershipState?.placeholders.get(start);
+    if (lifted) {
+      this.membershipState?.placeholders.delete(start);
+    }
+    return lifted;
   }
 
   /**
@@ -226,6 +255,7 @@ export class QueryParser implements IQueryParser {
     while (index < query.length) {
       const rewritten = this.matchBracketExpression(query, index);
       if (rewritten) {
+        this.recordPlaceholder(result.length, rewritten);
         result += rewritten.text;
         index = rewritten.end;
         continue;
@@ -242,10 +272,25 @@ export class QueryParser implements IQueryParser {
     return result;
   }
 
+  /**
+   * Remember where a lifted membership clause's placeholder will sit in the
+   * text handed to Liqe. The bracket rewrite is the last preprocessing step,
+   * so offsets in its output are offsets in Liqe's input.
+   */
+  private recordPlaceholder(outputIndex: number, rewrite: IQueryRewrite): void {
+    if (!rewrite.placeholder) {
+      return;
+    }
+    this.membershipState?.placeholders.set(
+      outputIndex + rewrite.placeholder.offset,
+      rewrite.placeholder.clause
+    );
+  }
+
   private matchBracketExpression(
     query: string,
     index: number
-  ): { text: string; end: number } | null {
+  ): IQueryRewrite | null {
     if (index > 0 && /[\w$.]/.test(query[index - 1] ?? '')) {
       return null;
     }
@@ -265,7 +310,7 @@ export class QueryParser implements IQueryParser {
       }
       const body = query.slice(membership.openIndex + 1, closeIndex);
       return {
-        text: this.rewriteMembership(field.text, membership.operatorText, body),
+        ...this.rewriteMembership(field.text, membership.operatorText, body),
         end: closeIndex + 1
       };
     }
@@ -315,13 +360,13 @@ export class QueryParser implements IQueryParser {
     field: string,
     operatorText: string,
     body: string
-  ): string {
+  ): Omit<IQueryRewrite, 'end'> {
     const operator = /^not/i.test(operatorText) ? 'NOT IN' : 'IN';
     const value = this.parseMembershipValues(body);
-    const prefix = this.membershipState?.prefix ?? PLACEHOLDER_CHARACTER;
-    const id = `${prefix}qk${this.membershipState?.placeholders.size ?? 0}`;
-    this.membershipState?.placeholders.set(id, { operator, value });
-    return `${field}:"${id}"`;
+    return {
+      text: `${field}:${MEMBERSHIP_PLACEHOLDER}`,
+      placeholder: { offset: field.length + 1, clause: { operator, value } }
+    };
   }
 
   private parseMembershipValues(
@@ -367,47 +412,24 @@ export class QueryParser implements IQueryParser {
 
   /**
    * Decode a quoted member with Liqe's own string grammar, so
-   * `name:in["\u0041"]` and `name:"\u0041"` compare the same value.
+   * `name:in["\u0041"]` and `name:"\u0041"` compare the same value. The
+   * token must be exactly one quoted literal: `"a":"b"` is a field and a
+   * value to Liqe, not a member.
+   *
+   * @throws {QueryParseError} When Liqe does not read the token as one quoted literal
    */
   private decodeQuotedToken(token: string): string {
     const literal = liqeParse(token);
     if (
       literal.type === 'Tag' &&
+      literal.field.type === 'ImplicitField' &&
       literal.expression.type === 'LiteralExpression' &&
-      literal.expression.quoted === true
+      literal.expression.quoted === true &&
+      literal.expression.location.start === 0
     ) {
       return literal.expression.value;
     }
     throw new QueryParseError(`Invalid quoted value: ${token}`);
-  }
-
-  private restoreMembership(expression: QueryExpression): QueryExpression {
-    if (expression.type === 'comparison') {
-      const saved =
-        typeof expression.value === 'string'
-          ? this.membershipState?.placeholders.get(expression.value)
-          : undefined;
-      if (!saved) {
-        return expression;
-      }
-      return {
-        type: 'comparison',
-        field: expression.field,
-        operator: saved.operator,
-        value: saved.value
-      };
-    }
-    if (expression.type !== 'logical') {
-      return expression;
-    }
-    return {
-      type: 'logical',
-      operator: expression.operator,
-      left: this.restoreMembership(expression.left),
-      ...(expression.right && {
-        right: this.restoreMembership(expression.right)
-      })
-    };
   }
 
   private readFieldToken(
@@ -749,6 +771,14 @@ export class QueryParser implements IQueryParser {
           );
         }
         const fieldName = this.normalizeFieldName(field.name);
+        const lifted = this.takeMembership(expression);
+        if (lifted) {
+          return this.createComparisonExpression(
+            fieldName,
+            lifted.operator,
+            lifted.value
+          );
+        }
         if (expression.type === 'RangeExpression') {
           return this.convertRangeExpression(fieldName, expression);
         }

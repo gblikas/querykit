@@ -13,6 +13,15 @@ import { InMemoryAdapterError } from './in-memory-adapter-error';
 type SqlTruth = boolean | null;
 
 /**
+ * Messages shared by the up-front shape check and the per-row evaluation,
+ * so both paths reject the same node with the same words.
+ */
+const RAW_SQL_MESSAGE = 'Raw SQL expressions cannot be filtered in memory';
+const MISSING_LEFT_MESSAGE = 'Logical expression is missing a left operand';
+const MISSING_RIGHT_MESSAGE = 'Logical expression is missing a right operand';
+const REGEX_MESSAGE = 'Unsupported operator: REGEX';
+
+/**
  * Filter rows with a QueryKit expression using the same operators the
  * Drizzle translator emits. `==` is equality, and `LIKE` is SQL LIKE
  * (`*` is `%`, `?` is `_`, case-sensitive, anchored to the whole value).
@@ -56,8 +65,11 @@ export function canMatchExpression(expression: QueryExpression): boolean {
   try {
     assertMatchableExpression(expression);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    if (error instanceof InMemoryAdapterError) {
+      return false;
+    }
+    throw error;
   }
 }
 
@@ -68,7 +80,7 @@ export function canMatchExpression(expression: QueryExpression): boolean {
  * rejects.
  *
  * @param expression Expression to check
- * @throws {InMemoryAdapterError} When a node is raw SQL, uses `REGEX`, has a malformed value, or lacks an operand
+ * @throws {InMemoryAdapterError} When a node is raw SQL, uses an operator this engine lacks, has a malformed value, or lacks an operand
  */
 function assertMatchableExpression(expression: QueryExpression): void {
   if (expression.type === 'comparison') {
@@ -76,31 +88,56 @@ function assertMatchableExpression(expression: QueryExpression): void {
     return;
   }
   if (expression.type !== 'logical') {
-    throw new InMemoryAdapterError(
-      'Raw SQL expressions cannot be filtered in memory'
-    );
+    throw new InMemoryAdapterError(RAW_SQL_MESSAGE);
+  }
+  assertLogicalShape(expression);
+}
+
+/**
+ * Reject a logical node `logicalTruth` cannot apply: a missing operand or
+ * an operator other than AND, OR, and NOT.
+ *
+ * @param expression Logical node
+ * @throws {InMemoryAdapterError} When an operand is missing or the operator is unknown
+ */
+function assertLogicalShape(expression: ILogicalExpression): void {
+  if (!expression.left) {
+    throw new InMemoryAdapterError(MISSING_LEFT_MESSAGE);
   }
   assertMatchableExpression(expression.left);
   if (expression.operator === 'NOT') {
     return;
   }
   if (!expression.right) {
-    throw new InMemoryAdapterError(
-      'Logical expression is missing a right operand'
-    );
+    throw new InMemoryAdapterError(MISSING_RIGHT_MESSAGE);
   }
   assertMatchableExpression(expression.right);
+  if (expression.operator === 'AND' || expression.operator === 'OR') {
+    return;
+  }
+  const unexpected: never = expression.operator;
+  throw new InMemoryAdapterError(
+    `Unsupported logical operator: ${String(unexpected)}`
+  );
 }
 
 /**
  * Reject a comparison whose operator or value shape `comparisonTruth`
- * cannot apply.
+ * cannot apply. The switch lists every operator so that a node built
+ * outside the type system fails here rather than on the first row.
  *
  * @param expression Comparison node
- * @throws {InMemoryAdapterError} When the node is `REGEX`, a non-string `LIKE`, or a non-array membership test
+ * @throws {InMemoryAdapterError} When the operator is `REGEX` or unknown, `LIKE` has no string, or a membership test has no array
  */
 function assertComparisonShape(expression: IComparisonExpression): void {
   switch (expression.operator) {
+    case '==':
+    case '!=':
+    case '>':
+    case '>=':
+    case '<':
+    case '<=':
+      return;
     case 'LIKE':
       assertLikePattern(expression.value);
       return;
@@ -109,9 +146,13 @@ function assertComparisonShape(expression: IComparisonExpression): void {
       assertMembershipList(expression.value);
       return;
     case 'REGEX':
-      throw new InMemoryAdapterError('Unsupported operator: REGEX');
-    default:
-      return;
+      throw new InMemoryAdapterError(REGEX_MESSAGE);
+    default: {
+      const unexpected: never = expression.operator;
+      throw new InMemoryAdapterError(
+        `Unsupported operator: ${String(unexpected)}`
+      );
+    }
   }
 }
 
@@ -171,9 +212,7 @@ function expressionTruth(
   if (expression.type === 'logical') {
     return logicalTruth(expression, record);
   }
-  throw new InMemoryAdapterError(
-    'Raw SQL expressions cannot be filtered in memory'
-  );
+  throw new InMemoryAdapterError(RAW_SQL_MESSAGE);
 }
 
 /**
@@ -193,9 +232,7 @@ function logicalTruth(
     return notTruth(expressionTruth(expression.left, record));
   }
   if (!expression.right) {
-    throw new InMemoryAdapterError(
-      'Logical expression is missing a right operand'
-    );
+    throw new InMemoryAdapterError(MISSING_RIGHT_MESSAGE);
   }
   const leftTruth = expressionTruth(expression.left, record);
   const rightTruth = expressionTruth(expression.right, record);
@@ -288,7 +325,7 @@ function comparisonTruth(
     case 'NOT IN':
       return notTruth(inTruth(fieldValue, expression.value));
     case 'REGEX':
-      throw new InMemoryAdapterError('Unsupported operator: REGEX');
+      throw new InMemoryAdapterError(REGEX_MESSAGE);
     default: {
       const unexpected: never = expression.operator;
       throw new InMemoryAdapterError(

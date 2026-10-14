@@ -256,6 +256,118 @@ describe('QueryParser', () => {
       expect(() => parser.parse('name:in["\\q"]')).toThrow(QueryParseError);
     });
 
+    it('keeps placeholders apart from decoys wherever the membership list sits', () => {
+      const listFirst = parser.parse('tags:in[a] AND status:"\\uE000qk0"');
+      expect(listFirst).toEqual({
+        type: 'logical',
+        operator: 'AND',
+        left: {
+          type: 'comparison',
+          field: 'tags',
+          operator: 'IN',
+          value: ['a']
+        },
+        right: {
+          type: 'comparison',
+          field: 'status',
+          operator: '==',
+          value: '\uE000qk0'
+        }
+      });
+      const twoLists = parser.parse(
+        '(a:in[x] OR b:in[y]) AND status:"\\uE000qk1"'
+      );
+      expect(twoLists).toEqual({
+        type: 'logical',
+        operator: 'AND',
+        left: {
+          type: 'logical',
+          operator: 'OR',
+          left: {
+            type: 'comparison',
+            field: 'a',
+            operator: 'IN',
+            value: ['x']
+          },
+          right: {
+            type: 'comparison',
+            field: 'b',
+            operator: 'IN',
+            value: ['y']
+          }
+        },
+        right: {
+          type: 'comparison',
+          field: 'status',
+          operator: '==',
+          value: '\uE000qk1'
+        }
+      });
+      const insideBody = parser.parse(
+        'tags:in["\\uE000"] AND status:"\\uE000"'
+      );
+      expect(insideBody).toEqual({
+        type: 'logical',
+        operator: 'AND',
+        left: {
+          type: 'comparison',
+          field: 'tags',
+          operator: 'IN',
+          value: ['\uE000']
+        },
+        right: {
+          type: 'comparison',
+          field: 'status',
+          operator: '==',
+          value: '\uE000'
+        }
+      });
+    });
+
+    it('finds a membership placeholder after escaped literals shorten decoded text', () => {
+      const afterEscapes = parser.parse(
+        '(a:"\\u0041\\u0042" OR b:"q\\"r") AND tags:in[x, y]'
+      );
+      expect(afterEscapes).toEqual({
+        type: 'logical',
+        operator: 'AND',
+        left: {
+          type: 'logical',
+          operator: 'OR',
+          left: { type: 'comparison', field: 'a', operator: '==', value: 'AB' },
+          right: {
+            type: 'comparison',
+            field: 'b',
+            operator: '==',
+            value: 'q"r'
+          }
+        },
+        right: {
+          type: 'comparison',
+          field: 'tags',
+          operator: 'IN',
+          value: ['x', 'y']
+        }
+      });
+    });
+
+    it('fails instead of dropping a membership list that a regex literal swallows', () => {
+      const swallowed = (): QueryExpression =>
+        parser.parse('a:/x/ AND NOT NOT b:in[1] OR c:/y/');
+      expect(swallowed).toThrow(QueryParseError);
+      expect(swallowed).toThrow(/membership list/);
+    });
+
+    it('rejects a quoted membership member that is not a single literal', () => {
+      expect(() => parser.parse('name:in["a":"b"]')).toThrow(QueryParseError);
+      expect(parser.parse('name:in["a:b"]')).toEqual({
+        type: 'comparison',
+        field: 'name',
+        operator: 'IN',
+        value: ['a:b']
+      });
+    });
+
     it('restores exponent-form numbers in membership lists', () => {
       expect(parser.parse('priority:in[1e-7, 2E3, -1.5e+2, 10]')).toEqual({
         type: 'comparison',

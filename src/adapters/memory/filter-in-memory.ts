@@ -18,6 +18,9 @@ import { filterByExpression } from './match-expression';
  * @param parserOptions Field mappings and case-insensitive field names
  * @returns The subset of `records` that match the Drizzle predicate
  * @throws {QueryParseError} When `query` is not valid QueryKit syntax
+ * @throws {InMemoryAdapterError} When the parsed expression cannot be applied
+ * in memory (REGEX, raw SQL, a non-string LIKE, a non-array IN / NOT IN, or a
+ * missing operand). This is checked before any row is read.
  *
  * @example
  * const open = filterInMemory('status:done AND priority:>2', tasks);
