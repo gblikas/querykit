@@ -75,15 +75,16 @@ interface IMembershipState {
 
 /**
  * Private-use code point that membership placeholders are built from. Each
- * `parse()` call repeats it once more than its longest run in the raw query,
- * so a placeholder can never equal a caller-controlled value and no character
- * has to be rejected from queries. Liqe copies backslash escapes through
- * verbatim, so the character cannot be smuggled in as `\uE000` either. No
- * randomness is needed, and the parser keeps working in browsers, where
- * Node's `crypto` module is not available.
+ * `parse()` call repeats it once more than the raw query can produce, so no
+ * decoded value can equal a placeholder and no character has to be rejected
+ * from queries. Liqe decodes `\uXXXX` escapes inside quoted strings, in
+ * either hex case, so an escape counts the same as the character itself;
+ * unquoted values and regex patterns are not decoded. No randomness is
+ * needed, and the parser keeps working in browsers, where Node's `crypto`
+ * module is not available.
  */
 const PLACEHOLDER_CHARACTER = '\uE000';
-const PLACEHOLDER_RUNS = /\uE000+/g;
+const PLACEHOLDER_SOURCES = /\uE000|\\ue000/gi;
 
 export class QueryParser implements IQueryParser {
   private options: Required<IParserOptions>;
@@ -121,16 +122,13 @@ export class QueryParser implements IQueryParser {
 
   /**
    * Build the placeholder prefix for one parse: the placeholder character
-   * repeated once more than its longest run in the raw query. The result
-   * cannot occur in the query, so no value in it can equal a placeholder.
+   * repeated once more than the number of literal copies and `\uE000`
+   * escapes in the raw query. Every placeholder character in a decoded value
+   * comes from one of those, so no value can contain as many as the prefix.
    */
   private createPlaceholderPrefix(query: string): string {
-    const runs = query.match(PLACEHOLDER_RUNS) ?? [];
-    const longestRun = runs.reduce(
-      (longest: number, run: string): number => Math.max(longest, run.length),
-      0
-    );
-    return PLACEHOLDER_CHARACTER.repeat(longestRun + 1);
+    const sources = query.match(PLACEHOLDER_SOURCES) ?? [];
+    return PLACEHOLDER_CHARACTER.repeat(sources.length + 1);
   }
 
   /**
@@ -340,13 +338,8 @@ export class QueryParser implements IQueryParser {
   private parseMembershipToken(
     token: string
   ): string | number | boolean | null {
-    const quoted =
-      (token.startsWith('"') && token.endsWith('"') && token.length >= 2) ||
-      (token.startsWith("'") && token.endsWith("'") && token.length >= 2);
-    if (quoted) {
-      return token
-        .slice(1, -1)
-        .replace(/\\(.)/g, (_match, char: string) => char);
+    if (this.isQuotedToken(token)) {
+      return this.decodeQuotedToken(token);
     }
     if (token === 'null') {
       return null;
@@ -357,10 +350,35 @@ export class QueryParser implements IQueryParser {
     if (token === 'false') {
       return false;
     }
-    if (/^-?(?:\d+)(?:\.\d+)?$/.test(token)) {
+    // Exponent forms included: QueryBuilder emits `String(1e-7)`.
+    if (/^-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?$/.test(token)) {
       return Number(token);
     }
     return token;
+  }
+
+  private isQuotedToken(token: string): boolean {
+    return (
+      token.length >= 2 &&
+      ((token.startsWith('"') && token.endsWith('"')) ||
+        (token.startsWith("'") && token.endsWith("'")))
+    );
+  }
+
+  /**
+   * Decode a quoted member with Liqe's own string grammar, so
+   * `name:in["\u0041"]` and `name:"\u0041"` compare the same value.
+   */
+  private decodeQuotedToken(token: string): string {
+    const literal = liqeParse(token);
+    if (
+      literal.type === 'Tag' &&
+      literal.expression.type === 'LiteralExpression' &&
+      literal.expression.quoted === true
+    ) {
+      return literal.expression.value;
+    }
+    throw new QueryParseError(`Invalid quoted value: ${token}`);
   }
 
   private restoreMembership(expression: QueryExpression): QueryExpression {

@@ -199,26 +199,89 @@ describe('QueryParser', () => {
       expect(parser.validate('title:\uE000')).toBe(true);
     });
 
-    it('keeps a membership list apart from a value that imitates its placeholder', () => {
-      for (const run of ['\uE000', '\uE000\uE000', '\uE000\uE000\uE000']) {
-        const actual = parser.parse(`status:"${run}qk0" AND tags:in[a]`);
-        expect(actual).toEqual({
-          type: 'logical',
-          operator: 'AND',
-          left: {
-            type: 'comparison',
-            field: 'status',
-            operator: '==',
-            value: `${run}qk0`
-          },
-          right: {
-            type: 'comparison',
-            field: 'tags',
-            operator: 'IN',
-            value: ['a']
-          }
-        });
+    it('keeps a membership list apart from a value that decodes to its placeholder', () => {
+      const literals: Array<{ written: string; decoded: string }> = [
+        { written: '\uE000qk0', decoded: '\uE000qk0' },
+        { written: '\uE000\uE000qk0', decoded: '\uE000\uE000qk0' },
+        { written: '\\uE000qk0', decoded: '\uE000qk0' },
+        { written: '\\ue000qk0', decoded: '\uE000qk0' },
+        { written: '\\uE000\\uE000qk0', decoded: '\uE000\uE000qk0' },
+        { written: '\\uE000\uE000qk0', decoded: '\uE000\uE000qk0' },
+        { written: '\\\\uE000qk0', decoded: '\\uE000qk0' }
+      ];
+      for (const { written, decoded } of literals) {
+        for (const quote of ['"', "'"]) {
+          const actual = parser.parse(
+            `status:${quote}${written}${quote} AND tags:in[a]`
+          );
+          expect(actual).toEqual({
+            type: 'logical',
+            operator: 'AND',
+            left: {
+              type: 'comparison',
+              field: 'status',
+              operator: '==',
+              value: decoded
+            },
+            right: {
+              type: 'comparison',
+              field: 'tags',
+              operator: 'IN',
+              value: ['a']
+            }
+          });
+        }
       }
+    });
+
+    it('decodes quoted membership members with the same escapes as equality', () => {
+      const membership = parser.parse(
+        'name:in["\\u0041", \'\\u0042\', "a\\nb", "quo\\"te"]'
+      );
+      expect(membership).toEqual({
+        type: 'comparison',
+        field: 'name',
+        operator: 'IN',
+        value: ['A', 'B', 'a\nb', 'quo"te']
+      });
+      expect(parser.parse('name:"\\u0041"')).toEqual({
+        type: 'comparison',
+        field: 'name',
+        operator: '==',
+        value: 'A'
+      });
+    });
+
+    it('rejects a quoted membership member Liqe cannot decode', () => {
+      expect(() => parser.parse('name:in["\\q"]')).toThrow(QueryParseError);
+    });
+
+    it('restores exponent-form numbers in membership lists', () => {
+      expect(parser.parse('priority:in[1e-7, 2E3, -1.5e+2, 10]')).toEqual({
+        type: 'comparison',
+        field: 'priority',
+        operator: 'IN',
+        value: [1e-7, 2000, -150, 10]
+      });
+    });
+
+    it('treats a slash inside a regex character class as part of the pattern', () => {
+      expect(parser.parse('name:/[/]/ and priority:1')).toEqual({
+        type: 'logical',
+        operator: 'AND',
+        left: {
+          type: 'comparison',
+          field: 'name',
+          operator: 'REGEX',
+          value: '/[/]/'
+        },
+        right: {
+          type: 'comparison',
+          field: 'priority',
+          operator: '==',
+          value: 1
+        }
+      });
     });
 
     it('still parses a membership list next to a value that looks like a placeholder', () => {

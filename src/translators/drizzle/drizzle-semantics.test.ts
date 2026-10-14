@@ -8,7 +8,11 @@
 
 import { createRequire } from 'module';
 import { sql, SQL } from 'drizzle-orm';
-import { SQLiteSyncDialect } from 'drizzle-orm/sqlite-core';
+import {
+  integer,
+  sqliteTable,
+  SQLiteSyncDialect
+} from 'drizzle-orm/sqlite-core';
 import { QueryExpression, QueryValue } from '../../parser/types';
 import { SqlTranslator } from '../sql';
 import { DrizzleTranslationError, DrizzleTranslator } from './index';
@@ -116,7 +120,7 @@ describe('DrizzleTranslator semantics', () => {
   it('compiles multi-value IN as a list rather than a row constructor', (): void => {
     const expression = comparison('status', 'IN', ['open', 'pending']);
     const compiled = compile(expression);
-    expect(compiled.sql).toBe('"status" IN (?, ?)');
+    expect(compiled.sql).toBe('"status" in (?, ?)');
     expect(compiled.params).toEqual(['open', 'pending']);
     expect(matchingIds(compiled)).toEqual([1, 4, 5, 6, 7]);
   });
@@ -252,5 +256,54 @@ describe('DrizzleTranslator schema table lookup', () => {
     expect(compile(comparison('items.name', '==', 'x'), schema).sql).toBe(
       'name = ?'
     );
+  });
+});
+
+describe('DrizzleTranslator membership encoding', () => {
+  const flags = sqliteTable('flags', {
+    id: integer('id'),
+    done: integer('done', { mode: 'boolean' })
+  });
+  const flagSchema = { flags } as unknown as Record<
+    string,
+    Record<string, unknown>
+  >;
+  const Database = nodeRequire('better-sqlite3') as ISqliteDatabaseConstructor;
+  const database = new Database(':memory:');
+  database.exec(`
+    CREATE TABLE flags (id INTEGER, done INTEGER);
+    INSERT INTO flags (id, done) VALUES (1, 1), (2, 0), (3, NULL);
+  `);
+
+  afterAll((): void => {
+    database.close();
+  });
+
+  function matchingFlagIds(compiled: ICompiledSql): number[] {
+    return database
+      .prepare(`SELECT id FROM flags WHERE ${compiled.sql} ORDER BY id`)
+      .all(...compiled.params)
+      .map(row => row.id);
+  }
+
+  it('binds boolean members through the column encoder like equality does', (): void => {
+    const compiled = compile(comparison('done', 'IN', [true]), flagSchema);
+    expect(compiled.params).toEqual([1]);
+    expect(matchingFlagIds(compiled)).toEqual([1]);
+  });
+
+  it('keeps the encoder when a null member is rewritten to IS NULL', (): void => {
+    const withNull = compile(
+      comparison('done', 'IN', [true, null]),
+      flagSchema
+    );
+    expect(withNull.params).toEqual([1]);
+    expect(matchingFlagIds(withNull)).toEqual([1, 3]);
+    const negated = compile(
+      comparison('done', 'NOT IN', [false, null]),
+      flagSchema
+    );
+    expect(negated.params).toEqual([0]);
+    expect(matchingFlagIds(negated)).toEqual([1]);
   });
 });

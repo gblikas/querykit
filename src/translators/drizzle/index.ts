@@ -5,7 +5,19 @@
  * query conditions that can be used in Drizzle's SQL query builder.
  */
 
-import { SQL, SQLWrapper, eq, gt, gte, lt, lte, ne, sql } from 'drizzle-orm';
+import {
+  SQL,
+  SQLWrapper,
+  eq,
+  gt,
+  gte,
+  inArray,
+  lt,
+  lte,
+  ne,
+  notInArray,
+  sql
+} from 'drizzle-orm';
 import {
   IComparisonExpression,
   ILogicalExpression,
@@ -253,8 +265,10 @@ export class DrizzleTranslator implements ITranslator<SQL> {
 
   /**
    * Translate IN / NOT IN so NULL members agree with IS NULL / IS NOT NULL.
-   * Empty IN is false and empty NOT IN is true. Drizzle's inArray throws on
-   * an empty list and wraps a nested array in an extra pair of parentheses.
+   * Empty IN is false and empty NOT IN is true, which Drizzle's inArray
+   * rejects. The non-null members go through inArray / notInArray so the
+   * column's encoder applies, as it does for `==`: a boolean-mode integer
+   * column binds `true` as 1 rather than as a boolean SQLite cannot bind.
    */
   private translateMembership(
     column: SQLWrapper,
@@ -273,20 +287,20 @@ export class DrizzleTranslator implements ITranslator<SQL> {
     const hasNull = nonNullValues.length !== values.length;
     if (isNegated) {
       if (!hasNull) {
-        return sql`${column} NOT IN ${nonNullValues}`;
+        return notInArray(column, nonNullValues);
       }
       if (nonNullValues.length === 0) {
         return sql`${column} IS NOT NULL`;
       }
-      return sql`(${column} IS NOT NULL AND ${column} NOT IN ${nonNullValues})`;
+      return sql`(${column} IS NOT NULL AND ${notInArray(column, nonNullValues)})`;
     }
     if (!hasNull) {
-      return sql`${column} IN ${nonNullValues}`;
+      return inArray(column, nonNullValues);
     }
     if (nonNullValues.length === 0) {
       return sql`${column} IS NULL`;
     }
-    return sql`(${column} IS NULL OR ${column} IN ${nonNullValues})`;
+    return sql`(${column} IS NULL OR ${inArray(column, nonNullValues)})`;
   }
 
   private assertFiniteValue(value: unknown): void {

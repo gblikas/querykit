@@ -23,7 +23,9 @@ type SqlTruth = boolean | null;
  * @param expression Expression the Drizzle translator would compile
  * @param records Rows to test. Matches keep their original order and identity.
  * @returns Matching rows
- * @throws {InMemoryAdapterError} When the expression is raw SQL or a LIKE value is not a string
+ * @throws {InMemoryAdapterError} When the expression cannot be applied. The
+ * check runs before any row is read, so an empty table rejects the same
+ * expressions as a populated one.
  *
  * @example
  * const open = filterByExpression(parser.parse('status:active'), tasks);
@@ -32,9 +34,10 @@ export function filterByExpression<T extends object>(
   expression: QueryExpression,
   records: readonly T[]
 ): T[] {
+  assertMatchableExpression(expression);
   const matched: T[] = [];
   for (const record of records) {
-    if (matchesExpression(expression, record)) {
+    if (expressionTruth(expression, record) === true) {
       matched.push(record);
     }
   }
@@ -50,39 +53,87 @@ export function filterByExpression<T extends object>(
  * @returns True when every node is a comparison this engine applies or a complete boolean
  */
 export function canMatchExpression(expression: QueryExpression): boolean {
-  if (expression.type === 'comparison') {
-    return canMatchComparison(expression);
-  }
-  if (expression.type !== 'logical') {
-    return false;
-  }
-  if (!canMatchExpression(expression.left)) {
-    return false;
-  }
-  if (expression.operator === 'NOT') {
+  try {
+    assertMatchableExpression(expression);
     return true;
+  } catch {
+    return false;
   }
-  return expression.right ? canMatchExpression(expression.right) : false;
 }
 
 /**
- * Report whether one comparison has an operator and value shape that
- * `comparisonTruth` accepts without throwing.
+ * Reject an expression this engine cannot apply, before any row is read.
+ * The same errors would otherwise surface only from a row that reaches the
+ * offending node, so an empty table would accept what a populated one
+ * rejects.
+ *
+ * @param expression Expression to check
+ * @throws {InMemoryAdapterError} When a node is raw SQL, uses `REGEX`, has a malformed value, or lacks an operand
+ */
+function assertMatchableExpression(expression: QueryExpression): void {
+  if (expression.type === 'comparison') {
+    assertComparisonShape(expression);
+    return;
+  }
+  if (expression.type !== 'logical') {
+    throw new InMemoryAdapterError(
+      'Raw SQL expressions cannot be filtered in memory'
+    );
+  }
+  assertMatchableExpression(expression.left);
+  if (expression.operator === 'NOT') {
+    return;
+  }
+  if (!expression.right) {
+    throw new InMemoryAdapterError(
+      'Logical expression is missing a right operand'
+    );
+  }
+  assertMatchableExpression(expression.right);
+}
+
+/**
+ * Reject a comparison whose operator or value shape `comparisonTruth`
+ * cannot apply.
  *
  * @param expression Comparison node
- * @returns True when execution would not reject the node up front
+ * @throws {InMemoryAdapterError} When the node is `REGEX`, a non-string `LIKE`, or a non-array membership test
  */
-function canMatchComparison(expression: IComparisonExpression): boolean {
+function assertComparisonShape(expression: IComparisonExpression): void {
   switch (expression.operator) {
     case 'LIKE':
-      return typeof expression.value === 'string';
+      assertLikePattern(expression.value);
+      return;
     case 'IN':
     case 'NOT IN':
-      return Array.isArray(expression.value);
+      assertMembershipList(expression.value);
+      return;
     case 'REGEX':
-      return false;
+      throw new InMemoryAdapterError('Unsupported operator: REGEX');
     default:
-      return true;
+      return;
+  }
+}
+
+/**
+ * @param value LIKE operand
+ * @throws {InMemoryAdapterError} When the pattern is not a string
+ */
+function assertLikePattern(value: QueryValue): asserts value is string {
+  if (typeof value !== 'string') {
+    throw new InMemoryAdapterError('LIKE operator requires a string value');
+  }
+}
+
+/**
+ * @param value Membership operand
+ * @throws {InMemoryAdapterError} When the value is not an array
+ */
+function assertMembershipList(
+  value: QueryValue
+): asserts value is Extract<QueryValue, unknown[]> {
+  if (!Array.isArray(value)) {
+    throw new InMemoryAdapterError('IN operator requires an array value');
   }
 }
 
@@ -98,6 +149,7 @@ export function matchesExpression(
   expression: QueryExpression,
   record: object
 ): boolean {
+  assertMatchableExpression(expression);
   return expressionTruth(expression, record) === true;
 }
 
@@ -337,9 +389,7 @@ function applyOrder<T extends number | string>(
  * @throws {InMemoryAdapterError} When the pattern is not a string
  */
 function likeTruth(fieldValue: unknown, pattern: QueryValue): SqlTruth {
-  if (typeof pattern !== 'string') {
-    throw new InMemoryAdapterError('LIKE operator requires a string value');
-  }
+  assertLikePattern(pattern);
   if (isNullish(fieldValue)) {
     return null;
   }
@@ -447,9 +497,7 @@ function matchesLikePattern(sqlPattern: string, value: string): boolean {
  * @throws {InMemoryAdapterError} When the value is not an array
  */
 function inTruth(fieldValue: unknown, value: QueryValue): SqlTruth {
-  if (!Array.isArray(value)) {
-    throw new InMemoryAdapterError('IN operator requires an array value');
-  }
+  assertMembershipList(value);
   if (value.length === 0) {
     return false;
   }

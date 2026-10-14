@@ -5,6 +5,8 @@
  * characters that live inside string or regex literals. Liqe treats `/.../`
  * as a regex value and quotes as literals; counting those characters as
  * syntax changes the meaning of a query the parser has already accepted.
+ * Inside a regex, a slash within a character class such as `[/]` does not
+ * close the literal.
  */
 
 /**
@@ -149,21 +151,35 @@ function readStringLiteral(
 
 function readRegexLiteral(input: string, start: number): ILiteralSpan {
   let index = start + 1;
+  let isInClass = false;
   while (index < input.length) {
-    if (input[index] === '\\' && index + 1 < input.length) {
+    const char = input[index];
+    if (char === '\\' && index + 1 < input.length) {
       index += 2;
       continue;
     }
-    if (input[index] === '/') {
-      index += 1;
-      while (index < input.length && /[gmiyusd]/.test(input[index] ?? '')) {
-        index += 1;
-      }
-      return { kind: 'regex', end: index, closed: true };
+    if (isInClass) {
+      isInClass = char !== ']';
+    } else if (char === '[') {
+      isInClass = true;
+    } else if (char === '/') {
+      return {
+        kind: 'regex',
+        end: readRegexFlagsEnd(input, index + 1),
+        closed: true
+      };
     }
     index += 1;
   }
   return { kind: 'regex', end: input.length, closed: false };
+}
+
+function readRegexFlagsEnd(input: string, start: number): number {
+  let index = start;
+  while (index < input.length && /[gmiyusd]/.test(input[index] ?? '')) {
+    index += 1;
+  }
+  return index;
 }
 
 function segmentQueryText(input: string): IQueryTextSegment[] {

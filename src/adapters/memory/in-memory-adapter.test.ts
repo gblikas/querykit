@@ -10,6 +10,7 @@ import {
   InMemoryAdapterError,
   inMemoryAdapter
 } from './index';
+import { filterByExpression } from './match-expression';
 
 interface ITask {
   id: number;
@@ -805,6 +806,63 @@ describe('InMemoryAdapter canExecute shape checks', () => {
     for (const expression of accepted) {
       expect(rowsAdapter.canExecute(expression)).toBe(true);
     }
+  });
+});
+
+describe('InMemoryAdapter validates expressions before reading rows', () => {
+  const noRows: ITask[] = [];
+
+  it('rejects a REGEX query even when there are no rows', () => {
+    const filterNoRows = (): ITask[] => filterInMemory('title:/foo/', noRows);
+    expect(filterNoRows).toThrow(InMemoryAdapterError);
+    expect(filterNoRows).toThrow('Unsupported operator: REGEX');
+  });
+
+  it('rejects malformed expressions against an empty table', () => {
+    const nameIsX: QueryExpression = {
+      type: 'comparison',
+      field: 'name',
+      operator: '==',
+      value: 'x'
+    };
+    const rejected: Array<{ expression: QueryExpression; message: string }> = [
+      {
+        expression: {
+          type: 'comparison',
+          field: 'name',
+          operator: 'LIKE',
+          value: 5
+        },
+        message: 'LIKE operator requires a string value'
+      },
+      {
+        expression: {
+          type: 'comparison',
+          field: 'name',
+          operator: 'IN',
+          value: 'x'
+        },
+        message: 'IN operator requires an array value'
+      },
+      {
+        expression: { type: 'logical', operator: 'AND', left: nameIsX },
+        message: 'Logical expression is missing a right operand'
+      },
+      {
+        expression: {
+          type: 'raw',
+          toSql: (): string => ''
+        } as unknown as QueryExpression,
+        message: 'Raw SQL expressions cannot be filtered in memory'
+      }
+    ];
+    for (const { expression, message } of rejected) {
+      expect(() => filterByExpression(expression, noRows)).toThrow(message);
+    }
+  });
+
+  it('still accepts a well-formed expression against an empty table', () => {
+    expect(filterInMemory('title:open', noRows)).toEqual([]);
   });
 });
 
