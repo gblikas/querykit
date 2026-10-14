@@ -65,19 +65,29 @@ interface IMembershipPlaceholder {
 }
 
 /**
- * Private-use code point that starts every membership placeholder. The raw
- * query is rejected when it already contains this character, so a
- * caller-controlled value can never be mistaken for a placeholder when the
- * membership clauses are restored after Liqe parsing. No randomness is
- * needed, and the parser keeps working in browsers, where Node's `crypto`
- * module is not available.
+ * Membership clauses lifted out of one `parse()` call, keyed by the
+ * placeholder written into the Liqe query in their place.
  */
-const MEMBERSHIP_PLACEHOLDER_PREFIX = '\uE000';
+interface IMembershipState {
+  prefix: string;
+  placeholders: Map<string, IMembershipPlaceholder>;
+}
+
+/**
+ * Private-use code point that membership placeholders are built from. Each
+ * `parse()` call repeats it once more than its longest run in the raw query,
+ * so a placeholder can never equal a caller-controlled value and no character
+ * has to be rejected from queries. Liqe copies backslash escapes through
+ * verbatim, so the character cannot be smuggled in as `\uE000` either. No
+ * randomness is needed, and the parser keeps working in browsers, where
+ * Node's `crypto` module is not available.
+ */
+const PLACEHOLDER_CHARACTER = '\uE000';
+const PLACEHOLDER_RUNS = /\uE000+/g;
 
 export class QueryParser implements IQueryParser {
   private options: Required<IParserOptions>;
-  private membershipPlaceholders: Map<string, IMembershipPlaceholder> | null =
-    null;
+  private membershipState: IMembershipState | null = null;
 
   constructor(options: IParserOptions = {}) {
     this.options = {
@@ -90,8 +100,11 @@ export class QueryParser implements IQueryParser {
    * Parse a query string into a QueryKit AST
    */
   public parse(query: string): QueryExpression {
-    const previousPlaceholders = this.membershipPlaceholders;
-    this.membershipPlaceholders = new Map();
+    const previousState = this.membershipState;
+    this.membershipState = {
+      prefix: this.createPlaceholderPrefix(query),
+      placeholders: new Map()
+    };
     try {
       // Pre-process the query to handle IN operator syntax
       const preprocessedQuery = this.preprocessQuery(query);
@@ -102,8 +115,22 @@ export class QueryParser implements IQueryParser {
         `Failed to parse query: ${error instanceof Error ? error.message : String(error)}`
       );
     } finally {
-      this.membershipPlaceholders = previousPlaceholders;
+      this.membershipState = previousState;
     }
+  }
+
+  /**
+   * Build the placeholder prefix for one parse: the placeholder character
+   * repeated once more than its longest run in the raw query. The result
+   * cannot occur in the query, so no value in it can equal a placeholder.
+   */
+  private createPlaceholderPrefix(query: string): string {
+    const runs = query.match(PLACEHOLDER_RUNS) ?? [];
+    const longestRun = runs.reduce(
+      (longest: number, run: string): number => Math.max(longest, run.length),
+      0
+    );
+    return PLACEHOLDER_CHARACTER.repeat(longestRun + 1);
   }
 
   /**
@@ -118,9 +145,6 @@ export class QueryParser implements IQueryParser {
    * - `status:[todo, doing, done]` (IN / multiple values)
    */
   private preprocessQuery(query: string): string {
-    if (query.includes(MEMBERSHIP_PLACEHOLDER_PREFIX)) {
-      throw new QueryParseError('Query contains the reserved character U+E000');
-    }
     let result = query;
     // Normalize lowercase boolean operators to uppercase.
     // Liqe only recognizes uppercase AND, OR, NOT as boolean operators;
@@ -296,8 +320,9 @@ export class QueryParser implements IQueryParser {
   ): string {
     const operator = /^not/i.test(operatorText) ? 'NOT IN' : 'IN';
     const value = this.parseMembershipValues(body);
-    const id = `${MEMBERSHIP_PLACEHOLDER_PREFIX}qk${this.membershipPlaceholders?.size ?? 0}`;
-    this.membershipPlaceholders?.set(id, { operator, value });
+    const prefix = this.membershipState?.prefix ?? PLACEHOLDER_CHARACTER;
+    const id = `${prefix}qk${this.membershipState?.placeholders.size ?? 0}`;
+    this.membershipState?.placeholders.set(id, { operator, value });
     return `${field}:"${id}"`;
   }
 
@@ -342,7 +367,7 @@ export class QueryParser implements IQueryParser {
     if (expression.type === 'comparison') {
       const saved =
         typeof expression.value === 'string'
-          ? this.membershipPlaceholders?.get(expression.value)
+          ? this.membershipState?.placeholders.get(expression.value)
           : undefined;
       if (!saved) {
         return expression;

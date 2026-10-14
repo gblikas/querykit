@@ -187,12 +187,38 @@ describe('QueryParser', () => {
       expect(parser.parse(query)).toEqual(expected);
     });
 
-    it('rejects a query that contains the reserved placeholder character', () => {
-      const forged = 'status:"\uE000qk0" AND tags:in[a]';
-      expect(() => parser.parse(forged)).toThrow(QueryParseError);
-      expect(() => parser.parse(forged)).toThrow(/U\+E000/);
-      expect(() => parser.parse('title:\uE000')).toThrow(QueryParseError);
-      expect(parser.validate('title:\uE000')).toBe(false);
+    it('accepts the private-use character that placeholders are built from', () => {
+      const expected: QueryExpression = {
+        type: 'comparison',
+        field: 'title',
+        operator: '==',
+        value: '\uE000'
+      };
+      expect(parser.parse('title:"\uE000"')).toEqual(expected);
+      expect(parser.parse('title:\uE000')).toEqual(expected);
+      expect(parser.validate('title:\uE000')).toBe(true);
+    });
+
+    it('keeps a membership list apart from a value that imitates its placeholder', () => {
+      for (const run of ['\uE000', '\uE000\uE000', '\uE000\uE000\uE000']) {
+        const actual = parser.parse(`status:"${run}qk0" AND tags:in[a]`);
+        expect(actual).toEqual({
+          type: 'logical',
+          operator: 'AND',
+          left: {
+            type: 'comparison',
+            field: 'status',
+            operator: '==',
+            value: `${run}qk0`
+          },
+          right: {
+            type: 'comparison',
+            field: 'tags',
+            operator: 'IN',
+            value: ['a']
+          }
+        });
+      }
     });
 
     it('still parses a membership list next to a value that looks like a placeholder', () => {
