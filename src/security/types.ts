@@ -247,7 +247,8 @@ export interface ISecurityOptions {
    * Timeout in milliseconds for query execution.
    * When execution exceeds this limit, the call rejects. The underlying
    * statement is not cancelled. `0` is a zero-millisecond budget, not
-   * "no timeout".
+   * "no timeout". Must be an integer from 0 to 2147483647, the largest delay
+   * `setTimeout` honours; `createQueryKit` rejects anything else.
    *
    * @default 30000 (30 seconds)
    *

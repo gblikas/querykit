@@ -229,6 +229,37 @@ describe('createQueryKit limit validation', () => {
     }
   });
 
+  it('rejects a queryTimeout outside the setTimeout range when the kit is created', () => {
+    for (const queryTimeout of [
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      -1,
+      1.5,
+      2147483648
+    ]) {
+      expect(() =>
+        createQueryKit({
+          adapter: new RecordingAdapter(),
+          schema: taskSchema,
+          security: { queryTimeout }
+        })
+      ).toThrow(QuerySecurityError);
+    }
+  });
+
+  it('accepts the largest delay setTimeout honours as queryTimeout', async () => {
+    const adapter = new RecordingAdapter();
+    adapter.hangMs = 15;
+    const queryKit = createQueryKit({
+      adapter,
+      schema: taskSchema,
+      security: { queryTimeout: 2147483647 }
+    });
+    await expect(
+      queryKit.query('tasks').where('status:open').execute()
+    ).resolves.toEqual([]);
+  });
+
   it('still caps with a valid maxLimit', async () => {
     const adapter = new RecordingAdapter();
     const queryKit = createQueryKit({

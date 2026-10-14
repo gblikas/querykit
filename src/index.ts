@@ -221,10 +221,17 @@ function applyEnforcedExclusions(
 }
 
 /**
+ * Largest delay `setTimeout` honours. Node and browsers keep the delay in a
+ * signed 32-bit integer and run anything above it immediately.
+ */
+const MAX_QUERY_TIMEOUT_MS = 2147483647;
+
+/**
  * Merge caller security options with QueryKit defaults.
  *
  * @param security - Caller security options, if any
  * @returns Fully populated security settings
+ * @throws {QuerySecurityError} When a limit or the timeout is out of range
  */
 function resolveSecurityOptions(
   security: ISecurityOptions | undefined
@@ -243,6 +250,11 @@ function resolveSecurityOptions(
       'Invalid security option: maxLimit must be a non-negative integer'
     );
   }
+  if (!isTimeoutBudget(resolved.queryTimeout)) {
+    throw new QuerySecurityError(
+      `Invalid security option: queryTimeout must be an integer between 0 and ${MAX_QUERY_TIMEOUT_MS} milliseconds`
+    );
+  }
   return resolved;
 }
 
@@ -256,6 +268,23 @@ function resolveSecurityOptions(
  */
 function isResultLimit(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+/**
+ * Whether a value can be forwarded to `setTimeout` as the query budget.
+ * `NaN`, `Infinity`, a negative, or a delay above the timer range would be
+ * clamped to an immediate timeout and reject every query.
+ *
+ * @param value - Candidate timeout in milliseconds
+ * @returns True for an integer from 0 to MAX_QUERY_TIMEOUT_MS inclusive
+ */
+function isTimeoutBudget(value: unknown): value is number {
+  return (
+    typeof value === 'number' &&
+    Number.isInteger(value) &&
+    value >= 0 &&
+    value <= MAX_QUERY_TIMEOUT_MS
+  );
 }
 
 /**
