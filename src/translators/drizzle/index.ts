@@ -265,10 +265,14 @@ export class DrizzleTranslator implements ITranslator<SQL> {
 
   /**
    * Translate IN / NOT IN so NULL members agree with IS NULL / IS NOT NULL.
-   * Empty IN is false and empty NOT IN is true, which Drizzle's inArray
-   * rejects. The non-null members go through inArray / notInArray so the
-   * column's encoder applies, as it does for `==`: a boolean-mode integer
-   * column binds `true` as 1 rather than as a boolean SQLite cannot bind.
+   * Empty IN is false and empty NOT IN is true; Drizzle's inArray has
+   * treated an empty list differently across versions, so the rewrite
+   * handles it here. The non-null members go through inArray / notInArray
+   * so the column's encoder applies, as it does for `==`: a boolean-mode
+   * integer column binds `true` as 1 rather than as a boolean SQLite cannot
+   * bind.
+   *
+   * @throws {DrizzleTranslationError} When a member is a non-finite number
    */
   private translateMembership(
     column: SQLWrapper,

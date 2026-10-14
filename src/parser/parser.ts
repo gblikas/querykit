@@ -94,6 +94,72 @@ interface IQueryRewrite {
  */
 const MEMBERSHIP_PLACEHOLDER = '"\uE000"';
 
+/**
+ * Escapes Liqe decodes after a backslash in either quote style, before the
+ * `u` plus four hex digits form. `\'` is accepted in single quotes only.
+ */
+const LIQE_SIMPLE_ESCAPES = '"/\\bfnrt';
+
+/**
+ * Decode one quoted literal exactly as Liqe's string grammar does, without
+ * running its Earley parser, whose cost grows superlinearly with the length
+ * of the literal. Body characters other than a newline, a backslash, and the
+ * literal's own quote pass through; a backslash must start a Liqe escape.
+ *
+ * @param token Quoted literal including its quotes
+ * @returns The decoded value
+ * @throws {QueryParseError} When Liqe would not read the token as one quoted literal
+ */
+function decodeQuotedLiteral(token: string): string {
+  const quote = token[0] ?? '';
+  const body = token.slice(1, -1);
+  let decoded = '';
+  let index = 0;
+  while (index < body.length) {
+    const char = body[index] ?? '';
+    if (char === '\n' || char === quote) {
+      throw new QueryParseError(`Invalid quoted value: ${token}`);
+    }
+    if (char !== '\\') {
+      decoded += char;
+      index += 1;
+      continue;
+    }
+    const escape = readLiqeEscape(body, index + 1, quote);
+    decoded += escape.value;
+    index += 1 + escape.length;
+  }
+  return decoded;
+}
+
+/**
+ * Read the escape that follows a backslash at `index`.
+ *
+ * @param body Literal body without its quotes
+ * @param index Position of the character after the backslash
+ * @param quote The literal's quote character
+ * @returns The decoded character and how many body characters it used
+ * @throws {QueryParseError} When the sequence is not one Liqe accepts
+ */
+function readLiqeEscape(
+  body: string,
+  index: number,
+  quote: string
+): { value: string; length: number } {
+  const char = body[index] ?? '';
+  if (quote === "'" && char === "'") {
+    return { value: "'", length: 1 };
+  }
+  if (char !== '' && LIQE_SIMPLE_ESCAPES.includes(char)) {
+    return { value: JSON.parse(`"\\${char}"`) as string, length: 1 };
+  }
+  const hex = body.slice(index + 1, index + 5);
+  if (char === 'u' && /^[\dA-Fa-f]{4}$/.test(hex)) {
+    return { value: JSON.parse(`"\\u${hex}"`) as string, length: 5 };
+  }
+  throw new QueryParseError(`Invalid escape in quoted value: \\${char}`);
+}
+
 export class QueryParser implements IQueryParser {
   private options: Required<IParserOptions>;
   private membershipState: IMembershipState | null = null;
@@ -384,7 +450,7 @@ export class QueryParser implements IQueryParser {
     token: string
   ): string | number | boolean | null {
     if (this.isQuotedToken(token)) {
-      return this.decodeQuotedToken(token);
+      return decodeQuotedLiteral(token);
     }
     if (token === 'null') {
       return null;
@@ -395,7 +461,9 @@ export class QueryParser implements IQueryParser {
     if (token === 'false') {
       return false;
     }
-    // Exponent forms included: QueryBuilder emits `String(1e-7)`.
+    // Unquoted members follow JavaScript's `String(number)`, which the
+    // builder emits, so exponent forms are accepted here even though Liqe's
+    // own numeral grammar has none.
     if (/^-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?$/.test(token)) {
       return Number(token);
     }
@@ -408,28 +476,6 @@ export class QueryParser implements IQueryParser {
       ((token.startsWith('"') && token.endsWith('"')) ||
         (token.startsWith("'") && token.endsWith("'")))
     );
-  }
-
-  /**
-   * Decode a quoted member with Liqe's own string grammar, so
-   * `name:in["\u0041"]` and `name:"\u0041"` compare the same value. The
-   * token must be exactly one quoted literal: `"a":"b"` is a field and a
-   * value to Liqe, not a member.
-   *
-   * @throws {QueryParseError} When Liqe does not read the token as one quoted literal
-   */
-  private decodeQuotedToken(token: string): string {
-    const literal = liqeParse(token);
-    if (
-      literal.type === 'Tag' &&
-      literal.field.type === 'ImplicitField' &&
-      literal.expression.type === 'LiteralExpression' &&
-      literal.expression.quoted === true &&
-      literal.expression.location.start === 0
-    ) {
-      return literal.expression.value;
-    }
-    throw new QueryParseError(`Invalid quoted value: ${token}`);
   }
 
   private readFieldToken(
@@ -577,10 +623,7 @@ export class QueryParser implements IQueryParser {
     if (/^-?(?:\d+)(?:\.\d+)?$/.test(bound)) {
       return `${field}:${operator}${bound}`;
     }
-    const isQuoted =
-      (bound.startsWith('"') && bound.endsWith('"') && bound.length >= 2) ||
-      (bound.startsWith("'") && bound.endsWith("'") && bound.length >= 2);
-    if (isQuoted) {
+    if (this.isQuotedToken(bound)) {
       return `${field}:${operator}${bound}`;
     }
     const escaped = bound.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
@@ -705,9 +748,7 @@ export class QueryParser implements IQueryParser {
    */
   public validate(query: string): boolean {
     try {
-      const preprocessedQuery = this.preprocessQuery(query);
-      const ast = liqeParse(preprocessedQuery);
-      this.convertLiqeAst(ast);
+      this.parse(query);
       return true;
     } catch {
       return false;

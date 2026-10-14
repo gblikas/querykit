@@ -270,6 +270,52 @@ describe('QueryBuilder', () => {
     });
   });
 
+  describe('built queries parse back to the same values', () => {
+    it('round-trips a member with a newline through IN and equality', () => {
+      const inputValue = 'a\nb';
+      const membership = new QueryBuilder<ITodo>()
+        .where('title', 'IN', [inputValue])
+        .getExpression();
+      expect(membership).toEqual({
+        type: 'comparison',
+        field: 'title',
+        operator: 'IN',
+        value: [inputValue]
+      });
+      const equality = new QueryBuilder<ITodo>()
+        .where('title', '==', inputValue)
+        .getExpression();
+      expect(equality).toEqual({
+        type: 'comparison',
+        field: 'title',
+        operator: '==',
+        value: inputValue
+      });
+    });
+
+    it('round-trips exponent-form numbers through IN and NOT IN', () => {
+      const inputValues = [1e-7, 1e21, -2.5e-3];
+      const membership = new QueryBuilder<ITodo>()
+        .where('priority', 'IN', inputValues)
+        .getExpression();
+      expect(membership).toEqual({
+        type: 'comparison',
+        field: 'priority',
+        operator: 'IN',
+        value: inputValues
+      });
+      const exclusion = new QueryBuilder<ITodo>()
+        .where('priority', 'NOT IN' as ComparisonOperator, inputValues)
+        .getExpression();
+      expect(exclusion).toEqual({
+        type: 'comparison',
+        field: 'priority',
+        operator: 'NOT IN',
+        value: inputValues
+      });
+    });
+  });
+
   describe('string values stay data', () => {
     it('keeps a quote inside a value from changing the query', () => {
       const expression = builder
@@ -305,7 +351,9 @@ describe('QueryBuilder', () => {
         operator: 'IN',
         value: ['a"b', 'c']
       });
-      expect(builder.where('priority', 'IN', [1, null]).getExpression()).toEqual({
+      expect(
+        builder.where('priority', 'IN', [1, null]).getExpression()
+      ).toEqual({
         type: 'comparison',
         field: 'priority',
         operator: 'IN',

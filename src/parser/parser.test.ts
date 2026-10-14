@@ -1,9 +1,20 @@
+import { parse as liqeParse } from 'liqe';
 import { QueryParser, QueryParseError } from './parser';
 import {
   IComparisonExpression,
   ILogicalExpression,
   QueryExpression
 } from './types';
+
+/**
+ * The value Liqe itself decodes for a quoted literal in `field:<literal>`.
+ */
+function liqeValue(query: string): unknown {
+  const ast = liqeParse(query);
+  return ast.type === 'Tag' && 'value' in ast.expression
+    ? ast.expression.value
+    : undefined;
+}
 
 // Replace the type definition with this approach
 type QueryParserPrivate = {
@@ -256,6 +267,54 @@ describe('QueryParser', () => {
       expect(() => parser.parse('name:in["\\q"]')).toThrow(QueryParseError);
     });
 
+    it('decodes quoted members exactly as Liqe decodes quoted values', () => {
+      const BS = String.fromCharCode(92);
+      const inputTokens = [
+        '"plain"',
+        "'plain'",
+        '""',
+        "''",
+        '"a' + BS + '"b"',
+        "'a" + BS + "'b'",
+        "'a" + BS + '"b\'',
+        '"tab' + BS + 'there"',
+        '"nl' + BS + 'nhere"',
+        '"' + BS + 'b' + BS + 'f' + BS + 'r' + BS + '/' + BS + BS + '"',
+        '"' + BS + 'u0041' + BS + 'u00e9' + BS + 'U0041"'.replace('U', 'u'),
+        "'" + BS + 'uE000' + BS + "ue000'",
+        '"caf\u00e9 \uD83D\uDE00 \uE000"'
+      ];
+      for (const inputToken of inputTokens) {
+        const expectedValue = liqeValue(`name:${inputToken}`);
+        expect(typeof expectedValue).toBe('string');
+        expect(parser.parse(`name:in[${inputToken}]`)).toEqual({
+          type: 'comparison',
+          field: 'name',
+          operator: 'IN',
+          value: [expectedValue]
+        });
+      }
+    });
+
+    it('rejects the quoted members Liqe rejects', () => {
+      const BS = String.fromCharCode(92);
+      const inputTokens = [
+        '"' + BS + 'q"',
+        '"it' + BS + '\'s"',
+        '"a' + BS + '"',
+        '"a' + String.fromCharCode(10) + 'b"',
+        '"a":"b"',
+        '"' + BS + 'u12"',
+        '"' + BS + 'u12G4"'
+      ];
+      for (const inputToken of inputTokens) {
+        expect(() => liqeParse(`name:${inputToken}`)).toThrow();
+        expect(() => parser.parse(`name:in[${inputToken}]`)).toThrow(
+          QueryParseError
+        );
+      }
+    });
+
     it('keeps placeholders apart from decoys wherever the membership list sits', () => {
       const listFirst = parser.parse('tags:in[a] AND status:"\\uE000qk0"');
       expect(listFirst).toEqual({
@@ -356,6 +415,7 @@ describe('QueryParser', () => {
         parser.parse('a:/x/ AND NOT NOT b:in[1] OR c:/y/');
       expect(swallowed).toThrow(QueryParseError);
       expect(swallowed).toThrow(/membership list/);
+      expect(parser.validate('a:/x/ AND NOT NOT b:in[1] OR c:/y/')).toBe(false);
     });
 
     it('rejects a quoted membership member that is not a single literal', () => {

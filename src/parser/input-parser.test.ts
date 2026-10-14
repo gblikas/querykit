@@ -367,6 +367,13 @@ describe('Input Parser', () => {
       expect(isInputComplete('name:/[/]')).toBe(false);
     });
 
+    it('honours escapes inside a character class and flags after it', () => {
+      const BS = String.fromCharCode(92);
+      expect(isInputComplete('name:/[' + BS + ']/]/')).toBe(true);
+      expect(isInputComplete('name:/[^/]+/i')).toBe(true);
+      expect(isInputComplete('path:/' + BS + '/[^/]*' + BS + '//')).toBe(true);
+    });
+
     it('should return true for multiple complete terms', () => {
       expect(isInputComplete('status:done AND priority:high')).toBe(true);
     });
