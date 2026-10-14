@@ -208,10 +208,14 @@ export class DrizzleAdapter<
   }
 
   /**
-   * Get a table from the schema
+   * Get a table from the schema. Only own keys count: a runtime table name
+   * such as `constructor` must not resolve an inherited Object property.
    */
   private getTable(tableName: string): unknown {
-    return (this.schema as Record<string, unknown>)[tableName as string];
+    if (!Object.prototype.hasOwnProperty.call(this.schema, tableName)) {
+      return undefined;
+    }
+    return (this.schema as Record<string, unknown>)[tableName];
   }
 
   /**
@@ -299,11 +303,9 @@ export class DrizzleAdapter<
     tableName: string,
     fieldName: string
   ): SQLWrapper | null {
-    const schemaAsColumns = this.schema as unknown as Record<
-      string,
-      Record<string, SQLWrapper>
-    >;
-    const table = schemaAsColumns[tableName];
+    const table = this.getTable(tableName) as
+      | Record<string, SQLWrapper>
+      | undefined;
     if (!table) {
       return null;
     }

@@ -98,6 +98,17 @@ describe('DrizzleAdapter', () => {
         adapter.execute('unknown_table', expression)
       ).rejects.toThrow('Table unknown_table not found in schema');
     });
+
+    it('does not resolve inherited object properties as tables', async () => {
+      const expression = parser.parse('status:"active"');
+      for (const tableName of ['constructor', 'toString', 'hasOwnProperty']) {
+        await expect(
+          adapter.execute(tableName, expression, { orderBy: { name: 'asc' } })
+        ).rejects.toThrow(`Table ${tableName} not found in schema`);
+      }
+      expect(mockFrom).not.toHaveBeenCalled();
+      expect(mockOrderBy).not.toHaveBeenCalled();
+    });
   });
 
   describe('canExecute', () => {
