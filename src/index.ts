@@ -337,32 +337,44 @@ function resolveResultLimit(
 }
 
 /**
- * Stop waiting when execution exceeds the configured timeout.
+ * Run the adapter under the configured timeout. The budget starts before
+ * the adapter is invoked and is checked again when its result arrives, so
+ * synchronous work inside the adapter, during which no timer can fire, is
+ * counted as well.
  *
- * @param operation - Adapter execution already in progress
+ * @param operation - Starts the adapter execution
  * @param timeoutMs - Maximum time to wait, in milliseconds
  * @returns The adapter result
  * @throws {QuerySecurityError} When the operation exceeds timeoutMs
  */
 async function executeWithTimeout<T>(
-  operation: Promise<T>,
+  operation: () => Promise<T>,
   timeoutMs: number
 ): Promise<T> {
+  const startedAt = Date.now();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => {
-      reject(
-        new QuerySecurityError(`Query exceeded timeout of ${timeoutMs}ms`)
-      );
-    }, timeoutMs);
+    timer = setTimeout(() => reject(createTimeoutError(timeoutMs)), timeoutMs);
   });
   try {
-    return await Promise.race([operation, timeout]);
+    const result = await Promise.race([operation(), timeout]);
+    if (Date.now() - startedAt > timeoutMs) {
+      throw createTimeoutError(timeoutMs);
+    }
+    return result;
   } finally {
     if (timer !== undefined) {
       clearTimeout(timer);
     }
   }
+}
+
+/**
+ * @param timeoutMs - The budget that was exceeded, in milliseconds
+ * @returns The error `execute()` rejects with on a timeout
+ */
+function createTimeoutError(timeoutMs: number): QuerySecurityError {
+  return new QuerySecurityError(`Query exceeded timeout of ${timeoutMs}ms`);
 }
 
 /**
@@ -502,14 +514,15 @@ export function createQueryKit<
                 securityOptions
               );
               const results = await executeWithTimeout(
-                options.adapter.execute(table, finalExpression, {
-                  orderBy:
-                    Object.keys(orderByState).length > 0
-                      ? orderByState
-                      : undefined,
-                  limit: effectiveLimit,
-                  offset: offsetState
-                }),
+                () =>
+                  options.adapter.execute(table, finalExpression, {
+                    orderBy:
+                      Object.keys(orderByState).length > 0
+                        ? orderByState
+                        : undefined,
+                    limit: effectiveLimit,
+                    offset: offsetState
+                  }),
                 securityOptions.queryTimeout
               );
               return results as TRows[K][];

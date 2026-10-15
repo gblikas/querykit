@@ -779,6 +779,62 @@ describe('InMemoryAdapter sort direction validation', () => {
   });
 });
 
+describe('InMemoryAdapter field mappings', () => {
+  const inputRows = [
+    { task_status: 'active', task_priority: 2, toString: 'own' },
+    { task_status: 'done', task_priority: 1, toString: 'own' }
+  ];
+  const mappedAdapter = inMemoryAdapter({
+    records: { tasks: inputRows },
+    fieldMappings: { status: 'task_status', priority: 'task_priority' }
+  });
+
+  it('applies adapter field mappings to comparison fields', async () => {
+    const actual = await mappedAdapter.execute('tasks', {
+      type: 'comparison',
+      field: 'status',
+      operator: '==',
+      value: 'active'
+    });
+    expect(actual).toEqual([inputRows[0]]);
+  });
+
+  it('applies adapter field mappings to sort fields', async () => {
+    const actual = await mappedAdapter.execute(
+      'tasks',
+      { type: 'comparison', field: 'priority', operator: '>', value: 0 },
+      { orderBy: { priority: 'asc' } }
+    );
+    expect(actual).toEqual([inputRows[1], inputRows[0]]);
+  });
+
+  it('maps fields nested under logical operators', async () => {
+    const expression: QueryExpression = {
+      type: 'logical',
+      operator: 'AND',
+      left: {
+        type: 'comparison',
+        field: 'status',
+        operator: '==',
+        value: 'done'
+      },
+      right: { type: 'comparison', field: 'priority', operator: '>=', value: 1 }
+    };
+    const actual = await mappedAdapter.execute('tasks', expression);
+    expect(actual).toEqual([inputRows[1]]);
+  });
+
+  it('does not map a field through the object prototype', async () => {
+    const actual = await mappedAdapter.execute('tasks', {
+      type: 'comparison',
+      field: 'toString',
+      operator: '==',
+      value: 'own'
+    });
+    expect(actual).toEqual(inputRows);
+  });
+});
+
 describe('InMemoryAdapter canExecute shape checks', () => {
   const rowsAdapter = inMemoryAdapter({ records: { items: [{ name: 'x' }] } });
 

@@ -21,6 +21,7 @@ interface IRecordedExecution {
 class RecordingAdapter implements IAdapter {
   public executions: IRecordedExecution[] = [];
   public hangMs = 0;
+  public blockMs = 0;
 
   public initialize(): void {
     return undefined;
@@ -39,6 +40,10 @@ class RecordingAdapter implements IAdapter {
       limit: options?.limit,
       offset: options?.offset
     });
+    const blockUntil = Date.now() + this.blockMs;
+    while (Date.now() < blockUntil) {
+      // Busy-wait to model synchronous adapter work, during which no timer fires.
+    }
     if (this.hangMs > 0) {
       await new Promise<void>(resolve => {
         setTimeout(resolve, this.hangMs);
@@ -148,6 +153,19 @@ describe('createQueryKit security limits', () => {
   it('rejects execution that exceeds queryTimeout', async () => {
     const adapter = new RecordingAdapter();
     adapter.hangMs = 250;
+    const queryKit = createQueryKit({
+      adapter,
+      schema: taskSchema,
+      security: { queryTimeout: 20 }
+    });
+    await expect(
+      queryKit.query('tasks').where('status:open').execute()
+    ).rejects.toThrow(/timeout/i);
+  });
+
+  it('rejects synchronous adapter work that exceeds queryTimeout', async () => {
+    const adapter = new RecordingAdapter();
+    adapter.blockMs = 60;
     const queryKit = createQueryKit({
       adapter,
       schema: taskSchema,

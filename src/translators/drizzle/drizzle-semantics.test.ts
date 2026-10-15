@@ -11,10 +11,12 @@ import { sql, SQL } from 'drizzle-orm';
 import {
   integer,
   sqliteTable,
-  SQLiteSyncDialect
+  SQLiteSyncDialect,
+  text
 } from 'drizzle-orm/sqlite-core';
 import { QueryExpression, QueryValue } from '../../parser/types';
 import { SqlTranslator } from '../sql';
+import { ITranslationContext } from '../types';
 import { DrizzleTranslationError, DrizzleTranslator } from './index';
 
 const nodeRequire = createRequire(__filename);
@@ -74,10 +76,13 @@ function comparison(
 
 function compile(
   expression: QueryExpression,
-  schema?: Record<string, Record<string, unknown>>
+  schema?: Record<string, Record<string, unknown>>,
+  context?: ITranslationContext
 ): ICompiledSql {
   const translator = new DrizzleTranslator(schema ? { schema } : {});
-  const compiled = dialect.sqlToQuery(translator.translate(expression));
+  const compiled = dialect.sqlToQuery(
+    translator.translate(expression, context)
+  );
   return { sql: compiled.sql, params: compiled.params };
 }
 
@@ -305,5 +310,81 @@ describe('DrizzleTranslator membership encoding', () => {
     );
     expect(negated.params).toEqual([0]);
     expect(matchingFlagIds(negated)).toEqual([1]);
+  });
+});
+
+describe('DrizzleTranslator table context', () => {
+  const users = sqliteTable('users', {
+    id: integer('id'),
+    displayName: text('display_name'),
+    active: integer('active', { mode: 'boolean' })
+  });
+  const teams = sqliteTable('teams', {
+    id: integer('id'),
+    name: text('name')
+  });
+  const twoTables = { users, teams } as unknown as Record<
+    string,
+    Record<string, unknown>
+  >;
+  const Database = nodeRequire('better-sqlite3') as ISqliteDatabaseConstructor;
+  const database = new Database(':memory:');
+  database.exec(`
+    CREATE TABLE users (id INTEGER, display_name TEXT, active INTEGER);
+    INSERT INTO users (id, display_name, active) VALUES (1, 'Ada', 1), (2, 'Bob', 0);
+  `);
+
+  afterAll((): void => {
+    database.close();
+  });
+
+  function matchingUserIds(compiled: ICompiledSql): number[] {
+    return database
+      .prepare(`SELECT id FROM users WHERE ${compiled.sql} ORDER BY id`)
+      .all(...compiled.params)
+      .map(row => row.id);
+  }
+
+  it('resolves a bare field against the selected table', (): void => {
+    const compiled = compile(
+      comparison('displayName', '==', 'Ada'),
+      twoTables,
+      { tableName: 'users' }
+    );
+    expect(compiled.sql).toBe('"users"."display_name" = ?');
+    expect(matchingUserIds(compiled)).toEqual([1]);
+  });
+
+  it('keeps the column encoder for a bare field on the selected table', (): void => {
+    const compiled = compile(comparison('active', '==', true), twoTables, {
+      tableName: 'users'
+    });
+    expect(compiled.params).toEqual([1]);
+    expect(matchingUserIds(compiled)).toEqual([1]);
+  });
+
+  it('quotes a bare field when several tables exist and none is selected', (): void => {
+    const compiled = compile(comparison('displayName', '==', 'Ada'), twoTables);
+    expect(compiled.sql).toBe('"displayName" = ?');
+  });
+
+  it('quotes a bare field the selected table does not have', (): void => {
+    const compiled = compile(
+      comparison('displayName', '==', 'Ada'),
+      twoTables,
+      { tableName: 'teams' }
+    );
+    expect(compiled.sql).toBe('"displayName" = ?');
+  });
+
+  it('reads a qualified field from the full schema whatever table is selected', (): void => {
+    const compiled = compile(
+      comparison('teams.name', '==', 'core'),
+      twoTables,
+      {
+        tableName: 'users'
+      }
+    );
+    expect(compiled.sql).toBe('"teams"."name" = ?');
   });
 });

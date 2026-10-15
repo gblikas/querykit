@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "predev": "sh ./scripts/build-querykit.sh",
     "dev": "next dev --turbopack",
     "prebuild": "sh ./scripts/build-querykit.sh",
     "build": "next build",

@@ -244,7 +244,10 @@ export interface ISecurityOptions {
   sanitizeWildcards?: boolean;
 
   /**
-   * Timeout in milliseconds for query execution.
+   * Timeout in milliseconds for query execution. The budget starts before
+   * the adapter is invoked and covers synchronous work inside it: a result
+   * that arrives after the budget is rejected even though no timer could
+   * fire while that work blocked the event loop.
    * When execution exceeds this limit, the call rejects. The underlying
    * statement is not cancelled. `0` is a zero-millisecond budget, not
    * "no timeout". Must be an integer from 0 to 2147483647, the largest delay

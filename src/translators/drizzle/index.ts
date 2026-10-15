@@ -24,7 +24,7 @@ import {
   QueryExpression
 } from '../../parser/types';
 import { likeEscapeClause, toSqlLikePattern } from '../like-pattern';
-import { ITranslator, ITranslatorOptions } from '../types';
+import { ITranslationContext, ITranslator, ITranslatorOptions } from '../types';
 
 /**
  * Options specific to the Drizzle translator
@@ -63,9 +63,12 @@ export class DrizzleTranslator implements ITranslator<SQL> {
   /**
    * Translate a QueryKit expression to a Drizzle ORM condition
    */
-  public translate(expression: QueryExpression): SQL {
+  public translate(
+    expression: QueryExpression,
+    context: ITranslationContext = {}
+  ): SQL {
     try {
-      return this.translateExpression(expression);
+      return this.translateExpression(expression, context);
     } catch (error) {
       throw new DrizzleTranslationError(
         `Failed to translate expression: ${error instanceof Error ? error.message : String(error)}`
@@ -76,9 +79,12 @@ export class DrizzleTranslator implements ITranslator<SQL> {
   /**
    * Check if an expression can be translated to Drizzle ORM
    */
-  public canTranslate(expression: QueryExpression): boolean {
+  public canTranslate(
+    expression: QueryExpression,
+    context: ITranslationContext = {}
+  ): boolean {
     try {
-      this.translateExpression(expression);
+      this.translateExpression(expression, context);
       return true;
     } catch {
       return false;
@@ -88,16 +94,19 @@ export class DrizzleTranslator implements ITranslator<SQL> {
   /**
    * Translate any QueryKit expression to a Drizzle ORM condition
    */
-  private translateExpression(expression: QueryExpression): SQL {
+  private translateExpression(
+    expression: QueryExpression,
+    context: ITranslationContext
+  ): SQL {
     if (!expression) {
       throw new DrizzleTranslationError('Empty expression');
     }
 
     switch (expression.type) {
       case 'comparison':
-        return this.translateComparisonExpression(expression);
+        return this.translateComparisonExpression(expression, context);
       case 'logical':
-        return this.translateLogicalExpression(expression);
+        return this.translateLogicalExpression(expression, context);
       case 'raw': {
         const rawExpr = expression as {
           type: 'raw';
@@ -109,10 +118,9 @@ export class DrizzleTranslator implements ITranslator<SQL> {
         };
         return rawExpr.toSql({
           adapter: 'drizzle',
-          // tableName is empty because raw SQL expressions in virtual fields
-          // are resolved before translation and don't need table context at this stage.
-          // The schema is provided for field lookups if needed.
-          tableName: '',
+          // The selected table is known only when an adapter supplies it;
+          // raw SQL in virtual fields is resolved before translation.
+          tableName: context.tableName ?? '',
           schema: this.options.schema
         }) as SQL;
       }
@@ -127,14 +135,15 @@ export class DrizzleTranslator implements ITranslator<SQL> {
    * Translate a comparison expression to a Drizzle ORM condition
    */
   private translateComparisonExpression(
-    expression: IComparisonExpression
+    expression: IComparisonExpression,
+    context: ITranslationContext
   ): SQL {
     const { field, operator, value } = expression;
     const fieldName = this.normalizeField(field);
     if (operator !== 'IN' && operator !== 'NOT IN') {
       this.assertFiniteValue(value);
     }
-    const schemaField = this.getSchemaField(fieldName);
+    const schemaField = this.getSchemaField(fieldName, context.tableName);
 
     // If we have a schema field, use it directly with Drizzle operators
     if (schemaField) {
@@ -325,10 +334,13 @@ export class DrizzleTranslator implements ITranslator<SQL> {
   /**
    * Translate a logical expression to a Drizzle ORM condition
    */
-  private translateLogicalExpression(expression: ILogicalExpression): SQL {
+  private translateLogicalExpression(
+    expression: ILogicalExpression,
+    context: ITranslationContext
+  ): SQL {
     const { operator, left, right } = expression;
 
-    const leftSql = this.translateExpression(left);
+    const leftSql = this.translateExpression(left, context);
 
     if (operator === 'NOT') {
       return sql`NOT (${leftSql})`;
@@ -340,7 +352,7 @@ export class DrizzleTranslator implements ITranslator<SQL> {
       );
     }
 
-    const rightSql = this.translateExpression(right);
+    const rightSql = this.translateExpression(right, context);
 
     switch (operator) {
       case 'AND':
@@ -375,47 +387,52 @@ export class DrizzleTranslator implements ITranslator<SQL> {
   }
 
   /**
-   * Get a field from the schema if it exists
+   * Resolve a field to a schema column. A qualified `table.column` reads the
+   * full schema. A bare name reads the table the adapter selected, or the
+   * schema's only table when translating standalone; with several tables and
+   * no selection a bare name is ambiguous and is quoted instead.
    */
-  private getSchemaField(fieldName: string): SQLWrapper | null {
+  private getSchemaField(
+    fieldName: string,
+    tableName?: string
+  ): SQLWrapper | null {
     const parts = fieldName.split('.');
     if (parts.length === 2) {
-      const [tableName, columnName] = parts;
-      // Own-property check: `constructor.name` must not resolve the inherited
-      // Object constructor as a table and its `name` as a column.
-      const table =
-        tableName !== undefined &&
-        Object.prototype.hasOwnProperty.call(this.options.schema, tableName)
-          ? (this.options.schema[tableName] as
-              | Record<string, unknown>
-              | undefined)
-          : undefined;
-      if (
-        table &&
-        columnName !== undefined &&
-        Object.prototype.hasOwnProperty.call(table, columnName)
-      ) {
-        return table[columnName] as SQLWrapper;
-      }
+      return this.columnOf(parts[0] ?? '', parts[1] ?? '');
     }
-    // Bare names are unambiguous only when the schema has a single table.
-    if (parts.length === 1 && Object.keys(this.options.schema).length === 1) {
-      const onlyTableName = Object.keys(this.options.schema)[0];
-      if (onlyTableName !== undefined) {
-        const table = this.options.schema[onlyTableName] as
-          | Record<string, unknown>
-          | undefined;
-        const columnName = parts[0];
-        if (
-          table &&
-          columnName !== undefined &&
-          Object.prototype.hasOwnProperty.call(table, columnName)
-        ) {
-          return table[columnName] as SQLWrapper;
-        }
-      }
+    if (parts.length !== 1) {
+      return null;
     }
-    return null;
+    const scopeTable = tableName ?? this.onlyTableName();
+    if (scopeTable === undefined) {
+      return null;
+    }
+    return this.columnOf(scopeTable, parts[0] ?? '');
+  }
+
+  /**
+   * The schema's only table name, when it has exactly one.
+   */
+  private onlyTableName(): string | undefined {
+    const tableNames = Object.keys(this.options.schema);
+    return tableNames.length === 1 ? tableNames[0] : undefined;
+  }
+
+  /**
+   * Own-property lookup of a column: `constructor.name` must not resolve the
+   * inherited Object constructor as a table and its `name` as a column.
+   */
+  private columnOf(tableName: string, columnName: string): SQLWrapper | null {
+    if (!Object.prototype.hasOwnProperty.call(this.options.schema, tableName)) {
+      return null;
+    }
+    const table = this.options.schema[tableName] as
+      | Record<string, unknown>
+      | undefined;
+    if (!table || !Object.prototype.hasOwnProperty.call(table, columnName)) {
+      return null;
+    }
+    return table[columnName] as SQLWrapper;
   }
 
   /**

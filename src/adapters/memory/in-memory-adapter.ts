@@ -12,7 +12,9 @@ import {
  *
  * Pass the same expression the Drizzle adapter compiles. Virtual fields and
  * enforced exclusions are already folded into that expression. Sort, limit,
- * and offset run after filtering and do not score relevance.
+ * and offset run after filtering and do not score relevance. The adapter's
+ * `fieldMappings` are applied to comparison and sort fields before any row
+ * is read, with own-property lookups as in the Drizzle adapter.
  *
  * @example
  * const adapter = inMemoryAdapter({ records: { tasks } });
@@ -21,6 +23,7 @@ import {
  */
 export class InMemoryAdapter implements IAdapter<IInMemoryAdapterOptions> {
   private records: Record<string, readonly object[]> = {};
+  private fieldMappings: Record<string, string> = {};
   private initialized = false;
 
   /**
@@ -43,6 +46,7 @@ export class InMemoryAdapter implements IAdapter<IInMemoryAdapterOptions> {
       throw new InMemoryAdapterError('Records are required');
     }
     this.records = options.records;
+    this.fieldMappings = options.fieldMappings ?? {};
     this.initialized = true;
   }
 
@@ -70,8 +74,47 @@ export class InMemoryAdapter implements IAdapter<IInMemoryAdapterOptions> {
       throw new InMemoryAdapterError(`Table ${tableName} not found in records`);
     }
     this.assertWindow(options);
-    const matched = filterByExpression(expression, records);
-    return applyResultWindow(matched, options) as TResult[];
+    const matched = filterByExpression(
+      mapExpressionFields(expression, field => this.resolveFieldName(field)),
+      records
+    );
+    return applyResultWindow(
+      matched,
+      this.mapWindowFields(options)
+    ) as TResult[];
+  }
+
+  /**
+   * Apply `fieldMappings` to one field name. Own-property lookup, so a name
+   * such as `constructor` is not mapped through the object prototype.
+   *
+   * @param field Field name from the expression or the sort options
+   * @returns The mapped name, or the field itself when it has no mapping
+   */
+  private resolveFieldName(field: string): string {
+    if (Object.prototype.hasOwnProperty.call(this.fieldMappings, field)) {
+      return this.fieldMappings[field] ?? field;
+    }
+    return field;
+  }
+
+  /**
+   * Apply `fieldMappings` to the sort fields of a result window.
+   *
+   * @param options Result window as the caller passed it
+   * @returns The window with mapped sort fields
+   */
+  private mapWindowFields(
+    options?: IInMemoryQueryExecutionOptions
+  ): IInMemoryQueryExecutionOptions | undefined {
+    if (!options?.orderBy) {
+      return options;
+    }
+    const orderBy: Record<string, 'asc' | 'desc'> = {};
+    for (const [field, direction] of Object.entries(options.orderBy)) {
+      orderBy[this.resolveFieldName(field)] = direction;
+    }
+    return { ...options, orderBy };
   }
 
   /**
@@ -137,6 +180,35 @@ export function inMemoryAdapter(
   options: IInMemoryAdapterOptions
 ): InMemoryAdapter {
   return new InMemoryAdapter(options);
+}
+
+/**
+ * Return a copy of the expression with every comparison field renamed.
+ *
+ * @param expression Expression to rewrite
+ * @param resolve Field name mapping
+ * @returns The rewritten expression. Raw and malformed nodes are returned unchanged.
+ */
+function mapExpressionFields(
+  expression: QueryExpression,
+  resolve: (field: string) => string
+): QueryExpression {
+  if (!expression) {
+    return expression;
+  }
+  if (expression.type === 'comparison') {
+    return { ...expression, field: resolve(expression.field) };
+  }
+  if (expression.type !== 'logical') {
+    return expression;
+  }
+  return {
+    ...expression,
+    left: mapExpressionFields(expression.left, resolve),
+    ...(expression.right && {
+      right: mapExpressionFields(expression.right, resolve)
+    })
+  };
 }
 
 /**

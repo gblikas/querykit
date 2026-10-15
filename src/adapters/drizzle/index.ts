@@ -160,7 +160,7 @@ export class DrizzleAdapter<
 
       // Add where condition if expression is provided
       if (expression) {
-        const condition = this.translator.translate(expression);
+        const condition = this.translator.translate(expression, { tableName });
         query = query.where(condition);
       }
 

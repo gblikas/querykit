@@ -2,7 +2,12 @@ import { DrizzleAdapter, IDrizzleDatabase } from './index';
 import { QueryParser } from '../../parser';
 import { QueryExpression } from '../../parser/types';
 import { SQL, SQLWrapper, sql } from 'drizzle-orm';
-import { SQLiteSyncDialect } from 'drizzle-orm/sqlite-core';
+import {
+  integer,
+  sqliteTable,
+  SQLiteSyncDialect,
+  text
+} from 'drizzle-orm/sqlite-core';
 
 // Create mocks
 const mockWhere = jest.fn().mockReturnThis();
@@ -97,6 +102,31 @@ describe('DrizzleAdapter', () => {
       await expect(
         adapter.execute('unknown_table', expression)
       ).rejects.toThrow('Table unknown_table not found in schema');
+    });
+
+    it('resolves bare fields against the selected table of a multi-table schema', async () => {
+      const users = sqliteTable('users', {
+        id: integer('id'),
+        displayName: text('display_name'),
+        active: integer('active', { mode: 'boolean' })
+      });
+      const teams = sqliteTable('teams', {
+        id: integer('id'),
+        name: text('name')
+      });
+      const multiTableAdapter = new DrizzleAdapter();
+      multiTableAdapter.initialize({ db: mockDb, schema: { users, teams } });
+      const expression: QueryExpression = {
+        type: 'comparison',
+        field: 'active',
+        operator: '==',
+        value: true
+      };
+      await multiTableAdapter.execute('users', expression);
+      const condition = mockWhere.mock.calls[0][0] as SQL;
+      const compiled = new SQLiteSyncDialect().sqlToQuery(condition);
+      expect(compiled.sql).toBe('"users"."active" = ?');
+      expect(compiled.params).toEqual([1]);
     });
 
     it('does not resolve inherited object properties as tables', async () => {
