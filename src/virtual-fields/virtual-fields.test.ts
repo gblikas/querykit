@@ -1215,4 +1215,33 @@ describe('Virtual Fields', () => {
       expect((resolved as IComparisonExpression).field).toBe('status');
     });
   });
+
+  describe('inherited property names', () => {
+    it('leaves an inherited property name as a normal field', () => {
+      const virtualFields: VirtualFieldsConfig<MockSchema, IMockContext> = {
+        my: {
+          allowedValues: ['assigned'] as const,
+          resolve: () => ({
+            type: 'comparison',
+            field: 'assignee_id',
+            operator: '==',
+            value: 1
+          })
+        }
+      };
+      const context: IMockContext = {
+        currentUserId: 1,
+        currentUserTeamIds: []
+      };
+      const expression: IComparisonExpression = {
+        type: 'comparison',
+        field: 'toString',
+        operator: '==',
+        value: 'done'
+      };
+      expect(resolveVirtualFields(expression, virtualFields, context)).toEqual(
+        expression
+      );
+    });
+  });
 });

@@ -1,3 +1,4 @@
+import { SQLiteSyncDialect } from 'drizzle-orm/sqlite-core';
 import { QueryParser } from '../../parser';
 import { QueryExpression } from '../../parser/types';
 import { DrizzleTranslator } from './';
@@ -120,9 +121,9 @@ describe('DrizzleTranslator', () => {
     it('should preserve table qualifiers in fields', () => {
       const expression = parser.parse('todos.priority:>2');
       const result = translator.translate(expression);
-      const sqlString = getSqlString(result);
-
-      expect(sqlString).toContain('todos.priority');
+      const compiled = new SQLiteSyncDialect().sqlToQuery(result);
+      expect(compiled.sql).toBe('"todos"."priority" > ?');
+      expect(compiled.params).toEqual([2]);
     });
   });
 });

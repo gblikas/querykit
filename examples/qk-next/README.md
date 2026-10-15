@@ -8,10 +8,13 @@ For full docs, API, and examples, visit the QueryKit repository: [github.com/gbl
 
 ```bash
 cd examples/qk-next
+pnpm install
 pnpm dev
 ```
 
 Open http://localhost:3000.
+
+`pnpm dev` and `pnpm build` first compile the library from this checkout into the installed `@gblikas/querykit`. Restart them after changing library source.
 
 ### Build and run
 

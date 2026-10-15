@@ -92,10 +92,13 @@ export class DrizzleAdapterError extends Error {
  */
 export class DrizzleAdapter<
   TSchema extends Record<string, unknown> = Record<string, unknown>
-> implements IAdapter<IDrizzleAdapterOptions<TSchema>> {
+> implements IAdapter<IDrizzleAdapterOptions<TSchema>>
+{
   private db!: unknown;
   private schema!: TSchema;
   private translator!: DrizzleTranslator;
+  private fieldMappings: Record<string, string> = {};
+  private normalizeFieldNames = false;
   private initialized: boolean = false;
 
   /**
@@ -121,6 +124,8 @@ export class DrizzleAdapter<
 
     this.db = options.db;
     this.schema = options.schema;
+    this.fieldMappings = options.fieldMappings ?? {};
+    this.normalizeFieldNames = options.normalizeFieldNames ?? false;
     this.translator = new DrizzleTranslator({
       normalizeFieldNames: options.normalizeFieldNames,
       fieldMappings: options.fieldMappings,
@@ -155,34 +160,16 @@ export class DrizzleAdapter<
 
       // Add where condition if expression is provided
       if (expression) {
-        const condition = this.translator.translate(expression);
+        const condition = this.translator.translate(expression, { tableName });
         query = query.where(condition);
       }
 
       // Add ordering if specified
       if (options?.orderBy) {
         const orderClauses: SQL[] = [];
-
-        Object.entries(options.orderBy).forEach(([field, direction]) => {
-          // Try to find the field in the schema
-          const schemaField = this.getSchemaField(tableName, field);
-
-          if (schemaField) {
-            // If field exists in schema, use it directly
-            orderClauses.push(
-              direction === 'asc' ? asc(schemaField) : desc(schemaField)
-            );
-          } else {
-            // Security fix: Validate direction strictly before using sql.raw()
-            // This prevents SQL injection attacks via malicious direction values
-            const safeDirection =
-              direction.toLowerCase() === 'asc' ? 'ASC' : 'DESC';
-            orderClauses.push(
-              sql`${sql.identifier(field)} ${sql.raw(safeDirection)}`
-            );
-          }
-        });
-
+        for (const [field, direction] of Object.entries(options.orderBy)) {
+          orderClauses.push(this.orderClause(tableName, field, direction));
+        }
         if (orderClauses.length > 0) {
           query = query.orderBy(...orderClauses);
         }
@@ -209,7 +196,12 @@ export class DrizzleAdapter<
   }
 
   /**
-   * Check if an expression can be executed by this adapter
+   * Check if an expression can be executed by this adapter. The check has
+   * no selected table, so it is stricter than `execute`: a bare field that
+   * only resolves through a table's column keys reports false here.
+   *
+   * @param expression The QueryKit expression to check
+   * @returns true if the expression can be translated without a table, false otherwise
    */
   public canExecute(expression: QueryExpression): boolean {
     try {
@@ -221,26 +213,120 @@ export class DrizzleAdapter<
   }
 
   /**
-   * Get a table from the schema
+   * Get a table from the schema. Only own keys count: a runtime table name
+   * such as `constructor` must not resolve an inherited Object property.
    */
   private getTable(tableName: string): unknown {
-    return (this.schema as Record<string, unknown>)[tableName as string];
+    if (!Object.prototype.hasOwnProperty.call(this.schema, tableName)) {
+      return undefined;
+    }
+    return (this.schema as Record<string, unknown>)[tableName];
   }
 
   /**
    * Get a field from the schema
    */
+  /**
+   * Build one ORDER BY clause.
+   * Direction is accepted only as ASC or DESC. Unmapped fields are validated
+   * before quoting because Drizzle's identifier escaping does not double quotes.
+   */
+  private orderClause(
+    tableName: string,
+    field: string,
+    direction: string
+  ): SQL {
+    const resolvedField = this.resolveFieldName(field);
+    const schemaField = this.getSchemaField(tableName, resolvedField);
+    const sortDirection = this.sortDirection(direction);
+    if (schemaField) {
+      return sortDirection === 'ASC' ? asc(schemaField) : desc(schemaField);
+    }
+    return sql`${this.quoteFieldName(resolvedField)} ${sql.raw(sortDirection)}`;
+  }
+
+  private resolveFieldName(fieldName: string): string {
+    const normalizedField = this.normalizeFieldNames
+      ? fieldName.toLowerCase()
+      : fieldName;
+    if (
+      Object.prototype.hasOwnProperty.call(this.fieldMappings, normalizedField)
+    ) {
+      return this.fieldMappings[normalizedField];
+    }
+    return normalizedField;
+  }
+
+  /**
+   * Accept only `asc` or `desc`, in any letter case. Anything else is a
+   * caller error rather than a request for DESC.
+   */
+  private sortDirection(direction: unknown): 'ASC' | 'DESC' {
+    const normalized =
+      typeof direction === 'string' ? direction.toLowerCase() : '';
+    if (normalized === 'asc') {
+      return 'ASC';
+    }
+    if (normalized === 'desc') {
+      return 'DESC';
+    }
+    throw new DrizzleAdapterError(
+      `Invalid sort direction: ${String(direction)}`
+    );
+  }
+
+  /**
+   * Quote a field Drizzle will inline. Rejects names that can break out of
+   * the surrounding quotes.
+   */
+  private quoteFieldName(fieldName: string): SQL {
+    if (!this.isValidFieldName(fieldName)) {
+      throw new DrizzleAdapterError(`Invalid field name: ${fieldName}`);
+    }
+    const parts = fieldName.split('.');
+    if (parts.length === 1) {
+      return sql`${sql.identifier(parts[0])}`;
+    }
+    return sql`${sql.identifier(parts[0])}.${sql.identifier(parts[1])}`;
+  }
+
+  private isValidFieldName(fieldName: string): boolean {
+    const validFieldPattern = /^[a-zA-Z][a-zA-Z0-9._]*$/;
+    const parts = fieldName.split('.');
+    if (parts.length > 2) {
+      return false;
+    }
+    return parts.every(
+      (part: string): boolean =>
+        validFieldPattern.test(part) &&
+        part.length <= 64 &&
+        !part.includes('__')
+    );
+  }
+
   private getSchemaField(
     tableName: string,
     fieldName: string
   ): SQLWrapper | null {
-    const schemaAsColumns = this.schema as unknown as Record<
-      string,
-      Record<string, SQLWrapper>
-    >;
-    const table = schemaAsColumns[tableName];
-    if (table && fieldName in table) {
+    const table = this.getTable(tableName) as
+      | Record<string, SQLWrapper>
+      | undefined;
+    if (!table) {
+      return null;
+    }
+    if (Object.prototype.hasOwnProperty.call(table, fieldName)) {
       return table[fieldName];
+    }
+    const separator = fieldName.indexOf('.');
+    if (separator > 0) {
+      const prefix = fieldName.slice(0, separator);
+      const columnName = fieldName.slice(separator + 1);
+      if (
+        prefix === tableName &&
+        Object.prototype.hasOwnProperty.call(table, columnName)
+      ) {
+        return table[columnName];
+      }
     }
     return null;
   }

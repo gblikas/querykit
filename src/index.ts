@@ -10,7 +10,12 @@
 import { QueryBuilder, IQueryBuilderOptions } from './query';
 import { QueryParser, IParserOptions } from './parser';
 import { SqlTranslator } from './translators/sql';
-import { ISecurityOptions, QuerySecurityValidator } from './security';
+import {
+  DEFAULT_SECURITY_OPTIONS,
+  ISecurityOptions,
+  QuerySecurityError,
+  QuerySecurityValidator
+} from './security';
 import { IAdapter, IAdapterOptions } from './adapters';
 import {
   IQueryContext,
@@ -216,6 +221,170 @@ function applyEnforcedExclusions(
 }
 
 /**
+ * Largest delay `setTimeout` honours. Node and browsers keep the delay in a
+ * signed 32-bit integer and run anything above it immediately.
+ */
+const MAX_QUERY_TIMEOUT_MS = 2147483647;
+
+/**
+ * Merge caller security options with QueryKit defaults.
+ *
+ * @param security - Caller security options, if any
+ * @returns Fully populated security settings
+ * @throws {QuerySecurityError} When a limit or the timeout is out of range
+ */
+function resolveSecurityOptions(
+  security: ISecurityOptions | undefined
+): Required<ISecurityOptions> {
+  const resolved: Required<ISecurityOptions> = {
+    ...DEFAULT_SECURITY_OPTIONS,
+    ...definedSecurityOptions(security)
+  };
+  if (!isResultLimit(resolved.defaultLimit)) {
+    throw new QuerySecurityError(
+      'Invalid security option: defaultLimit must be a non-negative integer'
+    );
+  }
+  if (!isResultLimit(resolved.maxLimit)) {
+    throw new QuerySecurityError(
+      'Invalid security option: maxLimit must be a non-negative integer'
+    );
+  }
+  if (!isTimeoutBudget(resolved.queryTimeout)) {
+    throw new QuerySecurityError(
+      `Invalid security option: queryTimeout must be an integer between 1 and ${MAX_QUERY_TIMEOUT_MS} milliseconds`
+    );
+  }
+  return resolved;
+}
+
+/**
+ * Whether a value can be forwarded as a row limit. SQL `LIMIT` and the
+ * in-memory window both need a non-negative integer, and `NaN` or a negative
+ * `maxLimit` would otherwise switch the cap off or forward a bad value.
+ *
+ * @param value - Candidate limit
+ * @returns True for a non-negative safe integer
+ */
+function isResultLimit(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+/**
+ * Whether a value can be forwarded to `setTimeout` as the query budget.
+ * `NaN`, `Infinity`, a negative, or a delay above the timer range would be
+ * clamped to an immediate timeout, and `0` is a budget every query exceeds;
+ * each would reject every query.
+ *
+ * @param value - Candidate timeout in milliseconds
+ * @returns True for an integer from 1 to MAX_QUERY_TIMEOUT_MS inclusive
+ */
+function isTimeoutBudget(value: unknown): value is number {
+  return (
+    typeof value === 'number' &&
+    Number.isInteger(value) &&
+    value >= 1 &&
+    value <= MAX_QUERY_TIMEOUT_MS
+  );
+}
+
+/**
+ * Drop undefined security options so the QueryKit defaults stay in place.
+ *
+ * @param security - Caller security options, if any
+ * @returns Provided options with undefined values removed
+ */
+function definedSecurityOptions(
+  security: ISecurityOptions | undefined
+): Partial<ISecurityOptions> {
+  const provided: Partial<ISecurityOptions> = {};
+  if (security === undefined) {
+    return provided;
+  }
+  (Object.keys(security) as Array<keyof ISecurityOptions>).forEach(
+    (key: keyof ISecurityOptions): void => {
+      if (security[key] !== undefined) {
+        Object.assign(provided, { [key]: security[key] });
+      }
+    }
+  );
+  return provided;
+}
+
+/**
+ * Choose the limit forwarded to the adapter.
+ *
+ * An omitted limit uses `defaultLimit`. A limit above `maxLimit` is capped.
+ * The chosen limit is always less than or equal to `maxLimit`.
+ *
+ * @param requestedLimit - Limit supplied by the caller, if any
+ * @param security - Resolved security settings
+ * @returns The limit to send to the adapter
+ * @throws {QuerySecurityError} When the limit is not a non-negative integer
+ */
+function resolveResultLimit(
+  requestedLimit: number | undefined,
+  security: Required<ISecurityOptions>
+): number {
+  const chosenLimit =
+    requestedLimit === undefined ? security.defaultLimit : requestedLimit;
+  if (!isResultLimit(chosenLimit)) {
+    throw new QuerySecurityError('Invalid query limit');
+  }
+  if (chosenLimit > security.maxLimit) {
+    return security.maxLimit;
+  }
+  return chosenLimit;
+}
+
+/**
+ * Run the adapter under the configured timeout. The timer is armed before
+ * the adapter is invoked, so it bounds the asynchronous part of the call.
+ * The synchronous part, during which no timer can fire, is measured when
+ * the adapter returns and rejected on its own if it already used the whole
+ * budget. Nothing after the adapter settles is charged to the query.
+ *
+ * @param operation - Starts the adapter execution
+ * @param timeoutMs - Maximum time to wait, in milliseconds
+ * @returns The adapter result
+ * @throws {QuerySecurityError} When the operation exceeds timeoutMs
+ */
+async function executeWithTimeout<T>(
+  operation: () => Promise<T>,
+  timeoutMs: number
+): Promise<T> {
+  const startedAt = performance.now();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(createTimeoutError(timeoutMs)), timeoutMs);
+  });
+  try {
+    const pending = operation();
+    if (performance.now() - startedAt >= timeoutMs) {
+      // The timer expired while the adapter blocked the event loop, but
+      // an already settled promise would still win the race below.
+      pending.catch(() => undefined);
+      throw createTimeoutError(timeoutMs);
+    }
+    return await Promise.race([pending, timeout]);
+  } finally {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
+  }
+}
+
+/**
+ * Build the error `execute()` rejects with when the budget is exceeded.
+ *
+ * @param timeoutMs - The budget that was exceeded, in milliseconds
+ * @returns The error `execute()` rejects with on a timeout
+ */
+function createTimeoutError(timeoutMs: number): QuerySecurityError {
+  return new QuerySecurityError(`Query exceeded timeout of ${timeoutMs}ms`);
+}
+
+/**
  * Create a new QueryKit instance
  */
 export function createQueryKit<
@@ -226,7 +395,8 @@ export function createQueryKit<
   }
 >(options: IQueryKitOptions<TSchema, TContext>): QueryKit<TSchema, TRows> {
   const parser = new QueryParser(options.parserOptions);
-  const securityValidator = new QuerySecurityValidator(options.security);
+  const securityOptions = resolveSecurityOptions(options.security);
+  const securityValidator = new QuerySecurityValidator(securityOptions);
   const isTolerant = options.tolerant ?? false;
 
   // Initialize adapter if options provided. If adapter is already initialized,
@@ -345,18 +515,22 @@ export function createQueryKit<
                     )
                   : resolvedExpression;
 
-              // Delegate to adapter
-              const results = await options.adapter.execute(
-                table,
-                finalExpression,
-                {
-                  orderBy:
-                    Object.keys(orderByState).length > 0
-                      ? orderByState
-                      : undefined,
-                  limit: limitState,
-                  offset: offsetState
-                }
+              // Delegate to adapter with resource limits from security settings
+              const effectiveLimit = resolveResultLimit(
+                limitState,
+                securityOptions
+              );
+              const results = await executeWithTimeout(
+                () =>
+                  options.adapter.execute(table, finalExpression, {
+                    orderBy:
+                      Object.keys(orderByState).length > 0
+                        ? orderByState
+                        : undefined,
+                    limit: effectiveLimit,
+                    offset: offsetState
+                  }),
+                securityOptions.queryTimeout
               );
               return results as TRows[K][];
             }

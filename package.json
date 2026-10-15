@@ -1,7 +1,7 @@
 {
   "name": "@gblikas/querykit",
   "version": "0.6.2",
-  "description": "A comprehensive query toolkit for TypeScript that simplifies building and executing data queries across different environments",
+  "description": "QueryKit compiles a Liqe / GitHub-like filter string into a Drizzle query or an in-memory filter, with field allowlists, clause limits, request-context virtual fields, and a token parser for a search box. Other ORMs, a CLI, and HTTP middleware are not implemented.",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/gblikas/querykit.git"
@@ -35,15 +35,24 @@
   "publishConfig": {
     "access": "public"
   },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3"
+    ]
+  },
   "dependencies": {
-    "drizzle-orm": "^0.30.2",
     "liqe": "^3.3.0"
   },
+  "peerDependencies": {
+    "drizzle-orm": ">=0.30.2 <0.46.0"
+  },
   "devDependencies": {
+    "drizzle-orm": "0.45.4",
     "@types/jest": "^29.5.12",
     "@types/node": "^20.11.24",
     "@typescript-eslint/eslint-plugin": "^7.1.0",
     "@typescript-eslint/parser": "^7.1.0",
+    "better-sqlite3": "11.10.0",
     "eslint": "^8.57.0",
     "eslint-config-prettier": "^9.1.0",
     "husky": "^9.0.11",

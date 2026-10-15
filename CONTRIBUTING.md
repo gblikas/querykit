@@ -17,41 +17,18 @@ Please read and follow our [Code of Conduct](CODE_OF_CONDUCT.md) to maintain a r
 
 ## Project Structure
 
-QueryKit is organized into several key components:
+These directories are the library:
 
-- **Parser** (`src/parser`): Core query parsing engine that converts DSL expressions into structured internal format (AST)
-  - Lexical analyzer
-  - Syntax parser
-  - AST type definitions
-  - Validation logic
-  - Integrates with [Liqe](https://github.com/gajus/liqe) for Lucene-like query parsing
+- **Parser** (`src/parser`): Liqe parsing, the AST, `parseQueryInput`, and `parseQueryTokens`
+- **SQL translator** (`src/translators/sql`): SQL string translation
+- **Drizzle translator** (`src/translators/drizzle`): Drizzle `SQL` translation
+- **Drizzle adapter** (`src/adapters/drizzle`): `drizzleAdapter` and `createDrizzleQueryKit`
+- **In-memory adapter** (`src/adapters/memory`): `filterInMemory` and `inMemoryAdapter`
+- **Security** (`src/security`): field allowlists, clause limits, and related guards
+- **Virtual fields** (`src/virtual-fields`): request-context fields, including `jsonbContains` and `dateWithinDays`
+- **Query builder** (`src/query`): `createQueryKit` execution
 
-- **Translators** (`src/translators`): Convert parsed queries into target-specific formats
-  - SQL translator (for Drizzle)
-  - JavaScript translator (for in-memory filtering)
-  - Each translator implements the standard translator interface
-
-- **Adapters** (`src/adapters`): Connect QueryKit to external systems
-  - Drizzle ORM adapter
-  - In-memory filtering adapter
-  - Each adapter implements the standard adapter interface
-
-- **CLI** (`src/cli`): Command-line interface for testing and debugging
-  - Query parsing/testing tools
-  - Query translation debugging
-  - Code generation utilities
-
-- **Frontend Utilities** (`src/frontend`): Browser-specific implementations
-  - Query builder components
-  - Client-side filtering utilities
-  - Browser-optimized parsing
-
-- **Server Helpers** (`src/server`): Server-side integration utilities
-  - Middleware for Express/Fastify
-  - Request parsing helpers
-  - Database integration utilities
-
-- **Common** (`src/common`): Shared utilities and types
+There is no `src/cli`, `src/frontend`, `src/server`, or `src/common`. Other ORMs and HTTP middleware are not implemented.
 
 ## Key Dependencies
 
@@ -167,19 +144,14 @@ We're currently focusing on:
 
 ### First Adapters
 - [ ] Drizzle ORM integration
-- [ ] In-memory JavaScript filtering
+- [x] In-memory JavaScript filtering
 - [ ] Error handling and validation
 
 ### Advanced Features
-- [ ] CLI tools for testing and debugging queries
 - [ ] Performance optimizations for large queries
-- [ ] Support for complex operators and functions
 - [ ] Query composition utilities
 
 ### Ecosystem Expansion
-- [ ] Frontend query builder components
-- [ ] Additional ORM adapters
-- [ ] Server middleware for Express/Fastify
 - [ ] Documentation and examples
 
 ## License

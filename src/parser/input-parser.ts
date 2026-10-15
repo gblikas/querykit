@@ -8,6 +8,8 @@
  * - Real-time validation feedback
  */
 
+import { measureQueryDelimiters, readLiteralAt } from './query-scanner';
+
 /**
  * Represents the context of where the cursor is within a query term
  */
@@ -175,6 +177,14 @@ function parseTerm(
       if (quotedMatch) {
         value = quotedMatch[0];
         currentPos += value.length;
+      } else if (remaining.startsWith('/')) {
+        const literal = readLiteralAt(remaining, 0);
+        if (literal.kind === 'regex' && literal.end > 0) {
+          value = remaining.slice(0, literal.end);
+          currentPos += literal.end;
+        } else {
+          value = null;
+        }
       } else {
         // Match unquoted value (until whitespace or logical operator)
         const valueMatch = remaining.match(/^[^\s()]+/);
@@ -458,8 +468,41 @@ export function getTermAtPosition(
 }
 
 /**
+ * Return the logical operator that ends `input`, ignoring trailing whitespace.
+ *
+ * The position is an index into `input.trimEnd()`. Characters inside quotes
+ * and regex literals are not operators.
+ *
+ * @param input Query text, which may be incomplete
+ * @returns The operator and its start index, or null when the text does not end with AND, OR, or NOT
+ */
+export function findTrailingLogicalOperator(
+  input: string
+): { operator: 'AND' | 'OR' | 'NOT'; position: number } | null {
+  const trimmed = input.trimEnd();
+  if (trimmed.length === 0) {
+    return null;
+  }
+  const { logicalOperators } = tokenize(trimmed);
+  const last = logicalOperators[logicalOperators.length - 1];
+  if (!last) {
+    return null;
+  }
+  const operator = last.operator;
+  if (operator !== 'AND' && operator !== 'OR' && operator !== 'NOT') {
+    return null;
+  }
+  if (last.position + operator.length !== trimmed.length) {
+    return null;
+  }
+  return { operator, position: last.position };
+}
+
+/**
  * Check if the input appears to be a complete, valid query expression.
  * This is a lightweight check - it doesn't guarantee the query will parse successfully.
+ *
+ * Quotes, regex literals, and parentheses inside those literals are not syntax.
  *
  * @param input The query input string
  * @returns true if the input appears complete, false if it looks incomplete
@@ -468,37 +511,22 @@ export function isInputComplete(input: string): boolean {
   if (!input || input.trim().length === 0) {
     return false;
   }
-
   const result = parseQueryInput(input);
-
-  // Check if any term is incomplete
   for (const term of result.terms) {
-    // A key:value term is incomplete if it has an operator but no value
     if (term.key !== null && term.operator !== null && term.value === null) {
       return false;
     }
   }
-
-  // Check if the input ends with a logical operator
-  const trimmed = input.trim();
-  if (/\b(AND|OR|NOT)\s*$/i.test(trimmed)) {
+  if (findTrailingLogicalOperator(input)) {
     return false;
   }
-
-  // Check if there's an unclosed quote
-  const singleQuotes = (input.match(/'/g) || []).length;
-  const doubleQuotes = (input.match(/"/g) || []).length;
-  if (singleQuotes % 2 !== 0 || doubleQuotes % 2 !== 0) {
+  const delimiters = measureQueryDelimiters(input);
+  if (delimiters.unclosedQuote !== null || delimiters.hasUnclosedRegex) {
     return false;
   }
-
-  // Check for unclosed parentheses
-  const openParens = (input.match(/\(/g) || []).length;
-  const closeParens = (input.match(/\)/g) || []).length;
-  if (openParens !== closeParens) {
+  if (delimiters.openParentheses !== delimiters.closeParentheses) {
     return false;
   }
-
   return true;
 }
 

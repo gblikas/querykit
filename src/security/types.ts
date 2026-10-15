@@ -14,7 +14,7 @@
  *
  * @example
  * ```typescript
- * import { createQueryKit, type ISecurityOptions } from 'querykit';
+ * import { createQueryKit, type ISecurityOptions } from '@gblikas/querykit';
  *
  * // Configure security options
  * const securityOptions: ISecurityOptions = {
@@ -244,8 +244,16 @@ export interface ISecurityOptions {
   sanitizeWildcards?: boolean;
 
   /**
-   * Timeout in milliseconds for query execution.
-   * Prevents long-running queries from consuming excessive resources.
+   * Timeout in milliseconds for the adapter call. The budget starts when the
+   * adapter is invoked, after parsing, virtual-field resolution, and
+   * validation. A timer bounds the asynchronous part of the call, and the
+   * synchronous part, during which no timer can fire, is measured when the
+   * adapter returns and rejected on its own when it used the whole budget.
+   * Work other code does on the event loop after the adapter settles is not
+   * counted. When execution exceeds this limit, the call rejects. The
+   * underlying statement is not cancelled. Must be an integer from 1 to
+   * 2147483647, the largest delay `setTimeout` honours; `createQueryKit`
+   * rejects anything else, including `0`, which no query could satisfy.
    *
    * @default 30000 (30 seconds)
    *
@@ -254,7 +262,7 @@ export interface ISecurityOptions {
    * // Set shorter timeout for API endpoints
    * queryTimeout: 5000 // 5 seconds
    *
-   * // Queries taking longer than 5 seconds will be terminated
+   * // The call rejects after 5 seconds. The underlying statement is not cancelled.
    * ```
    */
   queryTimeout?: number;
@@ -268,7 +276,7 @@ export interface ISecurityOptions {
  *
  * @example
  * ```typescript
- * import { DEFAULT_SECURITY_OPTIONS } from 'querykit';
+ * import { DEFAULT_SECURITY_OPTIONS } from '@gblikas/querykit';
  *
  * // Use defaults but override specific options
  * const securityOptions = {

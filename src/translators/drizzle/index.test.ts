@@ -10,9 +10,11 @@ describe('DrizzleTranslator', () => {
   // Helper function to access private wildcardToSqlPattern method
   function testWildcardPattern(pattern: string): string {
     // We need to access a private method for testing - using type assertion
-    return (translator as unknown as { 
-      wildcardToSqlPattern: (p: string) => string 
-    }).wildcardToSqlPattern(pattern);
+    return (
+      translator as unknown as {
+        wildcardToSqlPattern: (p: string) => string;
+      }
+    ).wildcardToSqlPattern(pattern);
   }
 
   // Other tests...
@@ -37,9 +39,9 @@ describe('DrizzleTranslator', () => {
     });
 
     it('should escape existing SQL special characters', () => {
-      expect(testWildcardPattern('foo%bar')).toBe('foo\\%bar');
-      expect(testWildcardPattern('foo_bar')).toBe('foo\\_bar');
-      expect(testWildcardPattern('foo_%bar*')).toBe('foo\\_\\%bar%');
+      expect(testWildcardPattern('foo%bar')).toBe('foo!%bar');
+      expect(testWildcardPattern('foo_bar')).toBe('foo!_bar');
+      expect(testWildcardPattern('foo_%bar*')).toBe('foo!_!%bar%');
     });
   });
-}); 
+});

@@ -30,7 +30,11 @@ export class QueryBuilder<T> implements IQueryBuilder<T> {
    * Add a where clause to the query
    */
   public where(queryString: string): IQueryBuilder<T>;
-  public where(field: QueryField<T>, operator: ComparisonOperator, value: QueryValue): IQueryBuilder<T>;
+  public where(
+    field: QueryField<T>,
+    operator: ComparisonOperator,
+    value: QueryValue
+  ): IQueryBuilder<T>;
   public where(
     fieldOrQueryString: QueryField<T> | string,
     operator?: ComparisonOperator,
@@ -54,14 +58,21 @@ export class QueryBuilder<T> implements IQueryBuilder<T> {
    * Add an AND where clause to the query
    */
   public andWhere(queryString: string): IQueryBuilder<T>;
-  public andWhere(field: QueryField<T>, operator: ComparisonOperator, value: QueryValue): IQueryBuilder<T>;
+  public andWhere(
+    field: QueryField<T>,
+    operator: ComparisonOperator,
+    value: QueryValue
+  ): IQueryBuilder<T>;
   public andWhere(
     fieldOrQueryString: QueryField<T> | string,
     operator?: ComparisonOperator,
     value?: QueryValue
   ): IQueryBuilder<T> {
     if (!this.expression) {
-      if (typeof fieldOrQueryString === 'string' && (operator === undefined || value === undefined)) {
+      if (
+        typeof fieldOrQueryString === 'string' &&
+        (operator === undefined || value === undefined)
+      ) {
         // Handle direct query string
         return this.where(fieldOrQueryString);
       } else {
@@ -92,14 +103,21 @@ export class QueryBuilder<T> implements IQueryBuilder<T> {
    * Add an OR where clause to the query
    */
   public orWhere(queryString: string): IQueryBuilder<T>;
-  public orWhere(field: QueryField<T>, operator: ComparisonOperator, value: QueryValue): IQueryBuilder<T>;
+  public orWhere(
+    field: QueryField<T>,
+    operator: ComparisonOperator,
+    value: QueryValue
+  ): IQueryBuilder<T>;
   public orWhere(
     fieldOrQueryString: QueryField<T> | string,
     operator?: ComparisonOperator,
     value?: QueryValue
   ): IQueryBuilder<T> {
     if (!this.expression) {
-      if (typeof fieldOrQueryString === 'string' && (operator === undefined || value === undefined)) {
+      if (
+        typeof fieldOrQueryString === 'string' &&
+        (operator === undefined || value === undefined)
+      ) {
         // Handle direct query string
         return this.where(fieldOrQueryString);
       } else {
@@ -130,7 +148,11 @@ export class QueryBuilder<T> implements IQueryBuilder<T> {
    * Add a NOT where clause to the query
    */
   public notWhere(queryString: string): IQueryBuilder<T>;
-  public notWhere(field: QueryField<T>, operator: ComparisonOperator, value: QueryValue): IQueryBuilder<T>;
+  public notWhere(
+    field: QueryField<T>,
+    operator: ComparisonOperator,
+    value: QueryValue
+  ): IQueryBuilder<T>;
   public notWhere(
     fieldOrQueryString: QueryField<T> | string,
     operator?: ComparisonOperator,
@@ -167,7 +189,10 @@ export class QueryBuilder<T> implements IQueryBuilder<T> {
   /**
    * Add an order by clause to the query
    */
-  public orderBy(field: QueryField<T>, direction: SortDirection = 'asc'): IQueryBuilder<T> {
+  public orderBy(
+    field: QueryField<T>,
+    direction: SortDirection = 'asc'
+  ): IQueryBuilder<T> {
     this.orderByClause = `ORDER BY ${field} ${direction.toUpperCase()}`;
     return this;
   }
@@ -212,7 +237,11 @@ export class QueryBuilder<T> implements IQueryBuilder<T> {
   /**
    * Build a comparison expression
    */
-  private buildComparison(field: QueryField<T>, operator: ComparisonOperator, value: QueryValue): string {
+  private buildComparison(
+    field: QueryField<T>,
+    operator: ComparisonOperator,
+    value: QueryValue
+  ): string {
     // Map QueryKit operators to Liqe operators
     const operatorMap: Record<ComparisonOperator, string> = {
       '==': ':',
@@ -221,9 +250,9 @@ export class QueryBuilder<T> implements IQueryBuilder<T> {
       '>=': '>=',
       '<': '<',
       '<=': '<=',
-      'IN': 'in',
+      IN: 'in',
       'NOT IN': 'not in',
-      'LIKE': ':'
+      LIKE: ':'
     };
 
     const liqeOperator = operatorMap[operator];
@@ -236,7 +265,13 @@ export class QueryBuilder<T> implements IQueryBuilder<T> {
 
     // Based on Liqe docs, comparison operators are prefixed with colon
     // e.g., 'height:>100', 'height:<100'
-    if (operator === '>' || operator === '>=' || operator === '<' || operator === '<=' || operator === '!=') {
+    if (
+      operator === '>' ||
+      operator === '>=' ||
+      operator === '<' ||
+      operator === '<=' ||
+      operator === '!='
+    ) {
       return `${field}:${liqeOperator}${formattedValue}`;
     }
 
@@ -252,23 +287,65 @@ export class QueryBuilder<T> implements IQueryBuilder<T> {
   /**
    * Format a value for use in a query
    */
-  private formatValue(value: QueryValue, operator?: ComparisonOperator): string {
+  private formatValue(
+    value: QueryValue,
+    operator?: ComparisonOperator
+  ): string {
     if (value === null) {
       return 'null';
     }
-
     if (Array.isArray(value)) {
-      return `[${value.map(v => this.formatValue(v)).join(',')}]`;
+      return `[${value.map(item => this.formatValue(item)).join(',')}]`;
     }
-
     if (typeof value === 'string') {
-      // For LIKE operator with wildcard patterns, don't add quotes to allow pattern matching
-      if (operator === 'LIKE' && (value.includes('*') || value.includes('?'))) {
+      if (this.isBareLikeToken(value, operator)) {
         return value;
       }
-      return `"${value}"`;
+      return `"${this.escapeQuotedValue(value)}"`;
     }
-
     return String(value);
   }
-} 
+
+  /**
+   * Keep a simple wildcard token unquoted.
+   * Any other character is quoted so it cannot become another clause.
+   */
+  private isBareLikeToken(
+    value: string,
+    operator?: ComparisonOperator
+  ): boolean {
+    return (
+      operator === 'LIKE' &&
+      (value.includes('*') || value.includes('?')) &&
+      /^[A-Za-z0-9*?]+$/.test(value)
+    );
+  }
+
+  /**
+   * Escape a string that will be wrapped in double quotes.
+   */
+  private escapeQuotedValue(value: string): string {
+    return Array.from(value, (char: string): string =>
+      this.escapeQuotedChar(char)
+    ).join('');
+  }
+
+  /**
+   * Escape one character for a double-quoted Liqe literal. Backslash and
+   * quote take a backslash; a control character becomes `\uXXXX`, since Liqe
+   * cannot carry a raw newline inside quotes but decodes the escape.
+   */
+  private escapeQuotedChar(char: string): string {
+    if (char === '\\') {
+      return '\\\\';
+    }
+    if (char === '"') {
+      return '\\"';
+    }
+    const code = char.codePointAt(0) ?? 0;
+    if (code < 0x20) {
+      return `\\u${code.toString(16).padStart(4, '0')}`;
+    }
+    return char;
+  }
+}

@@ -14,7 +14,12 @@ export type ComparisonOperator =
   | '<='
   | 'IN'
   | 'NOT IN'
-  | 'LIKE';
+  | 'LIKE'
+  /**
+   * A Liqe regex literal (`name:/pattern/flags`). The value keeps the
+   * delimiters and flags so the pattern is not confused with a LIKE wildcard.
+   */
+  | 'REGEX';
 
 /**
  * Represents a logical operator in a query expression
