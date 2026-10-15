@@ -252,7 +252,7 @@ function resolveSecurityOptions(
   }
   if (!isTimeoutBudget(resolved.queryTimeout)) {
     throw new QuerySecurityError(
-      `Invalid security option: queryTimeout must be an integer between 0 and ${MAX_QUERY_TIMEOUT_MS} milliseconds`
+      `Invalid security option: queryTimeout must be an integer between 1 and ${MAX_QUERY_TIMEOUT_MS} milliseconds`
     );
   }
   return resolved;
@@ -273,16 +273,17 @@ function isResultLimit(value: unknown): value is number {
 /**
  * Whether a value can be forwarded to `setTimeout` as the query budget.
  * `NaN`, `Infinity`, a negative, or a delay above the timer range would be
- * clamped to an immediate timeout and reject every query.
+ * clamped to an immediate timeout, and `0` is a budget every query exceeds;
+ * each would reject every query.
  *
  * @param value - Candidate timeout in milliseconds
- * @returns True for an integer from 0 to MAX_QUERY_TIMEOUT_MS inclusive
+ * @returns True for an integer from 1 to MAX_QUERY_TIMEOUT_MS inclusive
  */
 function isTimeoutBudget(value: unknown): value is number {
   return (
     typeof value === 'number' &&
     Number.isInteger(value) &&
-    value >= 0 &&
+    value >= 1 &&
     value <= MAX_QUERY_TIMEOUT_MS
   );
 }
@@ -337,10 +338,11 @@ function resolveResultLimit(
 }
 
 /**
- * Run the adapter under the configured timeout. The budget starts before
- * the adapter is invoked and is checked again when its result arrives, so
- * synchronous work inside the adapter, during which no timer can fire, is
- * counted as well.
+ * Run the adapter under the configured timeout. The timer is armed before
+ * the adapter is invoked, so it bounds the asynchronous part of the call.
+ * The synchronous part, during which no timer can fire, is measured when
+ * the adapter returns and rejected on its own if it already used the whole
+ * budget. Nothing after the adapter settles is charged to the query.
  *
  * @param operation - Starts the adapter execution
  * @param timeoutMs - Maximum time to wait, in milliseconds
@@ -351,17 +353,20 @@ async function executeWithTimeout<T>(
   operation: () => Promise<T>,
   timeoutMs: number
 ): Promise<T> {
-  const startedAt = Date.now();
+  const startedAt = performance.now();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => reject(createTimeoutError(timeoutMs)), timeoutMs);
   });
   try {
-    const result = await Promise.race([operation(), timeout]);
-    if (Date.now() - startedAt > timeoutMs) {
+    const pending = operation();
+    if (performance.now() - startedAt >= timeoutMs) {
+      // The timer expired while the adapter blocked the event loop, but
+      // an already settled promise would still win the race below.
+      pending.catch(() => undefined);
       throw createTimeoutError(timeoutMs);
     }
-    return result;
+    return await Promise.race([pending, timeout]);
   } finally {
     if (timer !== undefined) {
       clearTimeout(timer);
@@ -370,6 +375,8 @@ async function executeWithTimeout<T>(
 }
 
 /**
+ * Build the error `execute()` rejects with when the budget is exceeded.
+ *
  * @param timeoutMs - The budget that was exceeded, in milliseconds
  * @returns The error `execute()` rejects with on a timeout
  */

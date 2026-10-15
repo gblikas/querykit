@@ -36,9 +36,10 @@ export class InMemoryAdapter implements IAdapter<IInMemoryAdapterOptions> {
   }
 
   /**
-   * Store the rows this adapter will filter.
+   * Store the rows this adapter will filter and the field mappings to apply.
+   * Mappings from an earlier call are replaced, not merged.
    *
-   * @param options Adapter options, including `records`
+   * @param options Adapter options, including `records` and optional `fieldMappings`
    * @throws {InMemoryAdapterError} When `records` is missing
    */
   public initialize(options: IInMemoryAdapterOptions): void {
@@ -99,7 +100,9 @@ export class InMemoryAdapter implements IAdapter<IInMemoryAdapterOptions> {
   }
 
   /**
-   * Apply `fieldMappings` to the sort fields of a result window.
+   * Apply `fieldMappings` to the sort fields of a result window. When two
+   * sort fields map to the same key, the first keeps its direction and the
+   * second is dropped, as a repeated `ORDER BY` key is a no-op in SQL.
    *
    * @param options Result window as the caller passed it
    * @returns The window with mapped sort fields
@@ -110,9 +113,13 @@ export class InMemoryAdapter implements IAdapter<IInMemoryAdapterOptions> {
     if (!options?.orderBy) {
       return options;
     }
-    const orderBy: Record<string, 'asc' | 'desc'> = {};
+    // No prototype, so a resolved key such as `__proto__` is an ordinary key.
+    const orderBy = Object.create(null) as Record<string, 'asc' | 'desc'>;
     for (const [field, direction] of Object.entries(options.orderBy)) {
-      orderBy[this.resolveFieldName(field)] = direction;
+      const resolved = this.resolveFieldName(field);
+      if (!(resolved in orderBy)) {
+        orderBy[resolved] = direction;
+      }
     }
     return { ...options, orderBy };
   }

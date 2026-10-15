@@ -8,6 +8,12 @@ export interface IInMemoryAdapterOptions extends IAdapterOptions {
    * Fetched rows keyed by the table name passed to `query()`.
    */
   records: Record<string, readonly object[]>;
+
+  /**
+   * Query field name to row key, applied to comparison and sort fields after
+   * validation. The schema lists the names a query uses; the rows use the keys.
+   */
+  fieldMappings?: Record<string, string>;
 }
 
 /**

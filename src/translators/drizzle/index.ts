@@ -62,6 +62,11 @@ export class DrizzleTranslator implements ITranslator<SQL> {
 
   /**
    * Translate a QueryKit expression to a Drizzle ORM condition
+   *
+   * @param expression The QueryKit expression to translate
+   * @param context Table the query selects from; bare fields resolve against it
+   * @returns The Drizzle condition
+   * @throws {DrizzleTranslationError} When the expression, an operator, or a field name cannot be translated
    */
   public translate(
     expression: QueryExpression,
@@ -78,6 +83,10 @@ export class DrizzleTranslator implements ITranslator<SQL> {
 
   /**
    * Check if an expression can be translated to Drizzle ORM
+   *
+   * @param expression The expression to check
+   * @param context Table the query selects from; bare fields resolve against it
+   * @returns true if the expression can be translated, false otherwise
    */
   public canTranslate(
     expression: QueryExpression,

@@ -16,7 +16,8 @@ interface IRecordedExecution {
 }
 
 /**
- * Adapter that records execution options and can delay completion.
+ * Adapter that records execution options and can delay completion, either
+ * asynchronously (`hangMs`) or by blocking the event loop (`blockMs`).
  */
 class RecordingAdapter implements IAdapter {
   public executions: IRecordedExecution[] = [];
@@ -176,6 +177,20 @@ describe('createQueryKit security limits', () => {
     ).rejects.toThrow(/timeout/i);
   });
 
+  it('counts synchronous adapter work against the budget of the asynchronous part', async () => {
+    const adapter = new RecordingAdapter();
+    adapter.blockMs = 30;
+    adapter.hangMs = 200;
+    const queryKit = createQueryKit({
+      adapter,
+      schema: taskSchema,
+      security: { queryTimeout: 50 }
+    });
+    await expect(
+      queryKit.query('tasks').where('status:open').execute()
+    ).rejects.toThrow(/timeout/i);
+  });
+
   it('returns results when execution finishes inside queryTimeout', async () => {
     const adapter = new RecordingAdapter();
     const queryKit = createQueryKit({
@@ -186,6 +201,23 @@ describe('createQueryKit security limits', () => {
     await expect(
       queryKit.query('tasks').where('status:open').execute()
     ).resolves.toEqual([]);
+  });
+
+  it('does not charge event-loop work done by other code after the adapter settles', async () => {
+    const adapter = new RecordingAdapter();
+    const queryKit = createQueryKit({
+      adapter,
+      schema: taskSchema,
+      security: { queryTimeout: 20 }
+    });
+    const pending = queryKit.query('tasks').where('status:open').execute();
+    const blockUntil = Date.now() + 60;
+    await Promise.resolve().then(() => {
+      while (Date.now() < blockUntil) {
+        // Busy-wait on a sibling microtask, as another query in the same tick would.
+      }
+    });
+    await expect(pending).resolves.toEqual([]);
   });
 
   it('keeps the default timeout when queryTimeout is explicitly undefined', async () => {
@@ -252,6 +284,7 @@ describe('createQueryKit limit validation', () => {
       Number.NaN,
       Number.POSITIVE_INFINITY,
       -1,
+      0,
       1.5,
       2147483648
     ]) {

@@ -35,6 +35,11 @@
   "publishConfig": {
     "access": "public"
   },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3"
+    ]
+  },
   "dependencies": {
     "liqe": "^3.3.0"
   },

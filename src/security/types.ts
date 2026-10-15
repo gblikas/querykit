@@ -244,14 +244,16 @@ export interface ISecurityOptions {
   sanitizeWildcards?: boolean;
 
   /**
-   * Timeout in milliseconds for query execution. The budget starts before
-   * the adapter is invoked and covers synchronous work inside it: a result
-   * that arrives after the budget is rejected even though no timer could
-   * fire while that work blocked the event loop.
-   * When execution exceeds this limit, the call rejects. The underlying
-   * statement is not cancelled. `0` is a zero-millisecond budget, not
-   * "no timeout". Must be an integer from 0 to 2147483647, the largest delay
-   * `setTimeout` honours; `createQueryKit` rejects anything else.
+   * Timeout in milliseconds for the adapter call. The budget starts when the
+   * adapter is invoked, after parsing, virtual-field resolution, and
+   * validation. A timer bounds the asynchronous part of the call, and the
+   * synchronous part, during which no timer can fire, is measured when the
+   * adapter returns and rejected on its own when it used the whole budget.
+   * Work other code does on the event loop after the adapter settles is not
+   * counted. When execution exceeds this limit, the call rejects. The
+   * underlying statement is not cancelled. Must be an integer from 1 to
+   * 2147483647, the largest delay `setTimeout` honours; `createQueryKit`
+   * rejects anything else, including `0`, which no query could satisfy.
    *
    * @default 30000 (30 seconds)
    *

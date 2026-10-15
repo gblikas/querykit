@@ -808,6 +808,39 @@ describe('InMemoryAdapter field mappings', () => {
     expect(actual).toEqual([inputRows[1], inputRows[0]]);
   });
 
+  it('keeps the first direction when a mapped sort field collides with its target', async () => {
+    const actual = await mappedAdapter.execute(
+      'tasks',
+      { type: 'comparison', field: 'priority', operator: '>', value: 0 },
+      { orderBy: { priority: 'asc', task_priority: 'desc' } }
+    );
+    expect(actual).toEqual([inputRows[1], inputRows[0]]);
+  });
+
+  it('applies adapter field mappings to membership fields', async () => {
+    const actual = await mappedAdapter.execute('tasks', {
+      type: 'comparison',
+      field: 'status',
+      operator: 'NOT IN',
+      value: ['done']
+    });
+    expect(actual).toEqual([inputRows[0]]);
+  });
+
+  it('applies adapter mappings after parser mappings and enforced exclusions', async () => {
+    const queryKit = createQueryKit({
+      adapter: mappedAdapter,
+      schema: { tasks: { status: {}, priority: {} } },
+      parserOptions: { fieldMappings: { state: 'status' } },
+      security: { enforceExcludedValues: { status: ['done'] } }
+    });
+    const actual = await queryKit
+      .query('tasks')
+      .where('state:active OR state:done')
+      .execute();
+    expect(actual).toEqual([inputRows[0]]);
+  });
+
   it('maps fields nested under logical operators', async () => {
     const expression: QueryExpression = {
       type: 'logical',

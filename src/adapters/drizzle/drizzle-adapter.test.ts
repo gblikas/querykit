@@ -29,6 +29,24 @@ const mockDb: IDrizzleDatabase = {
   select: mockSelect
 };
 
+/**
+ * Adapter over two tables whose property names differ from their columns.
+ */
+function createMultiTableAdapter(): DrizzleAdapter {
+  const users = sqliteTable('users', {
+    id: integer('id'),
+    displayName: text('display_name'),
+    active: integer('active', { mode: 'boolean' })
+  });
+  const teams = sqliteTable('teams', {
+    id: integer('id'),
+    name: text('name')
+  });
+  const adapter = new DrizzleAdapter();
+  adapter.initialize({ db: mockDb, schema: { users, teams } });
+  return adapter;
+}
+
 // Create mock schema with SQLWrapper fields
 const mockSchema = {
   todos: {
@@ -105,17 +123,7 @@ describe('DrizzleAdapter', () => {
     });
 
     it('resolves bare fields against the selected table of a multi-table schema', async () => {
-      const users = sqliteTable('users', {
-        id: integer('id'),
-        displayName: text('display_name'),
-        active: integer('active', { mode: 'boolean' })
-      });
-      const teams = sqliteTable('teams', {
-        id: integer('id'),
-        name: text('name')
-      });
-      const multiTableAdapter = new DrizzleAdapter();
-      multiTableAdapter.initialize({ db: mockDb, schema: { users, teams } });
+      const multiTableAdapter = createMultiTableAdapter();
       const expression: QueryExpression = {
         type: 'comparison',
         field: 'active',
@@ -127,6 +135,15 @@ describe('DrizzleAdapter', () => {
       const compiled = new SQLiteSyncDialect().sqlToQuery(condition);
       expect(compiled.sql).toBe('"users"."active" = ?');
       expect(compiled.params).toEqual([1]);
+    });
+
+    it('renames a bare property to its column name on the selected table', async () => {
+      const multiTableAdapter = createMultiTableAdapter();
+      await multiTableAdapter.execute('users', parser.parse('displayName:Ada'));
+      const condition = mockWhere.mock.calls[0][0] as SQL;
+      const compiled = new SQLiteSyncDialect().sqlToQuery(condition);
+      expect(compiled.sql).toBe('"users"."display_name" = ?');
+      expect(compiled.params).toEqual(['Ada']);
     });
 
     it('does not resolve inherited object properties as tables', async () => {

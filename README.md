@@ -75,6 +75,23 @@ const qk = createQueryKit({
 const preview = await qk.query('tasks').where('status:done AND priority:>2').execute();
 ```
 
+When the rows use different keys than the query, give the adapter `fieldMappings`. The schema lists the names a query uses; the adapter renames them to row keys after validation, for comparisons and for `orderBy`.
+
+```typescript
+const rows = [{ title: 'Ship release', task_status: 'done', priority: 3 }];
+
+const mapped = createQueryKit({
+  adapter: inMemoryAdapter({
+    records: { tasks: rows },
+    fieldMappings: { status: 'task_status' }
+  }),
+  schema: { tasks: { title: {}, status: {}, priority: {} } }
+});
+
+await mapped.query('tasks').where('status:done').orderBy('status').execute();
+// [{ title: 'Ship release', task_status: 'done', priority: 3 }]
+```
+
 ## Query Syntax
 
 QueryKit parses the string with Liqe. The Drizzle translator and the in-memory adapter then evaluate that AST with the same operators. `status:active` is equality with `active`: it does not match `inactive` or `Active` when the comparison is case-sensitive. `status:"Active"` is the same kind of equality with `Active`. `priority:2` and `priority:=2` are equality with the number `2`, so `12` does not match. `*` and `?` are LIKE, including inside quotes. `*` is any sequence, `?` is one character, and the pattern is anchored to the whole value. Equality and LIKE are case-sensitive on PostgreSQL and in the in-memory adapter; on SQLite and MySQL they follow the column collation. A dotted field matches a literal key in memory, not a nested path. A regex parses as operator `REGEX`. `name:/Todo.*/` and `name:/foo/` are accepted by the parser. The Drizzle translator and the in-memory adapter reject that operator with an unsupported-operator error. A slash pattern that contains `*` or `?`, such as `title:/Ship.*/`, is that same `REGEX` operator and raises the error. A slash pattern without those characters, such as `name:/foo/`, is also `REGEX` and raises the same error.
@@ -249,7 +266,7 @@ const qk = createQueryKit({
     sanitizeWildcards: true,   // Prevent regex DoS with wildcards in LIKE queries
     
     // Performance safeguards
-    queryTimeout: 5000,        // Timeout in milliseconds for query execution
+    queryTimeout: 5000,        // Budget in milliseconds for the adapter call
   }
 });
 ```

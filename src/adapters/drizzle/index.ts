@@ -196,7 +196,12 @@ export class DrizzleAdapter<
   }
 
   /**
-   * Check if an expression can be executed by this adapter
+   * Check if an expression can be executed by this adapter. The check has
+   * no selected table, so it is stricter than `execute`: a bare field that
+   * only resolves through a table's column keys reports false here.
+   *
+   * @param expression The QueryKit expression to check
+   * @returns true if the expression can be translated without a table, false otherwise
    */
   public canExecute(expression: QueryExpression): boolean {
     try {
