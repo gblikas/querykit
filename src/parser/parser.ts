@@ -43,6 +43,7 @@ import {
 } from './input-parser';
 import {
   isBooleanRangeEndpoint,
+  isLiqeWhitespace,
   isRejectedNullRangeBound,
   measureQueryDelimiters,
   readLiteralAt,
@@ -359,7 +360,7 @@ export class QueryParser implements IQueryParser {
     query: string,
     index: number
   ): { text: string; end: number } | null {
-    if (index > 0 && /[\w$.]/.test(query[index - 1] ?? '')) {
+    if (!this.beginsClause(query, index)) {
       return null;
     }
     const field = this.readFieldToken(query, index);
@@ -367,6 +368,28 @@ export class QueryParser implements IQueryParser {
       return null;
     }
     return { text: `NOT ${field.text}:`, end: field.end + 3 };
+  }
+
+  /**
+   * Whether a field may begin at `index`: the start of the text, Liqe
+   * whitespace, `(` or a clause-leading minus precedes it, the boundary the
+   * search box requires of a field colon. A `:!=` glued to the value before
+   * it (`status:a*y:!=b`) is left as typed for Liqe to reject, instead of
+   * writing `NOT ` into that value.
+   */
+  private beginsClause(query: string, index: number): boolean {
+    if (index === 0) {
+      return true;
+    }
+    const before = query[index - 1] ?? '';
+    if (before === '-') {
+      return index === 1 || this.separatesClauses(query[index - 2]);
+    }
+    return this.separatesClauses(before);
+  }
+
+  private separatesClauses(char: string | undefined): boolean {
+    return isLiqeWhitespace(char) || char === '(';
   }
 
   /**
