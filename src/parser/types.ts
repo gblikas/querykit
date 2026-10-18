@@ -27,11 +27,16 @@ export type ComparisonOperator =
 export type LogicalOperator = 'AND' | 'OR' | 'NOT';
 
 /**
- * Represents a value that can be used in a query expression
+ * Represents a value that can be used in a query expression.
+ *
+ * A `bigint` is an integer inside SQLite's signed 64-bit range that a
+ * JavaScript number would round or misspell, kept from the digits the query
+ * was written with (see `exactSqliteInteger`).
  */
 export type QueryValue =
   | string
   | number
+  | bigint
   | boolean
   | null
   | Array<string | number | boolean | null>;
@@ -44,6 +49,15 @@ export interface IComparisonExpression {
   field: string;
   operator: ComparisonOperator;
   value: QueryValue;
+  /**
+   * Set when the field names one column whose name holds a dot, so a
+   * translator keeps it as one identifier instead of splitting it into
+   * `table.column`: a quoted name with exactly one dot other than `"."`
+   * (`"a.b"`, `"table."`, `".column"`), or an unquoted name with one dot and
+   * an empty side (`column.`). Omitted otherwise, including when a
+   * `fieldMappings` entry replaced the written name.
+   */
+  isLiteral?: true;
 }
 
 /**

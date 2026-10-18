@@ -130,6 +130,72 @@ export function transformCodeSegments(
     .join('');
 }
 
+/**
+ * Split a bracket-list body into its members at the commas that are not
+ * inside a string or regex literal. A quote runs to its match, with a
+ * backslash escaping the next character; an unclosed quote or regex runs to
+ * the end of the body. Members are trimmed and empty members dropped. The
+ * parser's bracket and membership rewrites split with this function, so a
+ * regex literal whose body holds a comma stays one member.
+ *
+ * @param body Text between the brackets
+ * @returns The members, in order
+ *
+ * @example
+ * ```typescript
+ * splitListMembers('a, "b,c", /d,e/'); // ['a', '"b,c"', '/d,e/']
+ * ```
+ */
+export function splitListMembers(body: string): string[] {
+  const members: string[] = [];
+  let memberStart = 0;
+  let index = 0;
+  const pushMember = (end: number): void => {
+    const member = body.slice(memberStart, end).trim();
+    if (member.length > 0) {
+      members.push(member);
+    }
+  };
+  while (index < body.length) {
+    const literal = readLiteralAt(body, index);
+    if (literal.kind !== 'none') {
+      index = literal.end;
+      continue;
+    }
+    if (body[index] === ',') {
+      pushMember(index);
+      memberStart = index + 1;
+    }
+    index += 1;
+  }
+  pushMember(body.length);
+  return members;
+}
+
+/**
+ * Whether a trimmed, unquoted range bound is the keyword `null`. No engine
+ * orders a column against null, so the bracket rewrite leaves such a range
+ * to Liqe, which rejects it, instead of comparing with the text `"null"`.
+ *
+ * @param bound One side of a `[min TO max]` range, trimmed
+ * @returns True for the bare word `null`
+ */
+export function isRejectedNullRangeBound(bound: string): boolean {
+  return bound === 'null';
+}
+
+/**
+ * Whether a trimmed, unquoted range bound is the keyword `true` or `false`.
+ * The bracket rewrite leaves such a range to Liqe, which rejects it, instead
+ * of comparing with the texts `"true"` and `"false"`.
+ *
+ * @param bound One side of a `[min TO max]` range, trimmed
+ * @returns True for the bare word `true` or `false`
+ */
+export function isBooleanRangeEndpoint(bound: string): boolean {
+  return bound === 'true' || bound === 'false';
+}
+
 function readStringLiteral(
   input: string,
   start: number,

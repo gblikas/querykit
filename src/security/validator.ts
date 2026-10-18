@@ -962,7 +962,9 @@ export class QuerySecurityValidator {
   }
 
   /**
-   * Check if a value is in the denied values list
+   * Check if a value is in the denied values list. A bigint, which the
+   * parser keeps for an integer a number would round, is never denied: a
+   * deny list holds no bigint, and a numeric entry names another value.
    *
    * @private
    * @param value - The value to check
@@ -970,8 +972,8 @@ export class QuerySecurityValidator {
    * @returns true if the value is denied, false otherwise
    */
   private isValueDenied(
-    value: string | number | boolean | null,
-    deniedValues: Array<string | number | boolean | null>
+    value: string | number | bigint | boolean | null,
+    deniedValues: readonly DeniedValue[]
   ): boolean {
     // Use strict equality to match values, handling type coercion properly
     return deniedValues.some(deniedValue => {

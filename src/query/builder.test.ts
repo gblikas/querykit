@@ -294,7 +294,8 @@ describe('QueryBuilder', () => {
     });
 
     it('round-trips exponent-form numbers through IN and NOT IN', () => {
-      const inputValues = [1e-7, 1e21, -2.5e-3];
+      // 1e21 is outside the signed 64-bit range, which the parser rejects.
+      const inputValues = [1e-7, 2e3, -2.5e-3];
       const membership = new QueryBuilder<ITodo>()
         .where('priority', 'IN', inputValues)
         .getExpression();

@@ -42,10 +42,21 @@ import {
   QueryToken
 } from './input-parser';
 import {
+  isBooleanRangeEndpoint,
+  isRejectedNullRangeBound,
   measureQueryDelimiters,
   readLiteralAt,
+  splitListMembers,
   transformCodeSegments
 } from './query-scanner';
+import {
+  exactSqliteInteger,
+  isPlainInteger,
+  isUnstorableInteger,
+  numeralAt,
+  outsideSignedRangeMessage,
+  spellNumerals
+} from './stored-integer';
 
 /**
  * Error thrown when query parsing fails
@@ -66,13 +77,26 @@ interface IMembershipPlaceholder {
 }
 
 /**
- * Membership clauses lifted out of one `parse()` call, keyed by the start
- * offset of their placeholder literal in the text handed to Liqe. A node is
- * matched by that location, never by its value, so no query content can
- * imitate a placeholder and the placeholder text stays constant.
+ * State of one `parse()` call. `placeholders` are the membership clauses
+ * lifted out of the query, keyed by the start offset of their placeholder
+ * literal in the text handed to Liqe; a node is matched by that location,
+ * never by its value, so no query content can imitate a placeholder and the
+ * placeholder text stays constant. `sourceText` is that same text, read back
+ * at a literal's location to recover the digits of an integer `Number`
+ * would round.
  */
-interface IMembershipState {
+interface IParseState {
   placeholders: Map<number, IMembershipPlaceholder>;
+  sourceText: string;
+}
+
+/**
+ * A field as the parser resolved it: the stored name, and whether a
+ * translator must keep that name as one identifier.
+ */
+interface IResolvedField {
+  name: string;
+  isLiteral: boolean;
 }
 
 /**
@@ -160,9 +184,30 @@ function readLiqeEscape(
   throw new QueryParseError(`Invalid escape in quoted value: \\${char}`);
 }
 
+/**
+ * Whether a stored field name is one column whose name holds a dot rather
+ * than a `table.column` qualifier: a quoted name with exactly one dot other
+ * than `.`, or an unquoted name with one dot and an empty side. A name with
+ * two or more dots is already one identifier to every translator.
+ *
+ * @param name The field name after case folding
+ * @param quoted Whether the query wrote the name in quotes
+ * @returns True when translators must not split the name
+ */
+function isLiteralFieldName(name: string, quoted: boolean): boolean {
+  const parts = name.split('.');
+  if (parts.length !== 2) {
+    return false;
+  }
+  if (quoted) {
+    return name !== '.';
+  }
+  return parts[0] === '' || parts[1] === '';
+}
+
 export class QueryParser implements IQueryParser {
   private options: Required<IParserOptions>;
-  private membershipState: IMembershipState | null = null;
+  private parseState: IParseState | null = null;
 
   constructor(options: IParserOptions = {}) {
     this.options = {
@@ -175,11 +220,12 @@ export class QueryParser implements IQueryParser {
    * Parse a query string into a QueryKit AST
    */
   public parse(query: string): QueryExpression {
-    const previousState = this.membershipState;
-    this.membershipState = { placeholders: new Map() };
+    const previousState = this.parseState;
+    this.parseState = { placeholders: new Map(), sourceText: '' };
     try {
       // Pre-process the query to handle IN operator syntax
       const preprocessedQuery = this.preprocessQuery(query);
+      this.parseState.sourceText = preprocessedQuery;
       const liqeAst = liqeParse(preprocessedQuery);
       const expression = this.convertLiqeAst(liqeAst);
       this.assertMembershipRestored();
@@ -189,7 +235,7 @@ export class QueryParser implements IQueryParser {
         `Failed to parse query: ${error instanceof Error ? error.message : String(error)}`
       );
     } finally {
-      this.membershipState = previousState;
+      this.parseState = previousState;
     }
   }
 
@@ -201,7 +247,7 @@ export class QueryParser implements IQueryParser {
    * @throws {QueryParseError} When a lifted membership clause was not placed
    */
   private assertMembershipRestored(): void {
-    if (this.membershipState && this.membershipState.placeholders.size > 0) {
+    if (this.parseState && this.parseState.placeholders.size > 0) {
       throw new QueryParseError(
         'A membership list could not be placed in the parsed query'
       );
@@ -219,9 +265,9 @@ export class QueryParser implements IQueryParser {
       return undefined;
     }
     const start = expression.location.start;
-    const lifted = this.membershipState?.placeholders.get(start);
+    const lifted = this.parseState?.placeholders.get(start);
     if (lifted) {
-      this.membershipState?.placeholders.delete(start);
+      this.parseState?.placeholders.delete(start);
     }
     return lifted;
   }
@@ -229,6 +275,7 @@ export class QueryParser implements IQueryParser {
   /**
    * Pre-process a query string to convert non-standard syntax to Liqe-compatible syntax.
    * Supports:
+   * - Numerals Liqe cannot read: `1e-7` → `0.0000001`, `+1` → `1`, `.5` → `0.5`
    * - `field:[val1, val2, val3]` → `(field:val1 OR field:val2 OR field:val3)`
    * - Lowercase boolean operators: `and` → `AND`, `or` → `OR`, `not` → `NOT`
    *
@@ -236,9 +283,16 @@ export class QueryParser implements IQueryParser {
    * - `priority:>2` (comparison)
    * - `status:active` (equality)
    * - `status:[todo, doing, done]` (IN / multiple values)
+   *
+   * @throws {Error} When a numeral names an integer outside the signed
+   * 64-bit range or an exponent that underflows to zero; `parse` wraps it
    */
   private preprocessQuery(query: string): string {
     let result = query;
+    // Spell exponents and the leading-plus, leading-dot and trailing-dot
+    // forms as plain decimals first, so the bracket rewrite sees numbers and
+    // keeps range bounds and list members numeric.
+    result = spellNumerals(result);
     // Normalize lowercase boolean operators to uppercase.
     // Liqe only recognizes uppercase AND, OR, NOT as boolean operators;
     // lowercase variants are treated as bare search terms causing crashes.
@@ -347,7 +401,7 @@ export class QueryParser implements IQueryParser {
     if (!rewrite.placeholder) {
       return;
     }
-    this.membershipState?.placeholders.set(
+    this.parseState?.placeholders.set(
       outputIndex + rewrite.placeholder.offset,
       rewrite.placeholder.clause
     );
@@ -584,6 +638,13 @@ export class QueryParser implements IQueryParser {
     };
   }
 
+  /**
+   * Rewrite a `[min TO max]` range as two comparisons. Returns null, so the
+   * original text reaches Liqe and is rejected there, when both bounds are
+   * open, a bound is empty, or a bound is the unquoted keyword `null`,
+   * `true` or `false`: no engine orders a column against those, and quoting
+   * them would compare with the texts `"null"`, `"true"` and `"false"`.
+   */
   private formatRange(
     field: string,
     opener: string,
@@ -598,6 +659,12 @@ export class QueryParser implements IQueryParser {
       (min !== '*' && min.length === 0) ||
       (max !== '*' && max.length === 0)
     ) {
+      return null;
+    }
+    if (isRejectedNullRangeBound(min) || isRejectedNullRangeBound(max)) {
+      return null;
+    }
+    if (isBooleanRangeEndpoint(min) || isBooleanRangeEndpoint(max)) {
       return null;
     }
     const minOperator = opener === '{' ? '>' : '>=';
@@ -653,72 +720,19 @@ export class QueryParser implements IQueryParser {
   }
 
   /**
-   * Parse a comma-separated string into values, respecting quoted strings.
-   * Commas inside quoted strings are preserved as part of the value.
+   * Parse a comma-separated string into values, respecting string and regex
+   * literals. A comma inside a literal is part of the value, so a regex
+   * whose body holds a comma stays one member. The split is the scanner's
+   * `splitListMembers`, which the search box mirrors.
    *
    * Examples:
    * - `a, b, c` → ['a', 'b', 'c']
    * - `"John, Jr.", Jane` → ['"John, Jr."', 'Jane']
    * - `'hello, world', test` → ["'hello, world'", 'test']
+   * - `/a,b/, c` → ['/a,b/', 'c']
    */
   private parseCommaSeparatedValues(input: string): string[] {
-    const values: string[] = [];
-    let current = '';
-    let inDoubleQuotes = false;
-    let inSingleQuotes = false;
-    let i = 0;
-
-    while (i < input.length) {
-      const char = input[i];
-      const nextChar = input[i + 1];
-
-      // Handle escape sequences inside quotes
-      if ((inDoubleQuotes || inSingleQuotes) && char === '\\' && nextChar) {
-        // Include both the backslash and the escaped character
-        current += char + nextChar;
-        i += 2;
-        continue;
-      }
-
-      // Toggle double quote state
-      if (char === '"' && !inSingleQuotes) {
-        inDoubleQuotes = !inDoubleQuotes;
-        current += char;
-        i++;
-        continue;
-      }
-
-      // Toggle single quote state
-      if (char === "'" && !inDoubleQuotes) {
-        inSingleQuotes = !inSingleQuotes;
-        current += char;
-        i++;
-        continue;
-      }
-
-      // Handle comma as separator (only when not inside quotes)
-      if (char === ',' && !inDoubleQuotes && !inSingleQuotes) {
-        const trimmed = current.trim();
-        if (trimmed.length > 0) {
-          values.push(trimmed);
-        }
-        current = '';
-        i++;
-        continue;
-      }
-
-      // Regular character
-      current += char;
-      i++;
-    }
-
-    // Don't forget the last value
-    const trimmed = current.trim();
-    if (trimmed.length > 0) {
-      values.push(trimmed);
-    }
-
-    return values;
+    return splitListMembers(input);
   }
 
   /**
@@ -811,21 +825,21 @@ export class QueryParser implements IQueryParser {
             'Implicit field search is not supported; queries must name a field'
           );
         }
-        const fieldName = this.normalizeFieldName(field.name);
+        const resolved = this.resolveField(field.name, field.quoted === true);
         const lifted = this.takeMembership(expression);
         if (lifted) {
           return this.createComparisonExpression(
-            fieldName,
+            resolved,
             lifted.operator,
             lifted.value
           );
         }
         if (expression.type === 'RangeExpression') {
-          return this.convertRangeExpression(fieldName, expression);
+          return this.convertRangeExpression(resolved, expression);
         }
         if (expression.type === 'RegexExpression') {
           return this.createComparisonExpression(
-            fieldName,
+            resolved,
             'REGEX',
             expression.value
           );
@@ -834,7 +848,10 @@ export class QueryParser implements IQueryParser {
           throw new QueryParseError('Invalid field or expression in Tag node');
         }
         const operator = this.convertLiqeOperator(tagNode.operator.operator);
-        const value = this.convertLiqeValue(expression.value);
+        const value = this.exactLiteralValue(
+          expression,
+          this.convertLiqeValue(expression.value)
+        );
 
         // Check for wildcard patterns in string values
         if (
@@ -842,10 +859,10 @@ export class QueryParser implements IQueryParser {
           typeof value === 'string' &&
           (value.includes('*') || value.includes('?'))
         ) {
-          return this.createComparisonExpression(fieldName, 'LIKE', value);
+          return this.createComparisonExpression(resolved, 'LIKE', value);
         }
 
-        return this.createComparisonExpression(fieldName, operator, value);
+        return this.createComparisonExpression(resolved, operator, value);
       }
 
       case 'EmptyExpression':
@@ -902,19 +919,57 @@ export class QueryParser implements IQueryParser {
   }
 
   /**
-   * Create a comparison expression
+   * Create a comparison expression. `isLiteral` is written only when set,
+   * so a plain comparison keeps the shape it always had.
    */
   private createComparisonExpression(
-    field: string,
+    field: IResolvedField,
     operator: ComparisonOperator,
     value: QueryValue
   ): IComparisonExpression {
     return {
       type: 'comparison',
-      field,
+      field: field.name,
       operator,
-      value
+      value,
+      ...(field.isLiteral && { isLiteral: true as const })
     };
+  }
+
+  /**
+   * The exact value of an unquoted numeric literal. Liqe reads a decimal
+   * with `Number`, so the digits are read back from the text Liqe parsed,
+   * starting where the literal starts (Liqe's end offset comes from the
+   * stringified number and is not the written length): a plain integer
+   * outside the signed 64-bit range that `Number` still holds is rejected,
+   * and one inside the range that `Number` would round or misspell becomes
+   * a bigint. Any other literal keeps Liqe's value.
+   *
+   * @throws {QueryParseError} For an integer outside the signed 64-bit range
+   */
+  private exactLiteralValue(
+    expression: ExpressionToken,
+    value: QueryValue
+  ): QueryValue {
+    if (
+      typeof value !== 'number' ||
+      expression.type !== 'LiteralExpression' ||
+      expression.quoted ||
+      !this.parseState
+    ) {
+      return value;
+    }
+    const written = numeralAt(
+      this.parseState.sourceText,
+      expression.location.start
+    );
+    if (written === null || !isPlainInteger(written)) {
+      return value;
+    }
+    if (isUnstorableInteger(written)) {
+      throw new QueryParseError(outsideSignedRangeMessage(written));
+    }
+    return exactSqliteInteger(written) ?? value;
   }
 
   /**
@@ -922,7 +977,7 @@ export class QueryParser implements IQueryParser {
    * E.g., `field:[2 TO 5]` becomes `(field >= 2 AND field <= 5)`
    */
   private convertRangeExpression(
-    fieldName: string,
+    field: IResolvedField,
     expression: RangeExpressionToken
   ): QueryExpression {
     const range = expression.range;
@@ -940,12 +995,12 @@ export class QueryParser implements IQueryParser {
 
     // Create comparison expressions for min and max
     const minComparison = this.createComparisonExpression(
-      fieldName,
+      field,
       minOperator,
       min
     );
     const maxComparison = this.createComparisonExpression(
-      fieldName,
+      field,
       maxOperator,
       max
     );
@@ -1036,6 +1091,18 @@ export class QueryParser implements IQueryParser {
    * Normalize a field name based on parser options
    */
   private normalizeFieldName(field: string): string {
+    return this.resolveField(field, false).name;
+  }
+
+  /**
+   * Resolve a written field name: fold its case under
+   * `caseInsensitiveFields`, then replace it through an own `fieldMappings`
+   * entry. A name the mapping replaced is the schema's own spelling and is
+   * never literal; otherwise a quoted name with exactly one dot other than
+   * `"."`, or an unquoted name with one dot and an empty side, names one
+   * column and is marked so translators keep it as one identifier.
+   */
+  private resolveField(field: string, quoted: boolean): IResolvedField {
     const normalizedField = this.options.caseInsensitiveFields
       ? field.toLowerCase()
       : field;
@@ -1047,9 +1114,15 @@ export class QueryParser implements IQueryParser {
         normalizedField
       )
     ) {
-      return this.options.fieldMappings[normalizedField];
+      return {
+        name: this.options.fieldMappings[normalizedField],
+        isLiteral: false
+      };
     }
-    return normalizedField;
+    return {
+      name: normalizedField,
+      isLiteral: isLiteralFieldName(normalizedField, quoted)
+    };
   }
 
   /**
@@ -1913,12 +1986,18 @@ export class QueryParser implements IQueryParser {
         trailingOperator.position,
         trailingOperator.position + trailingOperator.operator.length
       );
-      return {
+      const recovery: IErrorRecovery = {
         issue: 'trailing_operator',
         message: `Query ends with incomplete "${written}" operator`,
-        suggestion: 'Add a condition after the operator or remove it',
-        autofix: trimmed.slice(0, trailingOperator.position).trim()
+        suggestion: 'Add a condition after the operator or remove it'
       };
+      // Dropping a trailing AND or OR leaves the clause the user typed.
+      // Dropping a trailing NOT would run the clause it was about to negate,
+      // so tolerant execution must not retry `status:open NOT` as `status:open`.
+      if (trailingOperator.operator !== 'NOT') {
+        recovery.autofix = trimmed.slice(0, trailingOperator.position).trim();
+      }
+      return recovery;
     }
     const trimmed = query.trim();
     if (/:$/.test(trimmed) || /:\s*$/.test(trimmed)) {
