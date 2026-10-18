@@ -21,20 +21,28 @@ import {
   isCopiedBracketMember,
   isLiqeWhitespace,
   isListBody,
+  isQuotedToken,
   isRejectedBracketBody,
   mapQueryText,
   readComparisonOperator,
   readGroupEnds,
   readLiqe,
   readLiteralAt,
+  readQuotedLiteralStarts,
   readRangeBounds,
+  readRegexSpans,
   readUnquotedRewrite,
   someBracketExpression,
   splitListMembers,
   uppercaseBooleanOperators,
   writesBackUnquoted
 } from './query-scanner';
-import { rewriteQueryForLiqe } from './query-rewrite';
+import {
+  hasUnreadRegexMember,
+  IBracketRewrite,
+  readPlaceholderStart,
+  rewriteQueryForLiqe
+} from './query-rewrite';
 import {
   isPlainInteger,
   isUnstorableInteger,
@@ -560,7 +568,11 @@ export function findTrailingLogicalOperator(
  * ways, or reads a clause that names no field, is decided on the text the
  * parser's rewrites hand Liqe, so a list of two regex members whose
  * rewrite Liqe reads two ways (`b:[,//,////]` is `(b:// OR b:////)`,
- * `status:[/a/, /b/, x]`) is incomplete.
+ * `status:[/a/, /b/, x]`) is incomplete; so are the parser's checks on
+ * Liqe's one reading of that text, that a regex literal is read at each
+ * regex list member, a quoted literal at each lifted membership list and
+ * none at a copied quoted member with a tail (`t:[//, a` LF `b] OR
+ * (d:/a/i)` is one regex past its grouped member).
  *
  * Incomplete input:
  * - a field with an operator and no value, an unclosed quote or regex, or
@@ -590,9 +602,12 @@ export function findTrailingLogicalOperator(
  *   signed 64-bit range, an exponent that underflows to zero);
  * - a closed quote followed by the same quote (`"a""b"`), or a quoted
  *   backslash sequence Liqe does not accept (`"a\q"`, `"\U0041"`), or a raw
- *   line feed inside quotes, or two backslashes in a row inside a regex
- *   Liqe reads (`l:/\\/`, `status:[/\\/]`), whose body takes any character
- *   but a backslash or a backslash and one such character;
+ *   line feed inside quotes or inside an unquoted list member or range
+ *   bound the rewrite quotes (`status:[a` LF `b]` reaches Liqe as
+ *   `status:"a` LF `b"`; a membership member keeps it), or two backslashes
+ *   in a row inside a regex Liqe reads (`l:/\\/`, `status:[/\\/]`), whose
+ *   body takes any character but a backslash or a backslash and one such
+ *   character;
  * - a parenthesis glued to a clause, to `NOT`, to a minus or to another
  *   group (`AND` and `OR` may touch a group, but not the `NOT (` a
  *   `field:!=[a, b]` list becomes), a clause-leading minus with no tag
@@ -797,6 +812,7 @@ const COMPLETENESS_CHECKS: CompletenessCheck[] = [
   hasFieldlessClause,
   hasInvalidFieldColon,
   hasImplicitFieldTerm,
+  hasRejectedReading,
   hasUncoveredUnicodeSpace,
   (input, map): boolean => hasNullRangeEndpoint(input, map.isCode),
   (input, map): boolean => hasBooleanRangeEndpoint(input, map.isCode),
@@ -1232,14 +1248,55 @@ function hasImplicitFieldTerm(input: string): boolean {
 
 /**
  * The text the parser hands Liqe for `input`, or null when the parser
- * rejects a numeral before Liqe sees it.
+ * rejects a numeral before Liqe sees it. `visit` receives each bracket
+ * expression the rewrite consumed, as the parser's own preprocessing does.
  */
-function readParserText(input: string): string | null {
+function readParserText(
+  input: string,
+  visit?: (rewrite: IBracketRewrite) => void
+): string | null {
   try {
-    return rewriteQueryForLiqe(input);
+    return rewriteQueryForLiqe(input, visit);
   } catch {
     return null;
   }
+}
+
+/**
+ * The parser's three checks on Liqe's one reading of the rewritten text,
+ * decided on that text as `QueryParser.parse` decides them: Liqe must read
+ * a regex literal at each regex list member written back as typed, ending
+ * where a grouped member ends (`hasUnreadRegexMember`); a quoted literal
+ * at each lifted membership placeholder, so the clause can be put back;
+ * and no literal at a quoted member or bound copied as written that is
+ * not one closed literal. The same-length stand-in reads most such shapes
+ * as Liqe reads the rewritten text, but it writes a member holding a raw
+ * line feed as a plain string, which Liqe reads where it cannot read the
+ * member, so Liqe reads the stand-in two ways where it reads the
+ * rewritten text one way: `t:[//, a` LF `b] OR (d:/a/i)` is one regex to
+ * the `i`, past its grouped member, and `(t:[//] u:[a` LF `b] v:in[a] OR
+ * d:/a/i)` one regex that swallows the membership placeholder. A text
+ * Liqe rejects or reads two ways decides nothing here.
+ */
+function hasRejectedReading(input: string): boolean {
+  const rewrites: IBracketRewrite[] = [];
+  const rewritten = readParserText(input, rewrite => rewrites.push(rewrite));
+  if (rewritten === null || rewrites.length === 0) {
+    return false;
+  }
+  const reading = readLiqe(rewritten);
+  if (reading.ast === null) {
+    return false;
+  }
+  const literalStarts = readQuotedLiteralStarts(reading.ast);
+  const regexSpans = readRegexSpans(reading.ast);
+  return rewrites.some(
+    rewrite =>
+      hasUnreadRegexMember(rewrite.regexMembers, regexSpans) ||
+      rewrite.quotedTails.some(tail => literalStarts.has(tail.start)) ||
+      (rewrite.span.kind === 'membership' &&
+        !literalStarts.has(readPlaceholderStart(rewrite)))
+  );
 }
 
 function hasImplicitField(node: unknown): boolean {
@@ -1528,14 +1585,56 @@ function hasRejectedRegexEscape(input: string, map: IQueryTextMap): boolean {
 
 /**
  * Liqe's string characters exclude a line feed, so a quoted value, member,
- * bound or field name holding one is a syntax error. A regex body keeps it.
+ * bound or field name holding one is a syntax error, as is an unquoted
+ * list member or range bound holding one: the bracket rewrite quotes a
+ * member with whitespace and a bound that is neither a number nor quoted,
+ * escaping only backslashes and double quotes, so `status:[a` LF `b]`
+ * reaches Liqe as `status:"a` LF `b"`. A regex body keeps the line feed
+ * and a membership member is decoded by the parser and keeps it. Such a
+ * member stands in a text Liqe reads only inside a regex Liqe reads from
+ * the text before it (`x:[//] y:[a` LF `b] e://` is one regex), which the
+ * parser's rewritten text decides: the same-length stand-in writes the
+ * member as a plain string, so Liqe may read the stand-in two ways where
+ * it reads the rewritten text one way. What that one reading swallowed
+ * beside the member is `hasRejectedReading`'s.
  */
 function hasQuotedLineFeed(input: string, map: IQueryTextMap): boolean {
-  return map.literals.some(
+  const hasLiteralLineFeed = map.literals.some(
     literal =>
       literal.kind === 'string' &&
       input.slice(literal.start, literal.end).includes('\n')
   );
+  return (
+    hasLiteralLineFeed ||
+    (someBracketExpression(input, hasLineFeedMember, map.isCode) &&
+      !isReadByLiqe(input))
+  );
+}
+
+/**
+ * Whether the rewrite quotes a list member or range bound of `span` that
+ * holds a raw line feed. A quoted token is copied as written, so its line
+ * feed is read as a literal's; a member or bound is trimmed, so a line feed
+ * beside a comma, a `TO` or a bracket is Liqe whitespace.
+ */
+function hasLineFeedMember(span: IBracketExpressionSpan): boolean {
+  const holdsLineFeed = (token: string): boolean =>
+    !isQuotedToken(token) && token.includes('\n');
+  if (isListBody(span)) {
+    return splitListMembers(span.body).some(holdsLineFeed);
+  }
+  const bounds = readRangeBounds(span);
+  return bounds !== null && [bounds.min, bounds.max].some(holdsLineFeed);
+}
+
+/**
+ * Whether Liqe reads the text the parser hands it for `input` one way. A
+ * numeral the parser rejects before Liqe, a syntax error and an ambiguous
+ * reading all make the parser throw.
+ */
+function isReadByLiqe(input: string): boolean {
+  const rewritten = readParserText(input);
+  return rewritten !== null && readLiqe(rewritten).ast !== null;
 }
 
 /**

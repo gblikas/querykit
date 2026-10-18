@@ -83,6 +83,46 @@ export interface IBracketRewrite {
 }
 
 /**
+ * Where the placeholder literal of a lifted membership clause begins in the
+ * rewritten text: just after the field and its colon. The parser puts the
+ * clause back where Liqe reads a quoted literal beginning there.
+ *
+ * @param rewrite A consumed membership expression
+ * @returns The offset of the placeholder's opening quote
+ */
+export function readPlaceholderStart(rewrite: IBracketRewrite): number {
+  return rewrite.offset + rewrite.span.field.length + 1;
+}
+
+/**
+ * Whether Liqe did not read a regex list member the bracket rewrite wrote
+ * back as typed as a regex literal of its own, given the regex spans of
+ * Liqe's reading keyed by start index: no regex begins at the member, the
+ * regex at a grouped member does not end where the member ends, so it
+ * swallowed the ` OR ` joiner or the closer written after it, or the regex
+ * at an ungrouped member ends before it. A regex that begins at the one
+ * member of a list and runs past the closer into the typed text
+ * (`x:[//]/` is `///`) is read from the member and stays. The parser
+ * rejects such a reading and the search box reads it as incomplete.
+ *
+ * @param members The regex members the rewrite located
+ * @param regexSpans Start index to end index of each regex Liqe read
+ * @returns True when a member was not read as its own regex literal
+ */
+export function hasUnreadRegexMember(
+  members: readonly IRegexMemberSpan[],
+  regexSpans: ReadonlyMap<number, number>
+): boolean {
+  return members.some(member => {
+    const end = regexSpans.get(member.start);
+    if (end === undefined) {
+      return true;
+    }
+    return member.isGrouped ? end !== member.end : end < member.end;
+  });
+}
+
+/**
  * The replacement for one consumed bracket expression, with its regex
  * members and quoted tails located relative to the replacement's own start.
  */

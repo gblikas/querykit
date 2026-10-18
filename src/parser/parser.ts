@@ -42,9 +42,11 @@ import {
   QueryToken
 } from './input-parser';
 import {
+  hasUnreadRegexMember,
   IBracketRewrite,
   IMemberSpan,
   IRegexMemberSpan,
+  readPlaceholderStart,
   rewriteQueryForLiqe
 } from './query-rewrite';
 import {
@@ -270,7 +272,8 @@ export class QueryParser implements IQueryParser {
    * `(r:// OR r:l)/)`): queries no reading of the typed text yields. A regex
    * that begins at the one member of a list and runs past the closer into
    * the typed text (`x:[//]/` is `///`) is read from the member and stays,
-   * as the search box reads it.
+   * as the search box reads it. The rule is `hasUnreadRegexMember`, which
+   * the search box applies to the same text.
    *
    * @param ast Liqe's reading of the rewritten query
    * @throws {QueryParseError} When no regex begins at a member, or the regex
@@ -281,15 +284,7 @@ export class QueryParser implements IQueryParser {
     if (members.length === 0) {
       return;
     }
-    const spans = readRegexSpans(ast);
-    const isUnread = members.some(member => {
-      const end = spans.get(member.start);
-      if (end === undefined) {
-        return true;
-      }
-      return member.isGrouped ? end !== member.end : end < member.end;
-    });
-    if (isUnread) {
+    if (hasUnreadRegexMember(members, readRegexSpans(ast))) {
       throw new QueryParseError(
         'A regex list member was not read as its own regex literal'
       );
@@ -373,9 +368,9 @@ export class QueryParser implements IQueryParser {
    * quoted member fails before Liqe runs.
    */
   private recordBracketRewrite(rewrite: IBracketRewrite): void {
-    const { span, offset } = rewrite;
+    const { span } = rewrite;
     if (span.kind === 'membership') {
-      this.parseState?.placeholders.set(offset + span.field.length + 1, {
+      this.parseState?.placeholders.set(readPlaceholderStart(rewrite), {
         operator: span.isNegatedMembership ? 'NOT IN' : 'IN',
         value: this.parseMembershipValues(span.body)
       });
