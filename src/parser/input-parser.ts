@@ -595,7 +595,9 @@ export function findTrailingLogicalOperator(
  * - a bracket body the parser leaves to Liqe (`[]`, `{abc}`, `[a TO ]`,
  *   `[* TO *]`, an unclosed opener, `in[a}`), a stray bracket, a list
  *   member written back unquoted that Liqe refuses (`[AND]`, `[1x]`,
- *   `["a"b]`, `[[a]]`), or a quoted bound or membership member with a tail;
+ *   `["a"b]`, `[[a]]`), a quoted bound or membership member with a tail,
+ *   or a membership list or regex member swallowed by a regex Liqe reads
+ *   from the text before it (`f:[//]x:in[]/`, `x://T:[//]`);
  * - a tail glued to a closed quote or regex (`status:"a"b`, `status:/a/ib`)
  *   or to a bracket closer, unless Liqe reads the rewrite's one unquoted
  *   member or numeric bound joined to it (`status:[a]b` is `status:ab`,
@@ -798,6 +800,7 @@ const COMPLETENESS_CHECKS: CompletenessCheck[] = [
   (input, map): boolean => hasRejectedBracketExpression(input, map.isCode),
   (input, map): boolean => hasStrayBracket(input, map.isCode),
   hasSwallowedMembership,
+  hasSwallowedRegexMember,
   hasCopiedMember,
   hasRejectedListWord,
   hasGluedLiteralTail,
@@ -1719,6 +1722,36 @@ function hasSwallowedMembership(input: string, map: IQueryTextMap): boolean {
     span =>
       span.kind === 'membership' && map.isCode[span.bodyStart - 1] === false,
     rewriteMap.isCode
+  );
+}
+
+/**
+ * The parser writes a regex list member back as typed and requires Liqe to
+ * read a regex literal beginning there; when a regex Liqe reads from the
+ * text before the list swallows the member (`x://T:[//]` is `x://T://`,
+ * one regex to Liqe), the parser throws. The stray-bracket check reports
+ * the closer when that regex ends before it; this reports the list when
+ * the regex runs on past it (`x:[//]T:[//]/`).
+ */
+function hasSwallowedRegexMember(input: string, map: IQueryTextMap): boolean {
+  const rewriteMap = mapQueryText(input, map.rewriteText, map.rewriteText);
+  return someBracketExpression(
+    input,
+    span => holdsRegexMember(span) && map.isCode[span.bodyStart - 1] === false,
+    rewriteMap.isCode
+  );
+}
+
+/**
+ * Whether a list has a member the rewrite writes back unquoted that begins
+ * with a slash, which Liqe must then read as a regex literal.
+ */
+function holdsRegexMember(span: IBracketExpressionSpan): boolean {
+  return (
+    isListBody(span) &&
+    splitListMembers(span.body).some(
+      member => writesBackUnquoted(member) && member.startsWith('/')
+    )
   );
 }
 

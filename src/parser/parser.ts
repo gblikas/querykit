@@ -47,6 +47,7 @@ import {
   isRejectedNullRangeBound,
   measureQueryDelimiters,
   readLiteralAt,
+  readRegexSpans,
   splitListMembers,
   uppercaseBooleanOperators
 } from './query-scanner';
@@ -86,16 +87,31 @@ interface IMembershipPlaceholder {
 }
 
 /**
+ * Where a regex list member the bracket rewrite wrote back as typed sits in
+ * the text handed to Liqe (`start` and the offset just past it), and whether
+ * it stands inside a group the rewrite emitted, whose ` OR ` joiner and
+ * closer a regex must not swallow.
+ */
+interface IRegexMemberSpan {
+  start: number;
+  end: number;
+  isGrouped: boolean;
+}
+
+/**
  * State of one `parse()` call. `placeholders` are the membership clauses
  * lifted out of the query, keyed by the start offset of their placeholder
  * literal in the text handed to Liqe; a node is matched by that location,
  * never by its value, so no query content can imitate a placeholder and the
- * placeholder text stays constant. `sourceText` is that same text, read back
- * at a literal's location to recover the digits of an integer `Number`
- * would round.
+ * placeholder text stays constant. `regexMembers` are the regex list
+ * members the bracket rewrite wrote back as typed, as spans of that same
+ * text; Liqe must read a regex literal at each. `sourceText` is that same
+ * text, read back at a literal's location to recover the digits of an
+ * integer `Number` would round.
  */
 interface IParseState {
   placeholders: Map<number, IMembershipPlaceholder>;
+  regexMembers: IRegexMemberSpan[];
   sourceText: string;
 }
 
@@ -111,12 +127,26 @@ interface IResolvedField {
 /**
  * One rewrite of the query text. `placeholder` is set when the rewrite
  * lifted a membership clause: `offset` locates the placeholder inside `text`.
+ * `regexMembers` locates, inside `text`, each regex list member the rewrite
+ * wrote back as typed.
  */
 interface IQueryRewrite {
   text: string;
   end: number;
   placeholder?: { offset: number; clause: IMembershipPlaceholder };
+  regexMembers?: IRegexMemberSpan[];
 }
+
+/**
+ * Characters that make the bracket rewrite quote an unquoted list member
+ * instead of writing it back as typed.
+ */
+const QUOTED_MEMBER_CHARACTERS = /\s|[():]/;
+
+/**
+ * The text `convertToOrExpression` joins list clauses with.
+ */
+const OR_JOINER = ' OR ';
 
 /**
  * Inert quoted value written where a membership clause was lifted out. It
@@ -230,7 +260,11 @@ export class QueryParser implements IQueryParser {
    */
   public parse(query: string): QueryExpression {
     const previousState = this.parseState;
-    this.parseState = { placeholders: new Map(), sourceText: '' };
+    this.parseState = {
+      placeholders: new Map(),
+      regexMembers: [],
+      sourceText: ''
+    };
     try {
       // Pre-process the query to handle IN operator syntax
       const preprocessedQuery = this.preprocessQuery(query);
@@ -238,6 +272,7 @@ export class QueryParser implements IQueryParser {
       const liqeAst = liqeParse(preprocessedQuery);
       const expression = this.convertLiqeAst(liqeAst);
       this.assertMembershipRestored();
+      this.assertRegexMembersRead(liqeAst);
       return expression;
     } catch (error) {
       throw new QueryParseError(
@@ -259,6 +294,42 @@ export class QueryParser implements IQueryParser {
     if (this.parseState && this.parseState.placeholders.size > 0) {
       throw new QueryParseError(
         'A membership list could not be placed in the parsed query'
+      );
+    }
+  }
+
+  /**
+   * Fail when Liqe did not read a regex list member the bracket rewrite
+   * wrote back as typed as a regex literal of its own. The rewrite drops
+   * the brackets of `[//]`, so a regex glued before the field (`x://T:[//]`
+   * reaches Liqe as `x://T://`) would otherwise be read as one regex across
+   * the join, and a member of a group the rewrite emitted could swallow the
+   * ` OR ` and `)` written after it (`r:[//, l]/)` reaches Liqe as
+   * `(r:// OR r:l)/)`): queries no reading of the typed text yields. A regex
+   * that begins at the one member of a list and runs past the closer into
+   * the typed text (`x:[//]/` is `///`) is read from the member and stays,
+   * as the search box reads it.
+   *
+   * @param ast Liqe's reading of the rewritten query
+   * @throws {QueryParseError} When no regex begins at a member, or the regex
+   * at a grouped member runs past it
+   */
+  private assertRegexMembersRead(ast: LiqeQuery): void {
+    const members = this.parseState?.regexMembers ?? [];
+    if (members.length === 0) {
+      return;
+    }
+    const spans = readRegexSpans(ast);
+    const isUnread = members.some(member => {
+      const end = spans.get(member.start);
+      if (end === undefined) {
+        return true;
+      }
+      return member.isGrouped ? end !== member.end : end < member.end;
+    });
+    if (isUnread) {
+      throw new QueryParseError(
+        'A regex list member was not read as its own regex literal'
       );
     }
   }
@@ -403,6 +474,7 @@ export class QueryParser implements IQueryParser {
       const rewritten = this.matchBracketExpression(query, index);
       if (rewritten) {
         this.recordPlaceholder(result.length, rewritten);
+        this.recordRegexMembers(result.length, rewritten);
         result += rewritten.text;
         index = rewritten.end;
         continue;
@@ -432,6 +504,23 @@ export class QueryParser implements IQueryParser {
       outputIndex + rewrite.placeholder.offset,
       rewrite.placeholder.clause
     );
+  }
+
+  /**
+   * Remember where each regex list member the bracket rewrite wrote back as
+   * typed will sit in the text handed to Liqe, for `assertRegexMembersRead`.
+   */
+  private recordRegexMembers(
+    outputIndex: number,
+    rewrite: IQueryRewrite
+  ): void {
+    for (const member of rewrite.regexMembers ?? []) {
+      this.parseState?.regexMembers.push({
+        ...member,
+        start: outputIndex + member.start,
+        end: outputIndex + member.end
+      });
+    }
   }
 
   private matchBracketExpression(
@@ -481,7 +570,7 @@ export class QueryParser implements IQueryParser {
     if (replacement === null) {
       return null;
     }
-    return { text: replacement, end: closeIndex + 1 };
+    return { ...replacement, end: closeIndex + 1 };
   }
 
   /**
@@ -602,7 +691,7 @@ export class QueryParser implements IQueryParser {
     opener: string,
     closer: string,
     body: string
-  ): string | null {
+  ): Omit<IQueryRewrite, 'end'> | null {
     if (body.trim().length === 0) {
       return null;
     }
@@ -611,7 +700,14 @@ export class QueryParser implements IQueryParser {
     }
     const bounds = this.splitRangeBounds(body);
     if (bounds) {
-      return this.formatRange(field, opener, closer, bounds.min, bounds.max);
+      const range = this.formatRange(
+        field,
+        opener,
+        closer,
+        bounds.min,
+        bounds.max
+      );
+      return range === null ? null : { text: range };
     }
     if (opener === '[') {
       return this.convertToOrExpression(field, body);
@@ -725,25 +821,64 @@ export class QueryParser implements IQueryParser {
   }
 
   /**
-   * Convert a field and comma-separated values to an OR expression string
+   * Convert a field and comma-separated values to an OR expression string,
+   * locating in it each regex member written back as typed.
    */
-  private convertToOrExpression(field: string, valuesStr: string): string {
+  private convertToOrExpression(
+    field: string,
+    valuesStr: string
+  ): Omit<IQueryRewrite, 'end'> {
     // Parse values respecting quoted strings (commas inside quotes are preserved)
     const values = this.parseCommaSeparatedValues(valuesStr);
-
     if (values.length === 0) {
-      return `${field}:""`;
+      return { text: `${field}:""` };
     }
-
-    if (values.length === 1) {
-      return this.formatFieldValue(field, values[0]);
+    const clauses = values.map((v: string) => this.formatFieldValue(field, v));
+    if (clauses.length === 1) {
+      return {
+        text: clauses[0] ?? '',
+        regexMembers: this.locateRegexMembers(field, values, clauses, false)
+      };
     }
-
     // Build OR expression: (field:val1 OR field:val2 OR ...)
-    const orClauses = values.map((v: string) =>
-      this.formatFieldValue(field, v)
-    );
-    return `(${orClauses.join(' OR ')})`;
+    return {
+      text: `(${clauses.join(OR_JOINER)})`,
+      regexMembers: this.locateRegexMembers(field, values, clauses, true)
+    };
+  }
+
+  /**
+   * Where each regex member written back as typed sits once the clauses
+   * are joined with `OR_JOINER`, after the `(` of a group.
+   */
+  private locateRegexMembers(
+    field: string,
+    values: string[],
+    clauses: string[],
+    isGrouped: boolean
+  ): IRegexMemberSpan[] {
+    const members: IRegexMemberSpan[] = [];
+    let start = isGrouped ? 1 : 0;
+    clauses.forEach((clause, index) => {
+      if (this.isTypedRegexMember(values[index] ?? '')) {
+        members.push({
+          start: start + field.length + 1,
+          end: start + clause.length,
+          isGrouped
+        });
+      }
+      start += clause.length + OR_JOINER.length;
+    });
+    return members;
+  }
+
+  /**
+   * Whether `formatFieldValue` writes `value` back as typed and Liqe reads
+   * a regex literal there: an unquoted member that begins with a slash and
+   * holds no character that makes the rewrite quote it.
+   */
+  private isTypedRegexMember(value: string): boolean {
+    return value.startsWith('/') && !QUOTED_MEMBER_CHARACTERS.test(value);
   }
 
   /**
@@ -777,7 +912,7 @@ export class QueryParser implements IQueryParser {
     // If value contains spaces or special characters, quote it.
     // Escape backslashes first so a later quote escape is not doubled,
     // and so `\b` stays a backslash rather than a backspace.
-    if (/\s|[():]/.test(value)) {
+    if (QUOTED_MEMBER_CHARACTERS.test(value)) {
       const escapedValue = value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
       return `${field}:"${escapedValue}"`;
     }

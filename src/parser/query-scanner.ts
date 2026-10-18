@@ -1235,10 +1235,24 @@ function liqeRegexSpans(input: string): Map<number, number> | null {
     return null;
   }
   if (!reading.regexSpans) {
-    reading.regexSpans = new Map();
-    collectRegexSpans(reading.ast, reading.regexSpans);
+    reading.regexSpans = readRegexSpans(reading.ast);
   }
   return reading.regexSpans;
+}
+
+/**
+ * The regex literals of a Liqe AST, keyed by start index with the index
+ * just past each one, its flags included, as Liqe located them in the text
+ * it parsed. The parser's bracket rewrite requires a regex literal to begin
+ * at each regex list member it writes back as typed.
+ *
+ * @param ast A Liqe AST
+ * @returns Start index to end index of every `RegexExpression` node
+ */
+export function readRegexSpans(ast: LiqeQuery): Map<number, number> {
+  const spans = new Map<number, number>();
+  collectRegexSpans(ast, spans);
+  return spans;
 }
 
 function collectRegexSpans(node: unknown, spans: Map<number, number>): void {
