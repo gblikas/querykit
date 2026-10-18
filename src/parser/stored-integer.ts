@@ -248,9 +248,19 @@ export function numeralAt(text: string, start: number): string | null {
 
 /**
  * The numeral token that starts at `index`, when one stands on its own
- * there; null otherwise.
+ * there, which is where `spellNumerals` respells it; null otherwise.
+ *
+ * @param query - Query text
+ * @param index - Index where the token would begin
+ * @returns The token, or null when none stands alone there
+ *
+ * @example
+ * ```typescript
+ * readNumeralToken('count:1e5', 6); // '1e5'
+ * readNumeralToken('batch1e2', 5); // null
+ * ```
  */
-function readNumeralToken(query: string, index: number): string | null {
+export function readNumeralToken(query: string, index: number): string | null {
   const before = index === 0 ? '' : (query[index - 1] ?? '');
   if (before !== '' && !BEFORE_NUMERAL.test(before)) {
     return null;
