@@ -5,6 +5,11 @@
  */
 
 import { DrizzleTranslator } from '../../translators/drizzle';
+import {
+  isQuotableFieldName,
+  quoteFieldIdentifiers,
+  readFieldIdentifiers
+} from '../../translators/field-identifiers';
 import { IAdapter, IAdapterOptions, IQueryExecutionOptions } from '../types';
 import { QueryExpression } from '../../parser/types';
 import { SQL, SQLWrapper, asc, desc, sql } from 'drizzle-orm';
@@ -276,34 +281,23 @@ export class DrizzleAdapter<
   }
 
   /**
-   * Quote a field Drizzle will inline. Rejects names that can break out of
-   * the surrounding quotes.
+   * Quote a sort field Drizzle will inline, the way the translator quotes a
+   * filter field: exactly one dot is `table.column`, anything else is one
+   * identifier, and an embedded quote is doubled. Rejects names that can
+   * break out of the surrounding quotes.
    */
   private quoteFieldName(fieldName: string): SQL {
-    if (!this.isValidFieldName(fieldName)) {
+    if (!isQuotableFieldName(fieldName)) {
       throw new DrizzleAdapterError(`Invalid field name: ${fieldName}`);
     }
-    const parts = fieldName.split('.');
-    if (parts.length === 1) {
-      return sql`${sql.identifier(parts[0])}`;
-    }
-    return sql`${sql.identifier(parts[0])}.${sql.identifier(parts[1])}`;
+    return sql.raw(quoteFieldIdentifiers(fieldName));
   }
 
-  private isValidFieldName(fieldName: string): boolean {
-    const validFieldPattern = /^[a-zA-Z][a-zA-Z0-9._]*$/;
-    const parts = fieldName.split('.');
-    if (parts.length > 2) {
-      return false;
-    }
-    return parts.every(
-      (part: string): boolean =>
-        validFieldPattern.test(part) &&
-        part.length <= 64 &&
-        !part.includes('__')
-    );
-  }
-
+  /**
+   * Resolve a sort field to a column of the selected table: the table's own
+   * key, or the column part of a single `table.column` whose table part is
+   * the selected table. Anything else is quoted as written.
+   */
   private getSchemaField(
     tableName: string,
     fieldName: string
@@ -317,16 +311,13 @@ export class DrizzleAdapter<
     if (Object.prototype.hasOwnProperty.call(table, fieldName)) {
       return table[fieldName];
     }
-    const separator = fieldName.indexOf('.');
-    if (separator > 0) {
-      const prefix = fieldName.slice(0, separator);
-      const columnName = fieldName.slice(separator + 1);
-      if (
-        prefix === tableName &&
-        Object.prototype.hasOwnProperty.call(table, columnName)
-      ) {
-        return table[columnName];
-      }
+    const parts = readFieldIdentifiers(fieldName);
+    if (parts.length !== 2 || parts[0] !== tableName) {
+      return null;
+    }
+    const columnName = parts[1] ?? '';
+    if (Object.prototype.hasOwnProperty.call(table, columnName)) {
+      return table[columnName];
     }
     return null;
   }

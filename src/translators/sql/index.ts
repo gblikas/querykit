@@ -10,8 +10,18 @@ import {
   ILogicalExpression,
   QueryExpression
 } from '../../parser/types';
+import { quoteFieldIdentifiers } from '../field-identifiers';
 import { likeEscapeClause, toSqlLikePattern } from '../like-pattern';
 import { ITranslator, ITranslatorOptions } from '../types';
+
+/**
+ * A field name after the translator's own normalization and mapping, with
+ * the parser's literal flag when the mapping kept the name.
+ */
+interface IResolvedField {
+  name: string;
+  isLiteral: boolean;
+}
 
 /**
  * Options specific to the SQL translator
@@ -144,9 +154,13 @@ export class SqlTranslator
   private translateComparisonExpression(
     expression: IComparisonExpression
   ): string {
-    const { field, operator, value } = expression;
-    const fieldName = this.normalizeField(field);
-    const quotedField = this.quoteIdentifier(fieldName);
+    const { operator, value } = expression;
+    const resolved = this.resolveField(expression);
+    const quotedField = quoteFieldIdentifiers(
+      resolved.name,
+      resolved.isLiteral,
+      this.options.identifierQuote
+    );
 
     // Handle each operator type
     switch (operator) {
@@ -322,7 +336,17 @@ export class SqlTranslator
   }
 
   /**
-   * Format a value for SQL
+   * Format a value for SQL.
+   *
+   * A boolean is never bound: SQLite drivers cannot bind a JavaScript
+   * boolean, so parameterized SQL writes `TRUE` / `FALSE` while inline SQL
+   * keeps its lowercase `true` / `false`. A `Date` binds as ISO-8601 text,
+   * the form SQLite stores. A bigint binds as itself; inline, only an
+   * integer `Number` would round is written as digits, so a hand-built safe
+   * bigint is still rejected.
+   *
+   * @throws {SqlTranslationError} For a non-finite number, a safe bigint
+   * inline, an object, or an unsupported type
    */
   private formatValue(value: unknown, addToParams = true): string {
     if (typeof value === 'number' && !Number.isFinite(value)) {
@@ -330,8 +354,14 @@ export class SqlTranslator
         `Non-finite numbers are not supported. Got: ${String(value)}`
       );
     }
+    if (typeof value === 'boolean') {
+      if (this.options.useParameters) {
+        return value ? 'TRUE' : 'FALSE';
+      }
+      return String(value);
+    }
     if (this.options.useParameters && addToParams) {
-      this.params.push(value);
+      this.params.push(value instanceof Date ? value.toISOString() : value);
       return '?';
     }
 
@@ -340,15 +370,22 @@ export class SqlTranslator
     }
 
     if (typeof value === 'string') {
-      return `${this.options.stringLiteralQuote}${this.escapeString(value)}${this.options.stringLiteralQuote}`;
+      return this.quoteString(value);
     }
 
-    if (typeof value === 'number' || typeof value === 'boolean') {
+    if (typeof value === 'number') {
       return String(value);
     }
 
+    if (typeof value === 'bigint') {
+      if (Number.isSafeInteger(Number(value))) {
+        throw new SqlTranslationError('Unsupported value type: bigint');
+      }
+      return value.toString();
+    }
+
     if (value instanceof Date) {
-      return `${this.options.stringLiteralQuote}${value.toISOString()}${this.options.stringLiteralQuote}`;
+      return this.quoteString(value.toISOString());
     }
 
     if (typeof value === 'object' && !Array.isArray(value)) {
@@ -366,42 +403,40 @@ export class SqlTranslator
   }
 
   /**
+   * Write a string literal. A quote inside the string is doubled. A string
+   * that holds U+0000 cannot be written into statement text, since SQLite
+   * stops reading at the zero byte, so it is split there and the quoted
+   * pieces are joined with `CHAR(0)`.
+   */
+  private quoteString(value: string): string {
+    const quote = this.options.stringLiteralQuote;
+    const pieces = value
+      .split('\u0000')
+      .map(piece => `${quote}${this.escapeString(piece)}${quote}`);
+    if (pieces.length === 1) {
+      return pieces[0];
+    }
+    return `(${pieces.join(' || CHAR(0) || ')})`;
+  }
+
+  /**
    * Escape a string literal for SQL
    */
   private escapeString(str: string): string {
     // Escape any quotes in the string by doubling them
-    return str.replace(
-      new RegExp(this.options.stringLiteralQuote, 'g'),
-      `${this.options.stringLiteralQuote}${this.options.stringLiteralQuote}`
-    );
+    const quote = this.options.stringLiteralQuote;
+    return str.split(quote).join(`${quote}${quote}`);
   }
 
   /**
-   * Quote an identifier (field name) for SQL
+   * Normalize and map a field name. The parser's literal flag survives
+   * case folding but not a mapping that replaces the name, since the mapped
+   * name was written by the caller, not quoted in the query.
    */
-  private quoteIdentifier(identifier: string): string {
-    // Handle table.column format
-    if (identifier.includes('.')) {
-      const parts = identifier.split('.');
-      return parts.map(part => this.quoteIdentifier(part)).join('.');
-    }
-
-    const quote = this.options.identifierQuote;
-    // Escape any quotes in the identifier by doubling them
-    const escaped = identifier.replace(
-      new RegExp(quote, 'g'),
-      `${quote}${quote}`
-    );
-    return `${quote}${escaped}${quote}`;
-  }
-
-  /**
-   * Normalize a field name based on translator options
-   */
-  private normalizeField(field: string): string {
+  private resolveField(expression: IComparisonExpression): IResolvedField {
     const normalizedField = this.options.normalizeFieldNames
-      ? field.toLowerCase()
-      : field;
+      ? expression.field.toLowerCase()
+      : expression.field;
     // Bracket access walks the prototype, so `toString` and `constructor`
     // would otherwise resolve to functions instead of column names.
     if (
@@ -410,8 +445,11 @@ export class SqlTranslator
         normalizedField
       )
     ) {
-      return this.options.fieldMappings[normalizedField];
+      return {
+        name: this.options.fieldMappings[normalizedField],
+        isLiteral: false
+      };
     }
-    return normalizedField;
+    return { name: normalizedField, isLiteral: expression.isLiteral === true };
   }
 }

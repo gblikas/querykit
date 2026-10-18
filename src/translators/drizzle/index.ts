@@ -5,26 +5,68 @@
  * query conditions that can be used in Drizzle's SQL query builder.
  */
 
-import {
-  SQL,
-  SQLWrapper,
-  eq,
-  gt,
-  gte,
-  inArray,
-  lt,
-  lte,
-  ne,
-  notInArray,
-  sql
-} from 'drizzle-orm';
+import { SQL, SQLWrapper, sql } from 'drizzle-orm';
 import {
   IComparisonExpression,
   ILogicalExpression,
   QueryExpression
 } from '../../parser/types';
+import {
+  isQuotableFieldName,
+  quoteFieldIdentifiers,
+  readFieldIdentifiers
+} from '../field-identifiers';
 import { likeEscapeClause, toSqlLikePattern } from '../like-pattern';
 import { ITranslationContext, ITranslator, ITranslatorOptions } from '../types';
+
+/**
+ * The part of a Drizzle column that rewrites a query value for the driver,
+ * such as the boolean-mode integer encoder that turns `true` into `1`.
+ */
+interface IDriverValueEncoder {
+  mapToDriverValue: (value: unknown) => unknown;
+}
+
+/**
+ * A field name after the translator's own normalization and mapping, with
+ * the parser's literal flag when the mapping kept the name.
+ */
+interface IResolvedField {
+  name: string;
+  isLiteral: boolean;
+}
+
+/**
+ * The driver value a column's encoder produces for a boolean or a `Date`,
+ * or the value itself when the column has no encoder or the encoder leaves
+ * the value alone (or cannot take it, such as a timestamp encoder given a
+ * boolean).
+ */
+function encodedDriverValue(
+  column: SQLWrapper,
+  value: boolean | Date
+): unknown {
+  const encoder = (column as Partial<IDriverValueEncoder>).mapToDriverValue;
+  if (typeof encoder !== 'function') {
+    return value;
+  }
+  try {
+    return encoder.call(column, value);
+  } catch {
+    return value;
+  }
+}
+
+/**
+ * Whether a column's encoder rewrites the value, in which case the value is
+ * bound through that encoder rather than inlined or written as text.
+ */
+function rewritesValue(
+  column: SQLWrapper | null,
+  value: boolean | Date
+): boolean {
+  return column !== null && encodedDriverValue(column, value) !== value;
+}
 
 /**
  * Options specific to the Drizzle translator
@@ -147,99 +189,58 @@ export class DrizzleTranslator implements ITranslator<SQL> {
     expression: IComparisonExpression,
     context: ITranslationContext
   ): SQL {
-    const { field, operator, value } = expression;
-    const fieldName = this.normalizeField(field);
+    const { operator, value } = expression;
+    const resolved = this.resolveField(expression);
     if (operator !== 'IN' && operator !== 'NOT IN') {
       this.assertFiniteValue(value);
     }
-    const schemaField = this.getSchemaField(fieldName, context.tableName);
-
-    // If we have a schema field, use it directly with Drizzle operators
-    if (schemaField) {
-      switch (operator) {
-        case '==':
-          return value === null
-            ? sql`${schemaField} IS NULL`
-            : eq(schemaField, value);
-        case '!=':
-          return value === null
-            ? sql`${schemaField} IS NOT NULL`
-            : ne(schemaField, value);
-        case '>':
-          return gt(schemaField, value);
-        case '>=':
-          return gte(schemaField, value);
-        case '<':
-          return lt(schemaField, value);
-        case '<=':
-          return lte(schemaField, value);
-        case 'LIKE': {
-          if (typeof value !== 'string') {
-            throw new DrizzleTranslationError(
-              'LIKE operator requires a string value'
-            );
-          }
-          const sqlPattern = this.wildcardToSqlPattern(value);
-          return sql`${schemaField} LIKE ${sqlPattern} ${sql.raw(likeEscapeClause())}`;
-        }
-        case 'IN':
-          if (!Array.isArray(value)) {
-            throw new DrizzleTranslationError(
-              'IN operator requires an array value'
-            );
-          }
-          return this.translateMembership(schemaField, value, false);
-        case 'NOT IN':
-          if (!Array.isArray(value)) {
-            throw new DrizzleTranslationError(
-              'NOT IN operator requires an array value'
-            );
-          }
-          return this.translateMembership(schemaField, value, true);
-        default:
-          throw new DrizzleTranslationError(
-            `Unsupported operator: ${operator}`
-          );
-      }
-    }
-
-    // If we don't have a schema field, we need to build the SQL manually
-    // Handle each operator type
-    return this.buildSqlForOperator(fieldName, operator, value);
+    const schemaField = this.getSchemaField(
+      resolved.name,
+      context.tableName,
+      resolved.isLiteral
+    );
+    // A schema column is embedded as itself, so Drizzle prints the column's
+    // own name; any other field is quoted as written.
+    const column =
+      schemaField ?? this.quoteSqlIdentifier(resolved.name, resolved.isLiteral);
+    return this.buildSqlForOperator(column, schemaField, operator, value);
   }
 
   /**
-   * Build SQL for a specific operator with raw field name
-   * Security: Validates field names to prevent SQL injection
+   * Build the condition for one operator. Every value is bound as itself:
+   * a string, a number and a bigint never pass through a column encoder, so
+   * a boolean-mode column cannot turn `TRUE`, `yes` or `2` into `1`. A
+   * boolean and a `Date` go through the encoder only when it rewrites them,
+   * else a boolean is inlined and a `Date` is bound as ISO-8601 text.
+   *
+   * @param column - The column or quoted identifier to compare
+   * @param encoder - The schema column whose encoder may apply, if any
+   * @throws {DrizzleTranslationError} For an operator this translator lacks
+   * or a value of the wrong shape
    */
   private buildSqlForOperator(
-    fieldName: string,
+    column: SQLWrapper,
+    encoder: SQLWrapper | null,
     operator: string,
     value: unknown
   ): SQL {
-    // Security fix: Validate field name format before using it (prevents SQL injection)
-    if (!this.isValidFieldName(fieldName)) {
-      throw new DrizzleTranslationError(`Invalid field name: ${fieldName}`);
-    }
-
-    const column = this.quotedField(fieldName);
     switch (operator) {
       case '==':
         return value === null
           ? sql`${column} IS NULL`
-          : sql`${column} = ${value}`;
+          : sql`${column} = ${this.bindValue(value, encoder)}`;
       case '!=':
         return value === null
           ? sql`${column} IS NOT NULL`
-          : sql`${column} != ${value}`;
+          : sql`${column} ${sql.raw(encoder ? '<>' : '!=')} ${this.bindValue(value, encoder)}`;
       case '>':
-        return sql`${column} > ${value}`;
+        return sql`${column} > ${this.bindValue(value, encoder)}`;
       case '>=':
-        return sql`${column} >= ${value}`;
+        return sql`${column} >= ${this.bindValue(value, encoder)}`;
       case '<':
-        return sql`${column} < ${value}`;
+        return sql`${column} < ${this.bindValue(value, encoder)}`;
       case '<=':
-        return sql`${column} <= ${value}`;
+        return sql`${column} <= ${this.bindValue(value, encoder)}`;
       case 'LIKE': {
         if (typeof value !== 'string') {
           throw new DrizzleTranslationError(
@@ -255,7 +256,7 @@ export class DrizzleTranslator implements ITranslator<SQL> {
             'IN operator requires an array value'
           );
         }
-        return this.translateMembership(column, value, false);
+        return this.translateMembership(column, encoder, value, false);
       }
       case 'NOT IN': {
         if (!Array.isArray(value)) {
@@ -263,7 +264,7 @@ export class DrizzleTranslator implements ITranslator<SQL> {
             'NOT IN operator requires an array value'
           );
         }
-        return this.translateMembership(column, value, true);
+        return this.translateMembership(column, encoder, value, true);
       }
       default:
         throw new DrizzleTranslationError(`Unsupported operator: ${operator}`);
@@ -271,29 +272,55 @@ export class DrizzleTranslator implements ITranslator<SQL> {
   }
 
   /**
-   * Quote a validated field, splitting table.column into separate identifiers.
+   * The SQL chunk for one query value. A boolean is inlined as `TRUE` /
+   * `FALSE`, which no SQLite driver could bind, unless the column encodes
+   * it (a boolean-mode integer column binds 1 / 0). A `Date` is bound as
+   * ISO-8601 text, the form SQLite stores, unless the column encoder
+   * rewrites it (a timestamp column keeps its unix value). Anything else is
+   * bound as itself.
    */
-  private quotedField(fieldName: string): SQL {
-    const parts = fieldName.split('.');
-    if (parts.length === 1) {
-      return sql`${sql.identifier(parts[0])}`;
+  private bindValue(value: unknown, encoder: SQLWrapper | null): SQL {
+    if (typeof value === 'boolean') {
+      return encoder && rewritesValue(encoder, value)
+        ? sql`${sql.param(value, encoder as unknown as IDriverValueEncoder)}`
+        : sql.raw(value ? 'TRUE' : 'FALSE');
     }
-    return sql`${sql.identifier(parts[0])}.${sql.identifier(parts[1])}`;
+    if (value instanceof Date) {
+      return encoder && rewritesValue(encoder, value)
+        ? sql`${sql.param(value, encoder as unknown as IDriverValueEncoder)}`
+        : sql`${value.toISOString()}`;
+    }
+    return sql`${value}`;
+  }
+
+  /**
+   * Quote a field Drizzle inlines. Each identifier is written locally with
+   * an embedded quote doubled, so the name may hold a space, a quote, or any
+   * other character; `;` and a null byte are rejected, as is a reserved
+   * `__` or a part longer than 64 characters.
+   *
+   * @throws {DrizzleTranslationError} `Invalid field name` for a name that
+   * cannot be quoted
+   */
+  private quoteSqlIdentifier(fieldName: string, isLiteral: boolean): SQL {
+    if (!isQuotableFieldName(fieldName, isLiteral)) {
+      throw new DrizzleTranslationError(`Invalid field name: ${fieldName}`);
+    }
+    return sql.raw(quoteFieldIdentifiers(fieldName, isLiteral));
   }
 
   /**
    * Translate IN / NOT IN so NULL members agree with IS NULL / IS NOT NULL.
    * Empty IN is false and empty NOT IN is true; Drizzle's inArray has
-   * treated an empty list differently across versions, so the rewrite
-   * handles it here. The non-null members go through inArray / notInArray
-   * so the column's encoder applies, as it does for `==`: a boolean-mode
-   * integer column binds `true` as 1 rather than as a boolean SQLite cannot
-   * bind.
+   * treated an empty list differently across versions, so the list is
+   * written here. Each non-null member is bound the way `==` binds it, so a
+   * boolean member is inlined unless the column encodes it.
    *
    * @throws {DrizzleTranslationError} When a member is a non-finite number
    */
   private translateMembership(
     column: SQLWrapper,
+    encoder: SQLWrapper | null,
     values: unknown[],
     isNegated: boolean
   ): SQL {
@@ -307,22 +334,26 @@ export class DrizzleTranslator implements ITranslator<SQL> {
       (value: unknown): boolean => value !== null
     );
     const hasNull = nonNullValues.length !== values.length;
+    const members = sql.join(
+      nonNullValues.map(value => this.bindValue(value, encoder)),
+      sql`, `
+    );
     if (isNegated) {
       if (!hasNull) {
-        return notInArray(column, nonNullValues);
+        return sql`${column} not in (${members})`;
       }
       if (nonNullValues.length === 0) {
         return sql`${column} IS NOT NULL`;
       }
-      return sql`(${column} IS NOT NULL AND ${notInArray(column, nonNullValues)})`;
+      return sql`(${column} IS NOT NULL AND ${column} not in (${members}))`;
     }
     if (!hasNull) {
-      return inArray(column, nonNullValues);
+      return sql`${column} in (${members})`;
     }
     if (nonNullValues.length === 0) {
       return sql`${column} IS NULL`;
     }
-    return sql`(${column} IS NULL OR ${inArray(column, nonNullValues)})`;
+    return sql`(${column} IS NULL OR ${column} in (${members}))`;
   }
 
   private assertFiniteValue(value: unknown): void {
@@ -376,12 +407,14 @@ export class DrizzleTranslator implements ITranslator<SQL> {
   }
 
   /**
-   * Normalize a field name based on translator options
+   * Normalize and map a field name. The parser's literal flag survives
+   * case folding but not a mapping that replaces the name, since the mapped
+   * name was written by the caller, not quoted in the query.
    */
-  private normalizeField(field: string): string {
+  private resolveField(expression: IComparisonExpression): IResolvedField {
     const normalizedField = this.options.normalizeFieldNames
-      ? field.toLowerCase()
-      : field;
+      ? expression.field.toLowerCase()
+      : expression.field;
     // Bracket access walks the prototype, so names such as `toString`
     // would otherwise resolve to functions instead of column names.
     if (
@@ -390,27 +423,30 @@ export class DrizzleTranslator implements ITranslator<SQL> {
         normalizedField
       )
     ) {
-      return this.options.fieldMappings[normalizedField];
+      return {
+        name: this.options.fieldMappings[normalizedField],
+        isLiteral: false
+      };
     }
-    return normalizedField;
+    return { name: normalizedField, isLiteral: expression.isLiteral === true };
   }
 
   /**
-   * Resolve a field to a schema column. A qualified `table.column` reads the
-   * full schema. A bare name reads the table the adapter selected, or the
-   * schema's only table when translating standalone; with several tables and
-   * no selection a bare name is ambiguous and is quoted instead.
+   * Resolve a field to a schema column. A single unmarked `table.column`
+   * reads the full schema. Any other name, including a literal `"a.b"` and
+   * a three-part `a.b.c`, is one column key read from the table the adapter
+   * selected, or from the schema's only table when translating standalone;
+   * with several tables and no selection a bare name is ambiguous and is
+   * quoted instead.
    */
   private getSchemaField(
     fieldName: string,
-    tableName?: string
+    tableName: string | undefined,
+    isLiteral: boolean
   ): SQLWrapper | null {
-    const parts = fieldName.split('.');
+    const parts = readFieldIdentifiers(fieldName, isLiteral);
     if (parts.length === 2) {
       return this.columnOf(parts[0] ?? '', parts[1] ?? '');
-    }
-    if (parts.length !== 1) {
-      return null;
     }
     const scopeTable = tableName ?? this.onlyTableName();
     if (scopeTable === undefined) {
@@ -442,24 +478,5 @@ export class DrizzleTranslator implements ITranslator<SQL> {
       return null;
     }
     return table[columnName] as SQLWrapper;
-  }
-
-  /**
-   * Security: Validates field names to prevent SQL injection
-   * Only allows alphanumeric chars, dots, underscores. Max 64 chars per part.
-   */
-  private isValidFieldName(fieldName: string): boolean {
-    const validFieldPattern = /^[a-zA-Z][a-zA-Z0-9._]*$/;
-    const parts = fieldName.split('.');
-
-    // Only allow table.column format (max 2 parts)
-    if (parts.length > 2) return false;
-
-    return parts.every(
-      part =>
-        validFieldPattern.test(part) &&
-        part.length <= 64 &&
-        !part.includes('__') // Prevent reserved patterns
-    );
   }
 }
