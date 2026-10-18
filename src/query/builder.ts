@@ -1,5 +1,7 @@
 import { QueryParser } from '../parser';
+import { readLiteralAt } from '../parser/query-scanner';
 import { QueryExpression } from '../parser/types';
+import { QueryBuilderError } from './query-builder-error';
 import {
   ComparisonOperator,
   IQueryBuilder,
@@ -8,6 +10,55 @@ import {
   QueryValue,
   SortDirection
 } from './types';
+
+/** A boolean operator word, read where a word starts and ended by a boundary. */
+const BOOLEAN_OPERATOR_WORD = /^(AND|OR)(?=$|[\s()])/i;
+
+/** Whether a boolean operator word may start at an index. */
+function startsWord(clause: string, index: number): boolean {
+  return index === 0 || /[\s()]/.test(clause[index - 1]);
+}
+
+/**
+ * Whether a query string holds an AND or OR outside quotes, regex literals
+ * and parentheses. A quoted `OR`, a regex `/a OR b/` and a dotted field
+ * such as `or.group` are not operators.
+ */
+function hasTopLevelBooleanOperator(clause: string): boolean {
+  let depth = 0;
+  let index = 0;
+  while (index < clause.length) {
+    const literal = readLiteralAt(clause, index);
+    if (literal.kind !== 'none') {
+      index = Math.max(literal.end, index + 1);
+      continue;
+    }
+    const char = clause[index];
+    if (char === '(') {
+      depth += 1;
+    } else if (char === ')') {
+      depth = Math.max(depth - 1, 0);
+    } else if (
+      depth === 0 &&
+      startsWord(clause, index) &&
+      BOOLEAN_OPERATOR_WORD.test(clause.slice(index))
+    ) {
+      return true;
+    }
+    index += 1;
+  }
+  return false;
+}
+
+/**
+ * Parenthesize a query string that holds a top-level AND or OR, so it is
+ * spliced into a larger expression as one operand: Liqe gives AND and OR
+ * one precedence and associates left, so `(a) AND b OR c` would read as
+ * `((a) AND b) OR c`. A simple comparison is returned as written.
+ */
+function groupClause(clause: string): string {
+  return hasTopLevelBooleanOperator(clause) ? `(${clause})` : clause;
+}
 
 /**
  * Implementation of the type-safe query builder
@@ -87,7 +138,9 @@ export class QueryBuilder<T> implements IQueryBuilder<T> {
 
     if (operator === undefined || value === undefined) {
       // Handle direct query string format
-      this.expression = `(${this.expression}) AND ${fieldOrQueryString}`;
+      this.expression = `(${this.expression}) AND ${groupClause(
+        fieldOrQueryString as string
+      )}`;
     } else {
       // Handle field, operator, value format
       this.expression = `(${this.expression}) AND ${this.buildComparison(
@@ -132,7 +185,9 @@ export class QueryBuilder<T> implements IQueryBuilder<T> {
 
     if (operator === undefined || value === undefined) {
       // Handle direct query string format
-      this.expression = `(${this.expression}) OR ${fieldOrQueryString}`;
+      this.expression = `(${this.expression}) OR ${groupClause(
+        fieldOrQueryString as string
+      )}`;
     } else {
       // Handle field, operator, value format
       this.expression = `(${this.expression}) OR ${this.buildComparison(
@@ -161,7 +216,7 @@ export class QueryBuilder<T> implements IQueryBuilder<T> {
     if (!this.expression) {
       if (operator === undefined || value === undefined) {
         // Handle direct query string format
-        this.expression = `NOT ${fieldOrQueryString}`;
+        this.expression = `NOT ${groupClause(fieldOrQueryString as string)}`;
       } else {
         // Handle field, operator, value format
         this.expression = `NOT ${this.buildComparison(
@@ -173,7 +228,9 @@ export class QueryBuilder<T> implements IQueryBuilder<T> {
     } else {
       if (operator === undefined || value === undefined) {
         // Handle direct query string format
-        this.expression = `(${this.expression}) AND NOT ${fieldOrQueryString}`;
+        this.expression = `(${this.expression}) AND NOT ${groupClause(
+          fieldOrQueryString as string
+        )}`;
       } else {
         // Handle field, operator, value format
         this.expression = `(${this.expression}) AND NOT ${this.buildComparison(
@@ -285,7 +342,11 @@ export class QueryBuilder<T> implements IQueryBuilder<T> {
   }
 
   /**
-   * Format a value for use in a query
+   * Format a value for use in a query. A non-finite number has no Liqe
+   * spelling, so it is rejected rather than written as a bare word the
+   * parser would read back as a string, alone or as a list member.
+   *
+   * @throws {QueryBuilderError} For `NaN`, `Infinity` or `-Infinity`
    */
   private formatValue(
     value: QueryValue,
@@ -302,6 +363,11 @@ export class QueryBuilder<T> implements IQueryBuilder<T> {
         return value;
       }
       return `"${this.escapeQuotedValue(value)}"`;
+    }
+    if (typeof value === 'number' && !Number.isFinite(value)) {
+      throw new QueryBuilderError(
+        `Non-finite numbers are not supported. Got: ${String(value)}`
+      );
     }
     return String(value);
   }

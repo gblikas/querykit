@@ -7,7 +7,7 @@
  */
 
 // Core exports
-import { QueryBuilder, IQueryBuilderOptions } from './query';
+import { QueryBuilder, IQueryBuilderOptions, QueryBuilderError } from './query';
 import { QueryParser, IParserOptions } from './parser';
 import { SqlTranslator } from './translators/sql';
 import {
@@ -43,6 +43,7 @@ export {
   // Query builder exports
   QueryBuilder,
   IQueryBuilderOptions,
+  QueryBuilderError,
 
   // Translator exports
   SqlTranslator
