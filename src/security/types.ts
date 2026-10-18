@@ -6,6 +6,19 @@
  */
 
 /**
+ * A value a query may not reference, or a value a row may not carry.
+ */
+export type DeniedValue = string | number | boolean | null;
+
+/**
+ * Map of field name to the values excluded from every result for that field.
+ * `createQueryKit`, both translators, and both adapters append
+ * `AND field NOT IN (values)` for each entry with at least one value; an
+ * omitted or empty map, or an empty value list, injects nothing.
+ */
+export type EnforcedExclusions = Record<string, DeniedValue[]>;
+
+/**
  * @interface ISecurityOptions
  * @description Comprehensive security configuration options for QueryKit
  *
@@ -36,6 +49,10 @@ export interface ISecurityOptions {
    * List of fields that are allowed to be queried.
    * If empty, all fields in the schema are allowed by default.
    *
+   * An entry is matched as written: it ignores neither ASCII case nor a
+   * `table.` qualifier. A `fieldMappings` alias and its target are one field,
+   * so an entry in either spelling permits both (see `aliasSecurityFields`).
+   *
    * @example
    * ```typescript
    * // Only allow specific fields to be queried
@@ -48,6 +65,12 @@ export interface ISecurityOptions {
    * List of fields that are explicitly denied from being queried.
    * These fields will be blocked even if they appear in allowedFields.
    * Use this to protect sensitive data fields.
+   *
+   * An entry matches a field regardless of ASCII case and of a single
+   * `table.` qualifier on either side, so `secret` denies `SECRET`,
+   * `items.secret` and `Items.secret`, and `items.secret` denies `secret`.
+   * A `fieldMappings` alias and its target are one field, so an entry in
+   * either spelling denies both.
    *
    * @example
    * ```typescript
@@ -63,7 +86,11 @@ export interface ISecurityOptions {
    * Use this to protect against queries targeting specific sensitive values.
    *
    * The keys are field names (can include table prefixes like "user.role")
-   * and the values are arrays of denied values for that field.
+   * and the values are arrays of denied values for that field. A key is
+   * matched the way a `denyFields` entry is, regardless of ASCII case and of
+   * a single `table.` qualifier on either side, and a `fieldMappings` alias
+   * and its target are one key, so a value listed under any spelling, alias
+   * or alias target of a field is denied for every spelling of that field.
    *
    * Any query that references a denied value in any form is rejected, including
    * negated forms (`NOT status:"deleted"`, `status != "deleted"`, `status NOT IN
@@ -96,7 +123,7 @@ export interface ISecurityOptions {
    * // role == "admin"
    * ```
    */
-  denyValues?: Record<string, Array<string | number | boolean | null>>;
+  denyValues?: Record<string, DeniedValue[]>;
 
   /**
    * Values that are automatically excluded from ALL query results.
@@ -105,6 +132,9 @@ export interface ISecurityOptions {
    *
    * Use this for RBAC enforcement where certain records must never be returned
    * regardless of how users phrase their queries.
+   *
+   * A key that names a `fieldMappings` alias is injected under the alias's
+   * target, so both adapters drop the same rows (see `aliasSecurityFields`).
    *
    * @example
    * ```typescript
@@ -117,10 +147,7 @@ export interface ISecurityOptions {
    * // AND visibility NOT IN ('internal')
    * ```
    */
-  enforceExcludedValues?: Record<
-    string,
-    Array<string | number | boolean | null>
-  >;
+  enforceExcludedValues?: EnforcedExclusions;
 
   /**
    * Whether to allow dot notation in field names (e.g., "user.name", "metadata.tags").

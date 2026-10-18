@@ -14,7 +14,8 @@ import {
   DEFAULT_SECURITY_OPTIONS,
   ISecurityOptions,
   QuerySecurityError,
-  QuerySecurityValidator
+  QuerySecurityValidator,
+  applyEnforcedExclusions
 } from './security';
 import { IAdapter, IAdapterOptions } from './adapters';
 import {
@@ -173,52 +174,6 @@ export type QueryKit<
 > = {
   query<K extends keyof TSchema & string>(table: K): IWhereClause<TRows[K]>;
 };
-
-/**
- * Inject enforced exclusion filters into a query expression.
- *
- * For each field in `enforceExcludedValues`, appends
- * `AND field NOT IN (values)` to the expression, ensuring those records
- * are never returned regardless of what the user queried.
- *
- * This is an internal helper used by `createQueryKit`. It is applied after
- * security validation, so the exclusions are invisible to the validator.
- *
- * @param expression - The original query expression
- * @param enforceExcludedValues - Map of field → denied values to inject
- * @returns A new expression with the exclusion filters AND-ed in
- */
-function applyEnforcedExclusions(
-  expression: QueryExpression,
-  enforceExcludedValues: Record<string, Array<string | number | boolean | null>>
-): QueryExpression {
-  const entries = Object.entries(enforceExcludedValues).filter(
-    ([, values]) => values.length > 0
-  );
-
-  if (entries.length === 0) {
-    return expression;
-  }
-
-  // Build NOT IN exclusion expressions for each field
-  const exclusions: QueryExpression[] = entries.map(([field, values]) => ({
-    type: 'comparison' as const,
-    field,
-    operator: 'NOT IN' as const,
-    value: values
-  }));
-
-  // AND all exclusions together with the original expression
-  return exclusions.reduce<QueryExpression>(
-    (acc, exclusion) => ({
-      type: 'logical' as const,
-      operator: 'AND' as const,
-      left: acc,
-      right: exclusion
-    }),
-    expression
-  );
-}
 
 /**
  * Largest delay `setTimeout` honours. Node and browsers keep the delay in a
@@ -504,16 +459,10 @@ export function createQueryKit<
               );
 
               // Apply enforced exclusions after validation (server-side RBAC enforcement)
-              const enforceExcludedValues =
-                options.security?.enforceExcludedValues;
-              const finalExpression =
-                enforceExcludedValues &&
-                Object.keys(enforceExcludedValues).length > 0
-                  ? applyEnforcedExclusions(
-                      resolvedExpression,
-                      enforceExcludedValues
-                    )
-                  : resolvedExpression;
+              const finalExpression = applyEnforcedExclusions(
+                resolvedExpression,
+                options.security?.enforceExcludedValues
+              );
 
               // Delegate to adapter with resource limits from security settings
               const effectiveLimit = resolveResultLimit(
