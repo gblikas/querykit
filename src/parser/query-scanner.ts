@@ -681,25 +681,63 @@ export function hasCopiedBracketMember(
  */
 export function isCopiedBracketMember(span: IBracketExpressionSpan): boolean {
   if (span.kind === 'membership') {
-    return splitListMembers(span.body).some(
-      member => isQuotedToken(member) && !isOneClosedLiteral(member)
-    );
+    return splitListMembers(span.body).some(hasQuotedTail);
   }
+  return (
+    hasQuotedMemberTail(span) ||
+    (isListBody(span) &&
+      splitListMembers(span.body).some(
+        member =>
+          writesBackUnquoted(member) &&
+          /^["'/]/.test(member) &&
+          !isOneClosedLiteral(member)
+      ))
+  );
+}
+
+/**
+ * Whether a list member or range bound the rewrite copies as written
+ * because it begins and ends with the same quote is not one closed literal,
+ * so Liqe would read the text after its first literal as more query: a
+ * second clause or operator smuggled through the member
+ * (`status:["a" OR status:"c"]` reaches Liqe as `status:"a" OR
+ * status:"c"`), an implicit-field term (`status:["a" "b"]`), or a glued
+ * quote (`status:["a"b"c"]`). The search box marks such a span incomplete;
+ * the parser rejects it once Liqe has read the member's first literal
+ * (`QueryParser.assertQuotedTailsUnread`), unless a regex Liqe reads from
+ * the text before it swallows the member, as this check's caller skips a
+ * span inside a literal. A membership member never reaches Liqe; the
+ * parser's quoted decode refuses it instead.
+ *
+ * @param span A bracket span
+ * @returns True when such a member or bound is written
+ *
+ * @example
+ * ```typescript
+ * hasQuotedMemberTail(readBracketExpression('status:["a" OR status:"c"]', 0)!); // true
+ * hasQuotedMemberTail(readBracketExpression('status:["a b"]', 0)!); // false
+ * ```
+ */
+export function hasQuotedMemberTail(span: IBracketExpressionSpan): boolean {
   if (isListBody(span)) {
-    return splitListMembers(span.body).some(
-      member =>
-        (isQuotedToken(member) ||
-          (writesBackUnquoted(member) && /^["'/]/.test(member))) &&
-        !isOneClosedLiteral(member)
-    );
+    return splitListMembers(span.body).some(hasQuotedTail);
   }
   const bounds = readRangeBounds(span);
-  return (
-    bounds !== null &&
-    [bounds.min, bounds.max].some(
-      bound => isQuotedToken(bound) && !isOneClosedLiteral(bound)
-    )
-  );
+  return bounds !== null && [bounds.min, bounds.max].some(hasQuotedTail);
+}
+
+/**
+ * Whether one list member or range bound is a quoted token the rewrite
+ * copies as written that is not one closed literal (`"a" OR status:"c"`,
+ * `"a" "b"`, `"a"b"c"`), the member `hasQuotedMemberTail` looks for. The
+ * bracket rewrite records where it copies such a member so the parser can
+ * tell whether Liqe read its first literal.
+ *
+ * @param token A list member or range bound, trimmed
+ * @returns True for a quoted token with text after its first literal
+ */
+export function hasQuotedTail(token: string): boolean {
+  return isQuotedToken(token) && !isOneClosedLiteral(token);
 }
 
 function isOneClosedLiteral(token: string): boolean {
@@ -1276,31 +1314,71 @@ function liqeRegexSpans(input: string): Map<number, number> | null {
  * @returns Start index to end index of every `RegexExpression` node
  */
 export function readRegexSpans(ast: LiqeQuery): Map<number, number> {
+  return readExpressionSpans(ast, token => token.type === 'RegexExpression');
+}
+
+/**
+ * Where the quoted string literals of a Liqe AST begin in the text Liqe
+ * parsed. Only the start locates one: Liqe's `location.end` of a quoted
+ * literal counts its decoded value, so `"\u0041"` ends three characters
+ * after it begins. The parser's bracket rewrite copies a quoted list member
+ * or range bound as written and asks here whether Liqe read a literal at
+ * one that is not one closed literal.
+ *
+ * @param ast A Liqe AST
+ * @returns The start index of every quoted `LiteralExpression` node
+ */
+export function readQuotedLiteralStarts(ast: LiqeQuery): Set<number> {
+  const spans = readExpressionSpans(
+    ast,
+    token => token.type === 'LiteralExpression' && token.quoted === true
+  );
+  return new Set(spans.keys());
+}
+
+/**
+ * A Liqe AST node as the span readers see it.
+ */
+interface ILiqeNode {
+  type?: string;
+  quoted?: boolean;
+  location?: { start: number; end: number };
+  expression?: unknown;
+  left?: unknown;
+  right?: unknown;
+  operand?: unknown;
+}
+
+function readExpressionSpans(
+  ast: LiqeQuery,
+  isCollected: (token: ILiqeNode) => boolean
+): Map<number, number> {
   const spans = new Map<number, number>();
-  collectRegexSpans(ast, spans);
+  collectExpressionSpans(ast, isCollected, spans);
   return spans;
 }
 
-function collectRegexSpans(node: unknown, spans: Map<number, number>): void {
+function collectExpressionSpans(
+  node: unknown,
+  isCollected: (token: ILiqeNode) => boolean,
+  spans: Map<number, number>
+): void {
   if (!node || typeof node !== 'object') {
     return;
   }
-  const token = node as {
-    type?: string;
-    location?: { start: number; end: number };
-    expression?: unknown;
-    left?: unknown;
-    right?: unknown;
-    operand?: unknown;
-  };
-  if (token.type === 'RegexExpression' && token.location) {
+  const token = node as ILiqeNode;
+  if (token.location && isCollected(token)) {
     spans.set(token.location.start, token.location.end);
     return;
   }
-  collectRegexSpans(token.expression, spans);
-  collectRegexSpans(token.left, spans);
-  collectRegexSpans(token.right, spans);
-  collectRegexSpans(token.operand, spans);
+  for (const child of [
+    token.expression,
+    token.left,
+    token.right,
+    token.operand
+  ]) {
+    collectExpressionSpans(child, isCollected, spans);
+  }
 }
 
 function scanRegexLiteral(input: string, start: number): ILiteralSpan {

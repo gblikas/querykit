@@ -603,8 +603,9 @@ export function findTrailingLogicalOperator(
  * - a bracket body the parser leaves to Liqe (`[]`, `{abc}`, `[a TO ]`,
  *   `[* TO *]`, an unclosed opener, `in[a}`), a stray bracket, a list
  *   member written back unquoted that Liqe refuses (`[AND]`, `[1x]`,
- *   `["a"b]`, `[[a]]`), a quoted bound or membership member with a tail,
- *   or a membership list or regex member swallowed by a regex Liqe reads
+ *   `["a"b]`, `[[a]]`), a quoted member, bound or membership member with
+ *   text after its first literal (`["a" OR status:"c"]`, `["a" "b"]`), or
+ *   a membership list or regex member swallowed by a regex Liqe reads
  *   from the text before it (`f:[//]x:in[]/`, `x://T:[//]`);
  * - a tail glued to a closed quote or regex (`status:"a"b`, `status:/a/ib`)
  *   or to a bracket closer, unless Liqe reads the rewrite's one unquoted
@@ -1835,7 +1836,11 @@ function holdsRegexMember(span: IBracketExpressionSpan): boolean {
  * A bracket member or bound copied as written with a tail glued to its
  * literal is a syntax error (`status:["a"b]`, `status:[/a/b]`), unless it
  * is the one regex member of a list with text glued to the closer, which
- * Liqe reads joined to that text (`status:[//2]/` is `status://2/`).
+ * Liqe reads joined to that text (`status:[//2]/` is `status://2/`). A
+ * quoted member or bound with any text after its first literal
+ * (`status:["a" OR status:"c"]`, `status:["a" "b"]`) is rejected by the
+ * parser once Liqe has read that first literal, since Liqe reads the text
+ * after it as more query.
  */
 function hasCopiedMember(input: string, map: IQueryTextMap): boolean {
   return someBracketExpression(

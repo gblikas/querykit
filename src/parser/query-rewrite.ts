@@ -15,6 +15,7 @@
  */
 
 import {
+  hasQuotedTail,
   IBracketExpressionSpan,
   isLiqeWhitespace,
   isQuotedToken,
@@ -44,37 +45,52 @@ export const MEMBERSHIP_PLACEHOLDER = '"\uE000"';
 export const OR_JOINER = ' OR ';
 
 /**
- * Where a regex list member the bracket rewrite wrote back as typed sits in
- * the rewritten text (`start` and the offset just past it), and whether it
- * stands inside a group the rewrite emitted, whose ` OR ` joiner and closer
- * a regex must not swallow.
+ * Where a list member or range bound the bracket rewrite wrote as typed
+ * sits in the rewritten text: `start` and the offset just past it.
  */
-export interface IRegexMemberSpan {
+export interface IMemberSpan {
   start: number;
   end: number;
+}
+
+/**
+ * Where a regex list member the bracket rewrite wrote back as typed sits in
+ * the rewritten text, and whether it stands inside a group the rewrite
+ * emitted, whose ` OR ` joiner and closer a regex must not swallow.
+ */
+export interface IRegexMemberSpan extends IMemberSpan {
   isGrouped: boolean;
 }
 
 /**
  * One bracket expression the rewrite consumed: the span as read from the
  * text the bracket rewrite walked, where its replacement begins in the
- * rewritten text, and the regex list members written back as typed, as
- * spans of the rewritten text.
+ * rewritten text, and two kinds of member written as typed, as spans of
+ * the rewritten text: the regex list members, and the quoted members and
+ * bounds that are not one closed literal (`quotedTails`). The rewrite
+ * copies a member that begins and ends with the same quote, so Liqe reads
+ * the text after such a member's first literal as more query
+ * (`status:["a" OR status:"c"]` reaches Liqe as `status:"a" OR
+ * status:"c"`); the parser rejects the query when Liqe reads a literal at
+ * one, while no literal begins at a member a regex Liqe reads from the
+ * text before it has swallowed.
  */
 export interface IBracketRewrite {
   span: IBracketExpressionSpan;
   offset: number;
   regexMembers: IRegexMemberSpan[];
+  quotedTails: IMemberSpan[];
 }
 
 /**
  * The replacement for one consumed bracket expression, with its regex
- * members located relative to the replacement's own start.
+ * members and quoted tails located relative to the replacement's own start.
  */
 interface IBracketReplacement {
   span: IBracketExpressionSpan;
   text: string;
   regexMembers: IRegexMemberSpan[];
+  quotedTails: IMemberSpan[];
 }
 
 /**
@@ -222,14 +238,16 @@ function locateBracketRewrite(
   replacement: IBracketReplacement,
   offset: number
 ): IBracketRewrite {
+  const shift = <T extends IMemberSpan>(member: T): T => ({
+    ...member,
+    start: offset + member.start,
+    end: offset + member.end
+  });
   return {
     span: replacement.span,
     offset,
-    regexMembers: replacement.regexMembers.map(member => ({
-      ...member,
-      start: offset + member.start,
-      end: offset + member.end
-    }))
+    regexMembers: replacement.regexMembers.map(shift),
+    quotedTails: replacement.quotedTails.map(shift)
   };
 }
 
@@ -252,38 +270,72 @@ function readBracketReplacement(
   }
   if (span.kind === 'membership') {
     const text = `${span.field}:${MEMBERSHIP_PLACEHOLDER}`;
-    return { span, text, regexMembers: [] };
+    return { span, text, regexMembers: [], quotedTails: [] };
   }
   const bounds = readRangeBounds(span);
   if (bounds) {
-    const text = writeRangeRewrite(span, bounds.min, bounds.max);
-    return { span, text, regexMembers: [] };
+    return writeRangeRewrite(span, bounds.min, bounds.max);
   }
   return writeListRewrite(span);
 }
 
 /**
+ * The text the range rewrite joins its two comparisons with.
+ */
+const AND_JOINER = ' AND ';
+
+/**
  * The two comparisons a `[min TO max]` range becomes, or the one of a
- * one-sided range; `isRejectedBracketBody` has already excluded a range
- * with both bounds open, an empty bound, or a `null` or boolean bound.
+ * one-sided range, locating in them each quoted bound copied as written
+ * that is not one closed literal; `isRejectedBracketBody` has already
+ * excluded a range with both bounds open, an empty bound, or a `null` or
+ * boolean bound.
  */
 function writeRangeRewrite(
   span: IBracketExpressionSpan,
   min: string,
   max: string
-): string {
+): IBracketReplacement {
   const minOperator = span.opener === '{' ? '>' : '>=';
   const maxOperator = span.closer === '}' ? '<' : '<=';
-  const parts: string[] = [];
+  const bounds: string[] = [];
+  const clauses: string[] = [];
   if (min !== '*') {
-    parts.push(writeComparison(span.field, minOperator, min));
+    bounds.push(min);
+    clauses.push(writeComparison(span.field, minOperator, min));
   }
   if (max !== '*') {
-    parts.push(writeComparison(span.field, maxOperator, max));
+    bounds.push(max);
+    clauses.push(writeComparison(span.field, maxOperator, max));
   }
-  return parts.length === 2
-    ? `(${parts[0]} AND ${parts[1]})`
-    : (parts[0] ?? '');
+  const isGrouped = clauses.length === 2;
+  const text = isGrouped ? `(${clauses.join(AND_JOINER)})` : (clauses[0] ?? '');
+  const quotedTails = locateQuotedTailBounds(bounds, clauses, isGrouped);
+  return { span, text, regexMembers: [], quotedTails };
+}
+
+/**
+ * Where each quoted bound `writeComparison` copied as written that is not
+ * one closed literal sits once the comparisons are joined with
+ * `AND_JOINER`, after the `(` of a group, relative to the start of the
+ * range's replacement. A copied bound ends its comparison.
+ */
+function locateQuotedTailBounds(
+  bounds: string[],
+  clauses: string[],
+  isGrouped: boolean
+): IMemberSpan[] {
+  const located: IMemberSpan[] = [];
+  let start = isGrouped ? 1 : 0;
+  clauses.forEach((clause, index) => {
+    const bound = bounds[index] ?? '';
+    if (hasQuotedTail(bound)) {
+      const end = start + clause.length;
+      located.push({ start: end - bound.length, end });
+    }
+    start += clause.length + AND_JOINER.length;
+  });
+  return located;
 }
 
 function writeComparison(
@@ -304,18 +356,25 @@ function writeComparison(
 /**
  * The OR expression a comma list becomes, `(field:a OR field:b OR ...)`, or
  * the one clause of a one-member list, locating in it each regex member
- * written back as typed.
+ * written back as typed and each quoted member copied as written that is
+ * not one closed literal.
  */
 function writeListRewrite(span: IBracketExpressionSpan): IBracketReplacement {
   const members = splitListMembers(span.body);
   const clauses = members.map(member => writeListClause(span.field, member));
   if (clauses.length === 0) {
-    return { span, text: `${span.field}:""`, regexMembers: [] };
+    const text = `${span.field}:""`;
+    return { span, text, regexMembers: [], quotedTails: [] };
   }
   const isGrouped = clauses.length >= 2;
   const text = isGrouped ? `(${clauses.join(OR_JOINER)})` : (clauses[0] ?? '');
-  const regexMembers = locateRegexMembers(span, members, clauses, isGrouped);
-  return { span, text, regexMembers };
+  const locate = (isLocated: (member: string) => boolean): IMemberSpan[] =>
+    locateMembers(span, members, clauses, isGrouped, isLocated);
+  const regexMembers = locate(isTypedRegexMember).map(member => ({
+    ...member,
+    isGrouped
+  }));
+  return { span, text, regexMembers, quotedTails: locate(hasQuotedTail) };
 }
 
 /**
@@ -341,24 +400,26 @@ export function writeListClause(field: string, member: string): string {
 }
 
 /**
- * Where each regex member written back as typed sits once the clauses are
- * joined with `OR_JOINER`, after the `(` of a group, relative to the start
- * of the list's replacement.
+ * Where each member `isLocated` selects sits, as the value of its clause,
+ * once the clauses are joined with `OR_JOINER`, after the `(` of a group,
+ * relative to the start of the list's replacement. Only a member written
+ * back as typed or copied as written is located, so its clause's value is
+ * the member itself.
  */
-function locateRegexMembers(
+function locateMembers(
   span: IBracketExpressionSpan,
   members: string[],
   clauses: string[],
-  isGrouped: boolean
-): IRegexMemberSpan[] {
-  const located: IRegexMemberSpan[] = [];
+  isGrouped: boolean,
+  isLocated: (member: string) => boolean
+): IMemberSpan[] {
+  const located: IMemberSpan[] = [];
   let start = isGrouped ? 1 : 0;
   clauses.forEach((clause, index) => {
-    if (isTypedRegexMember(members[index] ?? '')) {
+    if (isLocated(members[index] ?? '')) {
       located.push({
         start: start + span.field.length + 1,
-        end: start + clause.length,
-        isGrouped
+        end: start + clause.length
       });
     }
     start += clause.length + OR_JOINER.length;

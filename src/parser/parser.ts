@@ -43,12 +43,14 @@ import {
 } from './input-parser';
 import {
   IBracketRewrite,
+  IMemberSpan,
   IRegexMemberSpan,
   rewriteQueryForLiqe
 } from './query-rewrite';
 import {
   isQuotedToken,
   measureQueryDelimiters,
+  readQuotedLiteralStarts,
   readRegexSpans,
   splitListMembers
 } from './query-scanner';
@@ -93,13 +95,16 @@ interface IMembershipPlaceholder {
  * never by its value, so no query content can imitate a placeholder and the
  * placeholder text stays constant. `regexMembers` are the regex list
  * members the bracket rewrite wrote back as typed, as spans of that same
- * text; Liqe must read a regex literal at each. `sourceText` is that same
- * text, read back at a literal's location to recover the digits of an
- * integer `Number` would round.
+ * text; Liqe must read a regex literal at each. `quotedTails` are the
+ * quoted list members and range bounds the rewrite copied as written
+ * although they are not one closed literal; Liqe must not read a literal
+ * at any. `sourceText` is that same text, read back at a literal's
+ * location to recover the digits of an integer `Number` would round.
  */
 interface IParseState {
   placeholders: Map<number, IMembershipPlaceholder>;
   regexMembers: IRegexMemberSpan[];
+  quotedTails: IMemberSpan[];
   sourceText: string;
 }
 
@@ -218,6 +223,7 @@ export class QueryParser implements IQueryParser {
     this.parseState = {
       placeholders: new Map(),
       regexMembers: [],
+      quotedTails: [],
       sourceText: ''
     };
     try {
@@ -225,6 +231,7 @@ export class QueryParser implements IQueryParser {
       const preprocessedQuery = this.preprocessQuery(query);
       this.parseState.sourceText = preprocessedQuery;
       const liqeAst = liqeParse(preprocessedQuery);
+      this.assertQuotedTailsUnread(liqeAst);
       const expression = this.convertLiqeAst(liqeAst);
       this.assertMembershipRestored();
       this.assertRegexMembersRead(liqeAst);
@@ -290,6 +297,35 @@ export class QueryParser implements IQueryParser {
   }
 
   /**
+   * Fail when Liqe read the first literal of a quoted list member or range
+   * bound the bracket rewrite copied as written although it is not one
+   * closed literal. The rewrite copies a member that begins and ends with
+   * the same quote, so Liqe reads whatever follows that literal as more
+   * query: `status:["a" OR status:"c"]` reaches Liqe as `status:"a" OR
+   * status:"c"`, a second clause no reading of the typed text yields, and
+   * `status:["a" "b"]` as an implicit-field term. This runs before the AST
+   * conversion so the member, not the clause it smuggled, is reported. A
+   * member Liqe read no literal at was swallowed by a regex Liqe reads from
+   * the text before it (`x:[a] n://(y:["a" OR z:"b"]/` is one regex from
+   * `n:` on), which stays as the search box reads it.
+   *
+   * @param ast Liqe's reading of the rewritten query
+   * @throws {QueryParseError} When Liqe read a literal at such a member
+   */
+  private assertQuotedTailsUnread(ast: LiqeQuery): void {
+    const tails = this.parseState?.quotedTails ?? [];
+    if (tails.length === 0) {
+      return;
+    }
+    const starts = readQuotedLiteralStarts(ast);
+    if (tails.some(tail => starts.has(tail.start))) {
+      throw new QueryParseError(
+        'A quoted list member or range bound was not read as one quoted literal'
+      );
+    }
+  }
+
+  /**
    * Return the membership clause whose placeholder starts where this literal
    * starts, and forget it. Location, not value, identifies the placeholder.
    */
@@ -328,12 +364,13 @@ export class QueryParser implements IQueryParser {
   }
 
   /**
-   * Remember where a lifted membership clause's placeholder and each regex
-   * list member written back as typed will sit in the text handed to Liqe.
-   * The bracket rewrite is the last preprocessing step, so offsets in its
-   * output are offsets in Liqe's input. The membership values are decoded
-   * here, as the rewrite reaches them, so an invalid quoted member fails
-   * before Liqe runs.
+   * Remember where a lifted membership clause's placeholder, each regex
+   * list member written back as typed and each quoted member or bound
+   * copied as written that is not one closed literal will sit in the text
+   * handed to Liqe. The bracket rewrite is the last preprocessing step, so
+   * offsets in its output are offsets in Liqe's input. The membership
+   * values are decoded here, as the rewrite reaches them, so an invalid
+   * quoted member fails before Liqe runs.
    */
   private recordBracketRewrite(rewrite: IBracketRewrite): void {
     const { span, offset } = rewrite;
@@ -344,6 +381,7 @@ export class QueryParser implements IQueryParser {
       });
     }
     this.parseState?.regexMembers.push(...rewrite.regexMembers);
+    this.parseState?.quotedTails.push(...rewrite.quotedTails);
   }
 
   private parseMembershipValues(
