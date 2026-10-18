@@ -120,6 +120,66 @@ export function resolveSchemaFieldCase(
   return `${table.key}.${column.key}`;
 }
 
+/**
+ * The schema narrowed to the table a query selected, which is the one
+ * table either adapter reads a field from. A table the schema does not
+ * declare yields an empty schema, which leaves every field check to the
+ * adapter, as a schema with no property already does.
+ *
+ * @param schema - Tables keyed by name
+ * @param table - The selected table
+ * @returns The schema with only that table
+ *
+ * @example
+ * ```typescript
+ * selectedTableSchema({ items, owners }, 'items'); // { items }
+ * selectedTableSchema({ items, owners }, 'nope'); // {}
+ * ```
+ */
+export function selectedTableSchema(
+  schema: SchemaTables,
+  table: string
+): SchemaTables {
+  if (!Object.prototype.hasOwnProperty.call(schema, table)) {
+    return {};
+  }
+  return { [table]: schema[table] };
+}
+
+/**
+ * Respell the qualifier of a single `table.column` that differs from the
+ * selected table only by ASCII case as the table, the way both adapters
+ * resolve it. The column part, a quoted literal name, a name with no dot or
+ * more than one, an empty side, and a qualifier that names another table
+ * or nothing are left as written.
+ *
+ * @param name - The field as the parser resolved it
+ * @param table - The selected table
+ * @param isLiteral - True when the parser marked the name literal
+ * @returns The name with its qualifier respelled, or as written
+ *
+ * @example
+ * ```typescript
+ * respellTableQualifier('Items.createdAt', 'items', false); // 'items.createdAt'
+ * respellTableQualifier('Other.status', 'items', false); // 'Other.status'
+ * respellTableQualifier('Items.status', 'items', true); // 'Items.status'
+ * ```
+ */
+export function respellTableQualifier(
+  name: string,
+  table: string,
+  isLiteral: boolean
+): string {
+  const parts = readFieldIdentifiers(name, isLiteral);
+  if (parts.length !== 2 || parts[0] === '' || parts[1] === '') {
+    return name;
+  }
+  if (parts[0] === table || foldAsciiCase(parts[0]) !== foldAsciiCase(table)) {
+    return name;
+  }
+  return `${table}.${parts[1]}`;
+}
+
 /** Each name once, in first-seen order. */
 function uniqueNames(names: readonly string[]): string[] {
   return [...new Set(names)];

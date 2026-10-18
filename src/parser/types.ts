@@ -194,12 +194,20 @@ export interface IFieldSchema {
  */
 export interface ISecurityOptionsForContext {
   /**
-   * List of fields that are allowed to be queried
+   * List of fields that are allowed to be queried. Matched the way
+   * `createQueryKit` matches its allowlist for a parser with the same
+   * options: an entry naming a `fieldMappings` alias or its target permits
+   * both, and under `caseInsensitiveFields` the entry and the field are
+   * compared with `A-Z` folded.
    */
   allowedFields?: string[];
 
   /**
-   * List of fields that are denied from being queried
+   * List of fields that are denied from being queried. Matched the way
+   * `createQueryKit` matches its deny list: an entry denies a field
+   * regardless of ASCII case and of a single `table.` qualifier on either
+   * side, and an entry naming a `fieldMappings` alias or its target denies
+   * both.
    */
   denyFields?: string[];
 

@@ -57,6 +57,14 @@ import {
   outsideSignedRangeMessage,
   spellNumerals
 } from './stored-integer';
+import { foldAsciiCase } from '../security/schema-field-case';
+import { DEFAULT_SECURITY_OPTIONS, ISecurityOptions } from '../security/types';
+import {
+  aliasSecurityFields,
+  deniedNameSet,
+  isAllowedName,
+  isDeniedName
+} from '../security/validator';
 
 /**
  * Error thrown when query parsing fails
@@ -1560,7 +1568,40 @@ export class QueryParser implements IQueryParser {
   }
 
   /**
-   * Perform security pre-check against the provided options
+   * The field lists as `createQueryKit` resolves them for a parser with
+   * these options: closed under `fieldMappings`, so an alias and its target
+   * are one entry. An omitted list is empty.
+   */
+  private aliasedFieldLists(
+    options: ISecurityOptionsForContext
+  ): Required<ISecurityOptions> {
+    return aliasSecurityFields(
+      {
+        ...DEFAULT_SECURITY_OPTIONS,
+        allowedFields: options.allowedFields ?? [],
+        denyFields: options.denyFields ?? []
+      },
+      this.options.fieldMappings,
+      this.options.caseInsensitiveFields
+    );
+  }
+
+  /**
+   * The spelling an allowlist entry or a field is compared by: as written,
+   * or with `A-Z` folded under `caseInsensitiveFields`, standing in for the
+   * schema respelling the kit applies and the pre-check has no table
+   * schema for.
+   */
+  private allowlistSpelling(name: string): string {
+    return this.options.caseInsensitiveFields ? foldAsciiCase(name) : name;
+  }
+
+  /**
+   * Perform security pre-check against the provided options. The deny and
+   * allow checks match a referenced field the way the kit's validator does,
+   * over the lists closed under `fieldMappings`: a deny-list entry by any
+   * ASCII case and a single `table.` qualifier, an allowlist entry as
+   * written, folded under `caseInsensitiveFields`.
    */
   private performSecurityCheck(
     structure: IQueryStructure,
@@ -1568,11 +1609,13 @@ export class QueryParser implements IQueryParser {
   ): ISecurityCheckResult {
     const violations: ISecurityViolation[] = [];
     const warnings: ISecurityWarning[] = [];
+    const lists = this.aliasedFieldLists(options);
 
     // Check denied fields
-    if (options.denyFields && options.denyFields.length > 0) {
+    if (lists.denyFields.length > 0) {
+      const deniedNames = deniedNameSet(lists.denyFields);
       for (const field of structure.referencedFields) {
-        if (options.denyFields.includes(field)) {
+        if (isDeniedName(field, deniedNames)) {
           violations.push({
             type: 'denied_field',
             message: `Field "${field}" is not allowed in queries`,
@@ -1583,9 +1626,12 @@ export class QueryParser implements IQueryParser {
     }
 
     // Check allowed fields (if specified, only these fields are allowed)
-    if (options.allowedFields && options.allowedFields.length > 0) {
+    if (lists.allowedFields.length > 0) {
+      const allowedNames = new Set<string>(
+        lists.allowedFields.map(name => this.allowlistSpelling(name))
+      );
       for (const field of structure.referencedFields) {
-        if (!options.allowedFields.includes(field)) {
+        if (!isAllowedName(this.allowlistSpelling(field), allowedNames)) {
           violations.push({
             type: 'field_not_allowed',
             message: `Field "${field}" is not in the list of allowed fields`,

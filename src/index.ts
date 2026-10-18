@@ -16,12 +16,15 @@ import {
   ISecurityOptions,
   QuerySecurityError,
   QuerySecurityValidator,
+  aliasSecurityFields,
   applyEnforcedExclusions,
   canonicalFieldName
 } from './security';
 import {
   canonicalizeSecurityFields,
-  SchemaTables
+  respellTableQualifier,
+  SchemaTables,
+  selectedTableSchema
 } from './security/schema-field-case';
 import { IAdapter, IAdapterOptions, IQueryExecutionOptions } from './adapters';
 import {
@@ -82,7 +85,13 @@ export interface IQueryKitOptions<
   adapter: IAdapter;
 
   /**
-   * The schema to use for query validation
+   * The schema to use for query validation. A query field and an `orderBy`
+   * key are checked against the table the query selected, the one table
+   * either adapter reads a field from, so a property of another table is
+   * rejected before any adapter runs; a `table.` qualifier that differs
+   * from the selected table only by ASCII case is read as that table. A
+   * table the schema does not declare, or one that declares no property,
+   * leaves the field checks to the adapter.
    */
   schema: TSchema;
 
@@ -107,6 +116,10 @@ export interface IQueryKitOptions<
    * respelled as the one schema property differing only by ASCII case, as
    * are `allowedFields`, `denyFields` and the keys of `denyValues`; a name
    * that folds onto two properties is rejected with `QuerySecurityError`.
+   * A `fieldMappings` alias and its target are one field for
+   * `allowedFields`, `denyFields` and the keys of `denyValues`, and an
+   * `enforceExcludedValues` key naming an alias is injected under its
+   * target (see `aliasSecurityFields`).
    *
    * @example
    * parserOptions: {
@@ -186,6 +199,9 @@ export interface IQueryExecutor<TResult> {
 
 /** What the kit needs to resolve a written field name before validation. */
 interface IFieldResolution {
+  /** The table the query selected. */
+  table: string;
+  /** The schema narrowed to that table. */
   schema: SchemaTables;
   parserOptions: IParserOptions;
 }
@@ -374,9 +390,11 @@ function createTimeoutError(timeoutMs: number): QuerySecurityError {
 }
 
 /**
- * Respell a field the parser resolved: under `caseInsensitiveFields`, the
- * folded name becomes the schema property it differs from only by ASCII
- * case, so the allowlist and both adapters see one spelling.
+ * Respell a field the parser resolved: a `table.` qualifier differing from
+ * the selected table only by ASCII case becomes the table, and under
+ * `caseInsensitiveFields` the folded name becomes the schema property it
+ * differs from only by ASCII case, so the allowlist and both adapters see
+ * one spelling.
  *
  * @throws {QuerySecurityError} When the name folds onto two properties
  */
@@ -385,10 +403,11 @@ function resolveQueryField(
   isLiteral: boolean,
   resolution: IFieldResolution
 ): string {
+  const qualified = respellTableQualifier(name, resolution.table, isLiteral);
   if (!resolution.parserOptions.caseInsensitiveFields) {
-    return name;
+    return qualified;
   }
-  return canonicalFieldName(resolution.schema, name, isLiteral);
+  return canonicalFieldName(resolution.schema, qualified, isLiteral);
 }
 
 /**
@@ -510,11 +529,18 @@ export function createQueryKit<
 >(options: IQueryKitOptions<TSchema, TContext>): QueryKit<TSchema, TRows> {
   const parser = new QueryParser(options.parserOptions);
   const parserOptions = options.parserOptions ?? {};
+  const foldsCase = parserOptions.caseInsensitiveFields === true;
   const schema = options.schema as unknown as SchemaTables;
+  // The lists are resolved the way a field is: closed under the aliases
+  // the parser maps, then respelled by the schema under the fold.
   const securityOptions = canonicalizeSecurityFields(
-    resolveSecurityOptions(options.security),
+    aliasSecurityFields(
+      resolveSecurityOptions(options.security),
+      parserOptions.fieldMappings,
+      foldsCase
+    ),
     schema,
-    parserOptions.caseInsensitiveFields === true
+    foldsCase
   );
   const securityValidator = new QuerySecurityValidator(securityOptions);
   const isTolerant = options.tolerant ?? false;
@@ -604,8 +630,13 @@ export function createQueryKit<
 
               // Resolve the sort keys the way the parser resolves a filter
               // field, before any context or timer runs; a virtual field
-              // keeps its own rejection.
-              const resolution: IFieldResolution = { schema, parserOptions };
+              // keeps its own rejection. Every check reads the selected
+              // table, the one table either adapter reads a field from.
+              const resolution: IFieldResolution = {
+                table,
+                schema: selectedTableSchema(schema, table),
+                parserOptions
+              };
               assertNoVirtualSortField(
                 Object.keys(orderByState).map(field =>
                   resolveSortField(field, resolution)
@@ -637,10 +668,16 @@ export function createQueryKit<
                 (name, isLiteral) =>
                   resolveQueryField(name, isLiteral, resolution)
               );
-              securityValidator.validate(respelledExpression, schema);
+              securityValidator.validate(
+                respelledExpression,
+                resolution.schema
+              );
               const sortFields = Object.keys(orderBy);
               if (sortFields.length > 0) {
-                securityValidator.validateSortFields(sortFields, schema);
+                securityValidator.validateSortFields(
+                  sortFields,
+                  resolution.schema
+                );
               }
 
               // Apply enforced exclusions after validation (server-side RBAC enforcement)

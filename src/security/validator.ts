@@ -427,6 +427,36 @@ function schemaFieldNames(schema: SchemaTables | undefined): Set<string> {
 }
 
 /**
+ * Whether a query field names something the schema declares. No schema or
+ * a schema with no property admits every field. A declared name, bare or
+ * as `table.property`, is admitted, and that is the whole rule when
+ * `allowedFields` is empty. A listed field is also admitted when it
+ * resolves by ASCII case to a declared name, as both adapters and the sort
+ * check resolve it, or when it is a dotted path whose first segment is a
+ * declared property, matched as written, the form a JSON path such as
+ * `metadata.tags` takes; a listed name the table lacks is not.
+ */
+function isSchemaQueryField(
+  field: string,
+  schema: SchemaTables | undefined,
+  schemaFields: ReadonlySet<string>,
+  isListed: boolean
+): boolean {
+  if (!schema || schemaFields.size === 0 || schemaFields.has(field)) {
+    return true;
+  }
+  if (!isListed) {
+    return false;
+  }
+  const resolved = resolveSchemaFieldCase(schema, field);
+  if (resolved !== undefined && schemaFields.has(resolved)) {
+    return true;
+  }
+  const dot = field.indexOf('.');
+  return dot > 0 && schemaFields.has(field.slice(0, dot));
+}
+
+/**
  * Resolve a sort key to the schema's spelling. A schema that declares no
  * property leaves the key as written; otherwise the key must resolve, by
  * `resolveSchemaFieldCase`, to a declared name, bare or as `table.property`.
@@ -890,14 +920,18 @@ export class QuerySecurityValidator {
   }
 
   /**
-   * Validate that query fields are allowed and not denied
+   * Validate that query fields are allowed, not denied, and declared.
    *
    * A field is denied when `denyFields` names it under `isDeniedName`, that
    * is, regardless of ASCII case and of a single `table.` qualifier on either
    * side. A non-empty `allowedFields` is checked by `assertAllowedFields`,
-   * which matches as written; with the list empty, a schema admits its
-   * declared names, bare or as `table.field`, and no schema admits every
-   * field.
+   * which matches as written. The schema is checked either way, through
+   * `isSchemaQueryField`: with the list empty it admits its declared names,
+   * bare or as `table.field`; with the list set, the list narrows the schema
+   * rather than replacing it, so a listed field must still name a declared
+   * property, exactly or by ASCII case, or a path into one. No schema, or a
+   * schema with no property, admits every field. `createQueryKit` passes
+   * the schema of the selected table.
    *
    * @private
    * @param expression - The query expression to validate
@@ -915,13 +949,13 @@ export class QuerySecurityValidator {
         throw new QuerySecurityError(INVALID_QUERY_PARAMETERS);
       }
     }
-    if (this.options.allowedFields.length > 0) {
+    const isListed = this.options.allowedFields.length > 0;
+    if (isListed) {
       assertAllowedFields(expression, this.options.allowedFields);
-      return;
     }
     const schemaFields = schemaFieldNames(schema);
     for (const field of fieldSet) {
-      if (schemaFields.size > 0 && !schemaFields.has(field)) {
+      if (!isSchemaQueryField(field, schema, schemaFields, isListed)) {
         throw new QuerySecurityError(INVALID_QUERY_PARAMETERS);
       }
     }
