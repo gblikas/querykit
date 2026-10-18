@@ -1,0 +1,202 @@
+/**
+ * Excluded field values on every engine.
+ *
+ * `enforceExcludedValues: { secret: [1] }` appends `AND secret NOT IN (1)`.
+ * `createQueryKit` already injected it; inline SQL, parameterized SQL, the
+ * Drizzle translator and the Drizzle adapter now apply the same comparison
+ * when they are given the map, after the allowlist and complexity checks,
+ * and return the kit's ids. An omitted or empty map injects nothing.
+ *
+ * The in-memory assertions land with layer 5 (in-memory compare and sort).
+ */
+
+import { createRequire } from 'module';
+import { drizzle } from 'drizzle-orm/better-sqlite3';
+import {
+  integer,
+  sqliteTable,
+  SQLiteSyncDialect,
+  text
+} from 'drizzle-orm/sqlite-core';
+import { DrizzleAdapter } from '../adapters/drizzle';
+import { inMemoryAdapter } from '../adapters/memory';
+import { createQueryKit } from '../index';
+import { QueryParser } from '../parser';
+import { QueryExpression } from '../parser/types';
+import { DrizzleTranslator } from '../translators/drizzle';
+import { SqlTranslator } from '../translators/sql';
+
+const nodeRequire = createRequire(__filename);
+
+interface ISqliteStatement {
+  all(...params: unknown[]): Array<{ id: number }>;
+}
+
+interface ISqliteDatabase {
+  exec(sqlText: string): void;
+  prepare(sqlText: string): ISqliteStatement;
+  close(): void;
+}
+
+interface ISqliteDatabaseConstructor {
+  new (filename: string): ISqliteDatabase;
+}
+
+interface IParameterizedSql {
+  sql: string;
+  params: unknown[];
+}
+
+/** Ids of rows the kit returned, whose row type is not declared here. */
+function idsOf(rows: unknown[]): number[] {
+  return (rows as Array<{ id: number }>).map(row => row.id);
+}
+
+const rows = [
+  { id: 1, status: 'open', secret: 0 },
+  { id: 2, status: 'closed', secret: 1 },
+  { id: 3, status: 'open', secret: 1 }
+];
+
+const items = sqliteTable('items', {
+  id: integer('id'),
+  status: text('status'),
+  secret: integer('secret')
+});
+
+const enforceExcludedValues = { secret: [1] };
+
+function openDatabase(): ISqliteDatabase {
+  const Database = nodeRequire('better-sqlite3') as ISqliteDatabaseConstructor;
+  const database = new Database(':memory:');
+  database.exec(`
+    CREATE TABLE items (id INTEGER PRIMARY KEY, status TEXT, secret INTEGER);
+    INSERT INTO items VALUES (1, 'open', 0), (2, 'closed', 1), (3, 'open', 1);
+  `);
+  return database;
+}
+
+const cases: Array<[string, string, number[], number[]]> = [
+  ['status:open', `("status" = 'open') AND ("secret" NOT IN (1))`, [1], [1, 3]],
+  ['secret:1', `("secret" = 1) AND ("secret" NOT IN (1))`, [], [2, 3]],
+  [
+    'status:open OR secret:1',
+    `(("status" = 'open') OR ("secret" = 1)) AND ("secret" NOT IN (1))`,
+    [1],
+    [1, 2, 3]
+  ]
+];
+
+describe('excluded field values', () => {
+  const parser = new QueryParser();
+  const dialect = new SQLiteSyncDialect();
+  const database = openDatabase();
+  const logged: string[] = [];
+  const db = drizzle(database as never, {
+    logger: { logQuery: (query: string): number => logged.push(query) }
+  });
+  const adapter = new DrizzleAdapter({ db, schema: { items } });
+
+  beforeEach((): void => {
+    logged.length = 0;
+  });
+
+  afterAll((): void => {
+    database.close();
+  });
+
+  function idsOfSql(statement: IParameterizedSql): number[] {
+    return database
+      .prepare(`SELECT id FROM items WHERE ${statement.sql} ORDER BY id`)
+      .all(...statement.params)
+      .map(row => row.id);
+  }
+
+  function compileDrizzle(
+    expression: QueryExpression,
+    translator: DrizzleTranslator,
+    context?: { enforceExcludedValues?: Record<string, number[]> }
+  ): IParameterizedSql {
+    const compiled = dialect.sqlToQuery(
+      translator.translate(expression, context)
+    );
+    return { sql: compiled.sql, params: compiled.params };
+  }
+
+  it.each(cases)(
+    '%s applies the exclusion on every engine',
+    async (query, inlineSql, expectedIds, unfilteredIds) => {
+      const expression = parser.parse(query);
+      const inline = new SqlTranslator({
+        useParameters: false,
+        enforceExcludedValues
+      }).translate(expression) as string;
+      const parameterized = new SqlTranslator({
+        enforceExcludedValues
+      }).translate(expression) as IParameterizedSql;
+      expect(inline).toBe(inlineSql);
+      expect(parameterized.params[parameterized.params.length - 1]).toBe(1);
+      expect(idsOfSql({ sql: inline, params: [] })).toEqual(expectedIds);
+      expect(idsOfSql(parameterized)).toEqual(expectedIds);
+      expect(
+        idsOfSql(
+          compileDrizzle(
+            expression,
+            new DrizzleTranslator({ enforceExcludedValues })
+          )
+        )
+      ).toEqual(expectedIds);
+      expect(
+        idsOfSql(
+          compileDrizzle(expression, new DrizzleTranslator(), {
+            enforceExcludedValues
+          })
+        )
+      ).toEqual(expectedIds);
+      const executed = await adapter.execute<{ id: number }>(
+        'items',
+        expression,
+        { enforceExcludedValues }
+      );
+      expect(executed.map(row => row.id)).toEqual(expectedIds);
+      expect(logged[0]).toContain('"items"."secret" not in (?)');
+      for (const kitAdapter of [
+        adapter,
+        inMemoryAdapter({ records: { items: rows } })
+      ]) {
+        const kit = createQueryKit({
+          adapter: kitAdapter,
+          schema: { items },
+          security: { enforceExcludedValues }
+        });
+        const matched = await kit.query('items').where(query).execute();
+        expect(idsOf(matched)).toEqual(expectedIds);
+      }
+      // Without the map the same engines read the unfiltered rows.
+      expect(
+        idsOfSql(new SqlTranslator().translate(expression) as IParameterizedSql)
+      ).toEqual(unfilteredIds);
+      expect(
+        idsOfSql(
+          compileDrizzle(expression, new DrizzleTranslator(), {
+            enforceExcludedValues: {}
+          })
+        )
+      ).toEqual(unfilteredIds);
+    }
+  );
+
+  // Layer 5 (in-memory compare and sort): the in-memory adapter appends the
+  // comparison before the row loop when its options carry the map.
+  describe.skip('in memory (layer 5)', () => {
+    it.each(cases)('%s applies the exclusion', async (query, _sql, ids) => {
+      const memory = inMemoryAdapter({ records: { items: rows } });
+      const matched = await memory.execute<{ id: number }>(
+        'items',
+        parser.parse(query),
+        { enforceExcludedValues }
+      );
+      expect(matched.map(row => row.id)).toEqual(ids);
+    });
+  });
+});

@@ -12,7 +12,16 @@ import {
 } from '../../parser/types';
 import { quoteFieldIdentifiers } from '../field-identifiers';
 import { likeEscapeClause, toSqlLikePattern } from '../like-pattern';
-import { ITranslator, ITranslatorOptions } from '../types';
+import {
+  enforceTranslationSecurity,
+  resolveTranslationSecurity
+} from '../translation-security';
+import {
+  ITranslationContext,
+  ITranslationSecurity,
+  ITranslator,
+  ITranslatorOptions
+} from '../types';
 
 /**
  * A field name after the translator's own normalization and mapping, with
@@ -82,11 +91,15 @@ export class SqlTranslationError extends Error {
 export class SqlTranslator
   implements ITranslator<ISqlTranslationResult | string>
 {
-  private options: Required<ISqlTranslatorOptions>;
+  private options: Required<
+    Omit<ISqlTranslatorOptions, keyof ITranslationSecurity>
+  > &
+    ITranslationSecurity;
   private params: unknown[] = [];
 
   constructor(options: ISqlTranslatorOptions = {}) {
     this.options = {
+      ...options,
       normalizeFieldNames: options.normalizeFieldNames ?? false,
       fieldMappings: options.fieldMappings ?? {},
       identifierQuote: options.identifierQuote ?? '"',
@@ -96,15 +109,31 @@ export class SqlTranslator
   }
 
   /**
-   * Translate a QueryKit expression to an SQL WHERE clause
+   * Translate a QueryKit expression to an SQL WHERE clause.
+   *
+   * The shared security checks run first, with the settings from the
+   * constructor options overridden by any on the context, and the enforced
+   * exclusions are appended before translation. A `QuerySecurityError` from
+   * those checks is thrown as is, not wrapped as a translation error.
+   *
+   * @param expression The QueryKit expression to translate
+   * @param context Security settings of this translation; omit to use the options
+   * @returns The SQL text, or the text with its parameters when `useParameters` is set
+   * @throws {QuerySecurityError} When the query breaks a cap or names a field outside the allowlist
+   * @throws {SqlTranslationError} When the expression cannot be translated
    */
   public translate(
-    expression: QueryExpression
+    expression: QueryExpression,
+    context: ITranslationContext = {}
   ): ISqlTranslationResult | string {
     this.params = [];
+    const constrained = enforceTranslationSecurity(
+      expression,
+      resolveTranslationSecurity(this.options, context)
+    );
 
     try {
-      const sql = this.translateExpression(expression);
+      const sql = this.translateExpression(constrained);
 
       return this.options.useParameters
         ? { sql, params: [...this.params] }

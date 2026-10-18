@@ -17,7 +17,17 @@ import {
   readFieldIdentifiers
 } from '../field-identifiers';
 import { likeEscapeClause, toSqlLikePattern } from '../like-pattern';
-import { ITranslationContext, ITranslator, ITranslatorOptions } from '../types';
+import { findOwnKeyIgnoringCase } from '../own-key-case';
+import {
+  enforceTranslationSecurity,
+  resolveTranslationSecurity
+} from '../translation-security';
+import {
+  ITranslationContext,
+  ITranslationSecurity,
+  ITranslator,
+  ITranslatorOptions
+} from '../types';
 
 /**
  * The part of a Drizzle column that rewrites a query value for the driver,
@@ -92,10 +102,14 @@ export class DrizzleTranslationError extends Error {
  * Translates QueryKit AST expressions to Drizzle ORM conditions
  */
 export class DrizzleTranslator implements ITranslator<SQL> {
-  private options: Required<IDrizzleTranslatorOptions>;
+  private options: Required<
+    Omit<IDrizzleTranslatorOptions, keyof ITranslationSecurity>
+  > &
+    ITranslationSecurity;
 
   constructor(options: IDrizzleTranslatorOptions = {}) {
     this.options = {
+      ...options,
       normalizeFieldNames: options.normalizeFieldNames ?? false,
       fieldMappings: options.fieldMappings ?? {},
       schema: options.schema ?? {}
@@ -103,19 +117,29 @@ export class DrizzleTranslator implements ITranslator<SQL> {
   }
 
   /**
-   * Translate a QueryKit expression to a Drizzle ORM condition
+   * Translate a QueryKit expression to a Drizzle ORM condition.
+   *
+   * The shared security checks run first, with the settings from the
+   * constructor options overridden by any on the context, and the enforced
+   * exclusions are appended before translation. A `QuerySecurityError` from
+   * those checks is thrown as is, not wrapped as a translation error.
    *
    * @param expression The QueryKit expression to translate
-   * @param context Table the query selects from; bare fields resolve against it
+   * @param context Table the query selects from, which bare fields resolve against, and the security settings of this translation
    * @returns The Drizzle condition
+   * @throws {QuerySecurityError} When the query breaks a cap or names a field outside the allowlist
    * @throws {DrizzleTranslationError} When the expression, an operator, or a field name cannot be translated
    */
   public translate(
     expression: QueryExpression,
     context: ITranslationContext = {}
   ): SQL {
+    const constrained = enforceTranslationSecurity(
+      expression,
+      resolveTranslationSecurity(this.options, context)
+    );
     try {
-      return this.translateExpression(expression, context);
+      return this.translateExpression(constrained, context);
     } catch (error) {
       throw new DrizzleTranslationError(
         `Failed to translate expression: ${error instanceof Error ? error.message : String(error)}`
@@ -464,19 +488,28 @@ export class DrizzleTranslator implements ITranslator<SQL> {
   }
 
   /**
-   * Own-property lookup of a column: `constructor.name` must not resolve the
+   * Own-key lookup of a column. The table key and the column key each
+   * resolve exactly or by the one own key differing only by ASCII case, the
+   * rule SQLite applies to an identifier, so `Items.CreatedAt` reaches the
+   * renamed column `created_at` through its property. Two keys that fold
+   * alike resolve nothing, and `constructor.name` must not resolve the
    * inherited Object constructor as a table and its `name` as a column.
    */
   private columnOf(tableName: string, columnName: string): SQLWrapper | null {
-    if (!Object.prototype.hasOwnProperty.call(this.options.schema, tableName)) {
+    const tableKey = findOwnKeyIgnoringCase(this.options.schema, tableName);
+    if (tableKey === undefined) {
       return null;
     }
-    const table = this.options.schema[tableName] as
+    const table = this.options.schema[tableKey] as
       | Record<string, unknown>
       | undefined;
-    if (!table || !Object.prototype.hasOwnProperty.call(table, columnName)) {
+    if (!table) {
       return null;
     }
-    return table[columnName] as SQLWrapper;
+    const columnKey = findOwnKeyIgnoringCase(table, columnName);
+    if (columnKey === undefined) {
+      return null;
+    }
+    return table[columnKey] as SQLWrapper;
   }
 }

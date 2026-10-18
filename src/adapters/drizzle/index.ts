@@ -10,6 +10,10 @@ import {
   quoteFieldIdentifiers,
   readFieldIdentifiers
 } from '../../translators/field-identifiers';
+import { findOwnKeyIgnoringCase } from '../../translators/own-key-case';
+import { enforceTranslationSecurity } from '../../translators/translation-security';
+import { ITranslationSecurity } from '../../translators/types';
+import { QuerySecurityError } from '../../security/validator';
 import { IAdapter, IAdapterOptions, IQueryExecutionOptions } from '../types';
 import { QueryExpression } from '../../parser/types';
 import { SQL, SQLWrapper, asc, desc, sql } from 'drizzle-orm';
@@ -144,7 +148,16 @@ export class DrizzleAdapter<
   }
 
   /**
-   * Execute a QueryKit expression using Drizzle ORM
+   * Execute a QueryKit expression using Drizzle ORM.
+   *
+   * The shared security checks on the execution options (allowlist, value
+   * length, depth and clause caps) run before `select().from`, so a rejected
+   * query builds nothing and reads nothing; the enforced exclusions are
+   * appended by the translator. A `QuerySecurityError` is thrown as is, not
+   * wrapped as an adapter error.
+   *
+   * @throws {QuerySecurityError} When the query breaks a cap or names a field outside the allowlist
+   * @throws {DrizzleAdapterError} When the table is unknown or the query cannot be built or run
    */
   public async execute<TResult = unknown>(
     tableName: string,
@@ -159,13 +172,22 @@ export class DrizzleAdapter<
       throw new DrizzleAdapterError(`Table ${tableName} not found in schema`);
     }
 
+    const security = this.executionSecurity(options);
+    enforceTranslationSecurity(expression, {
+      ...security,
+      enforceExcludedValues: undefined
+    });
+
     try {
       // Start with a base query
       let query = (this.db as IDrizzleDatabase).select().from(table);
 
       // Add where condition if expression is provided
       if (expression) {
-        const condition = this.translator.translate(expression, { tableName });
+        const condition = this.translator.translate(expression, {
+          tableName,
+          ...security
+        });
         query = query.where(condition);
       }
 
@@ -194,10 +216,28 @@ export class DrizzleAdapter<
       const result = await query;
       return result as TResult[];
     } catch (error) {
+      if (error instanceof QuerySecurityError) {
+        throw error;
+      }
       throw new DrizzleAdapterError(
         `Failed to execute query: ${error instanceof Error ? error.message : String(error)}`
       );
     }
+  }
+
+  /**
+   * The security settings of one execution, read from its options.
+   */
+  private executionSecurity(
+    options?: IDrizzleQueryExecutionOptions
+  ): ITranslationSecurity {
+    return {
+      allowedFields: options?.allowedFields,
+      maxValueLength: options?.maxValueLength,
+      maxQueryDepth: options?.maxQueryDepth,
+      maxClauseCount: options?.maxClauseCount,
+      enforceExcludedValues: options?.enforceExcludedValues
+    };
   }
 
   /**
@@ -295,8 +335,12 @@ export class DrizzleAdapter<
 
   /**
    * Resolve a sort field to a column of the selected table: the table's own
-   * key, or the column part of a single `table.column` whose table part is
-   * the selected table. Anything else is quoted as written.
+   * key, or the column part of a single `table.column` whose table part
+   * resolves to the selected table. Each key resolves exactly or by the one
+   * own key differing only by ASCII case, the rule SQLite applies to an
+   * identifier, so `orderBy('CreatedAt')` and `orderBy('Items.createdAt')`
+   * reach the renamed column through its property. Anything else is quoted
+   * as written for the engine to accept or reject.
    */
   private getSchemaField(
     tableName: string,
@@ -308,18 +352,19 @@ export class DrizzleAdapter<
     if (!table) {
       return null;
     }
-    if (Object.prototype.hasOwnProperty.call(table, fieldName)) {
-      return table[fieldName];
+    const ownKey = findOwnKeyIgnoringCase(table, fieldName);
+    if (ownKey !== undefined) {
+      return table[ownKey];
     }
     const parts = readFieldIdentifiers(fieldName);
-    if (parts.length !== 2 || parts[0] !== tableName) {
+    if (
+      parts.length !== 2 ||
+      findOwnKeyIgnoringCase(this.schema, parts[0] ?? '') !== tableName
+    ) {
       return null;
     }
-    const columnName = parts[1] ?? '';
-    if (Object.prototype.hasOwnProperty.call(table, columnName)) {
-      return table[columnName];
-    }
-    return null;
+    const columnKey = findOwnKeyIgnoringCase(table, parts[1] ?? '');
+    return columnKey === undefined ? null : table[columnKey];
   }
 
   /**

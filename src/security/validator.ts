@@ -144,6 +144,17 @@ function rejectOversizedArray(value: unknown): void {
 }
 
 /**
+ * Whether a value is an object the query must not carry. A `Date`, which a
+ * virtual field resolver may supply from query context and the translators
+ * write as ISO-8601 text, is not one.
+ */
+function isRejectedObjectValue(value: unknown): boolean {
+  return (
+    typeof value === 'object' && value !== null && !(value instanceof Date)
+  );
+}
+
+/**
  * Check one comparison value: a string against the cap, a list against the
  * item cap first and then each string member against the cap, and no object
  * anywhere.
@@ -168,13 +179,13 @@ function assertComparisonValueLength(
           `Query contains a string value in array that exceeds maximum length of ${maxValueLength} characters`
         );
       }
-      if (typeof item === 'object' && item !== null) {
+      if (isRejectedObjectValue(item)) {
         throw new QuerySecurityError('Object values are not allowed in arrays');
       }
     }
     return;
   }
-  if (typeof value === 'object' && value !== null) {
+  if (isRejectedObjectValue(value)) {
     throw new QuerySecurityError('Object values are not allowed');
   }
 }
