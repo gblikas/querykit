@@ -10,7 +10,11 @@
 
 import {
   hasBooleanRangeEndpoint,
+  hasCopiedBracketMember,
   hasNullRangeEndpoint,
+  hasRejectedBracketExpression,
+  hasRejectedListMember,
+  hasStrayBracket,
   ILiteralAt,
   IQueryTextMap,
   isLiqeWhitespace,
@@ -134,8 +138,10 @@ const PATTERNS = {
   // Matches comparison operators: :, :>, :>=, :<, :<=, :!=, :=
   COMPARISON_OPERATOR: /^(:>=|:<=|:!=|:>|:<|:=|:)/,
 
-  // Matches word characters and some special chars (for keys/values)
-  WORD_CHARS: /^[a-zA-Z0-9_.-]+/,
+  // Matches a field name's characters, Liqe's `[\w$.]`. A hyphen never
+  // names a field: in `last-updated:x` the parser reads a bare word and a
+  // negated field, and the leading minus of `-status:open` is the negation.
+  FIELD_NAME_PATTERN: /^[A-Za-z0-9_$.]+/,
 
   // Matches an unquoted value: it ends at ASCII whitespace or a parenthesis.
   // Liqe's whitespace is tab, line feed, vertical tab, form feed and space;
@@ -195,7 +201,7 @@ function parseTerm(
   }
 
   // Try to match a key (word before operator)
-  const keyMatch = remaining.match(PATTERNS.WORD_CHARS);
+  const keyMatch = remaining.match(PATTERNS.FIELD_NAME_PATTERN);
   if (keyMatch) {
     const potentialKey = keyMatch[0];
     const afterKey = remaining.substring(potentialKey.length);
@@ -565,7 +571,21 @@ export function findTrailingLogicalOperator(
  *   or a numeral the parser rejects (an integer outside the signed 64-bit
  *   range, an exponent that underflows to zero);
  * - a closed quote followed by the same quote (`"a""b"`), or a quoted
- *   backslash sequence Liqe does not accept (`"a\q"`, `"\U0041"`).
+ *   backslash sequence Liqe does not accept (`"a\q"`, `"\U0041"`), or a raw
+ *   line feed inside quotes;
+ * - a parenthesis glued to a clause, to `NOT`, to a minus or to another
+ *   group (`AND` and `OR` may touch a group), and a clause-leading minus
+ *   with no tag glued to it;
+ * - a carriage return or any other ASCII control character that is not
+ *   Liqe whitespace, outside quotes, regex and bracket lists;
+ * - a bracket body the parser leaves to Liqe (`[]`, `{abc}`, `[a TO ]`,
+ *   `[* TO *]`, an unclosed opener, `in[a}`), a stray bracket, a list
+ *   member written back unquoted that Liqe refuses (`[AND]`, `[1x]`,
+ *   `["a"b]`, `[[a]]`), or a quoted bound or membership member with a tail;
+ * - a tail glued to a closed quote or regex (`status:"a"b`, `status:/a/ib`),
+ *   a field name that starts with a digit, and an unquoted value that is not
+ *   Liqe's value or number (`a%b`, `-x`, `a=b`, `1x`, `a"b"`) or is exactly
+ *   `AND`, `OR` or `NOT`.
  *
  * @param input The query input string
  * @returns true if the input appears complete, false if it looks incomplete
@@ -612,8 +632,47 @@ const COMPLETENESS_CHECKS: CompletenessCheck[] = [
   hasBareSymbol,
   hasStackedNegation,
   hasBrokenNumeral,
-  hasRejectedQuote
+  hasRejectedQuote,
+  hasQuotedLineFeed,
+  hasGluedParenthesis,
+  hasLoneMinus,
+  hasControlCharacter,
+  (input): boolean => hasRejectedBracketExpression(input),
+  (input): boolean => hasStrayBracket(input),
+  (input): boolean => hasCopiedBracketMember(input),
+  hasRejectedListWord,
+  hasGluedLiteralTail,
+  hasRejectedValueWord
 ];
+
+/**
+ * Liqe's unquoted value, as its grammar writes it.
+ */
+const LIQE_UNQUOTED_VALUE =
+  /^[#$*?@A-Za-z_\u0080-\uffff][\w#$*.?@\u0080-\uffff-]*$/;
+
+/**
+ * The operator words, which Liqe never reads as a value.
+ */
+const LIQE_KEYWORD_VALUE = /^(?:AND|OR|NOT)$/;
+
+/**
+ * Whether `char` is an ASCII control character Liqe accepts nowhere outside
+ * a literal: a code below U+0020 that is not tab, line feed, vertical tab
+ * or form feed, or U+007F.
+ */
+function isRejectedControlCharacter(char: string): boolean {
+  const code = char.charCodeAt(0);
+  if (Number.isNaN(code)) {
+    return false;
+  }
+  return code === 0x7f || (code < 0x20 && !isLiqeWhitespace(char));
+}
+
+/**
+ * The parser's membership opener after a field's colon.
+ */
+const MEMBERSHIP_LIST_OPEN = /^:(?:not\s+in|in)\s*\[/i;
 
 /**
  * Every Unicode space JavaScript's `\s` matches that Liqe does not treat as
@@ -1091,15 +1150,8 @@ function readValueWordAfterOperator(
   ) {
     return null;
   }
-  let end = start;
-  while (end < input.length) {
-    const char = input[end] ?? '';
-    if (map.isCode[end] && (isLiqeWhitespace(char) || /[()]/.test(char))) {
-      break;
-    }
-    end += 1;
-  }
-  return end === start ? null : input.slice(start, end);
+  const word = readWordAt(input, map, start);
+  return word.length === 0 ? null : word;
 }
 
 /**
@@ -1115,6 +1167,220 @@ function hasRejectedQuote(input: string, map: IQueryTextMap): boolean {
       (input[literal.end] === input[literal.start] ||
         hasRejectedEscape(input, literal))
   );
+}
+
+/**
+ * Liqe's string characters exclude a line feed, so a quoted value, member,
+ * bound or field name holding one is a syntax error. A regex body keeps it.
+ */
+function hasQuotedLineFeed(input: string, map: IQueryTextMap): boolean {
+  return map.literals.some(
+    literal =>
+      literal.kind === 'string' &&
+      input.slice(literal.start, literal.end).includes('\n')
+  );
+}
+
+/**
+ * Liqe's implicit operator needs whitespace between two clauses or groups,
+ * `NOT` needs whitespace before its operand, and a minus takes a tag, never
+ * a group. `AND` and `OR` may touch a group on either side. A `(` must
+ * therefore follow the start, Liqe whitespace, `(` or an `AND`/`OR`, and a
+ * `)` must be followed by the end, Liqe whitespace, `)` or an `AND`/`OR`.
+ */
+function hasGluedParenthesis(input: string, map: IQueryTextMap): boolean {
+  for (let index = 0; index < input.length; index += 1) {
+    if (!map.isCode[index] || map.depth[index] !== 0) {
+      continue;
+    }
+    const char = input[index];
+    if (char === '(' && !separatesBeforeGroup(input, map, index)) {
+      return true;
+    }
+    if (char === ')' && !separatesAfterGroup(input, index)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function separatesBeforeGroup(
+  input: string,
+  map: IQueryTextMap,
+  index: number
+): boolean {
+  if (index === 0) {
+    return true;
+  }
+  const before = input[index - 1] ?? '';
+  if (map.isCode[index - 1] && (isLiqeWhitespace(before) || before === '(')) {
+    return true;
+  }
+  return /(?:^|[\s()])(?:AND|OR)$/i.test(input.slice(0, index));
+}
+
+function separatesAfterGroup(input: string, index: number): boolean {
+  const after = input[index + 1];
+  if (after === undefined || isLiqeWhitespace(after) || after === ')') {
+    return true;
+  }
+  const word = readLogicalOperator(input, index + 1);
+  return word === 'AND' || word === 'OR';
+}
+
+/**
+ * A clause-leading minus must touch a tag; one followed by whitespace, the
+ * end of the text or a parenthesis negates nothing and Liqe rejects it. A
+ * minus after `:`, `>`, `[` or `,` is part of a value.
+ */
+function hasLoneMinus(input: string, map: IQueryTextMap): boolean {
+  for (let index = 0; index < input.length; index += 1) {
+    if (
+      map.isCode[index] &&
+      map.depth[index] === 0 &&
+      input[index] === '-' &&
+      startsMinusNegation(input, map, index)
+    ) {
+      const after = input[index + 1];
+      if (
+        after === undefined ||
+        isLiqeWhitespace(after) ||
+        /[()]/.test(after)
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * A carriage return, or any other ASCII control character that is not Liqe
+ * whitespace, parses nowhere outside a literal or a bracket body. The
+ * whitespace the parser accepts between `in` and `[` is skipped.
+ */
+function hasControlCharacter(input: string, map: IQueryTextMap): boolean {
+  let index = 0;
+  while (index < input.length) {
+    if (!map.isCode[index] || map.depth[index] !== 0) {
+      index += 1;
+      continue;
+    }
+    const membership = MEMBERSHIP_LIST_OPEN.exec(input.slice(index));
+    if (membership) {
+      index += membership[0].length - 1;
+      continue;
+    }
+    if (isRejectedControlCharacter(input[index] ?? '')) {
+      return true;
+    }
+    index += 1;
+  }
+  return false;
+}
+
+/**
+ * A list member the rewrite writes back unquoted reaches Liqe as typed, so
+ * `[AND]`, `[1x]` and `[a"b"]` are syntax errors. Operator words are
+ * uppercased first, as the parser does, so `[ and ]` is `AND` while
+ * `[and]` stays the value `and`.
+ */
+function hasRejectedListWord(input: string): boolean {
+  return hasRejectedListMember(
+    uppercaseBooleanOperators(input),
+    isRejectedValueWord
+  );
+}
+
+/**
+ * Whether an unquoted word Liqe reads as a value is one it refuses: exactly
+ * an operator word, or neither its unquoted value nor a numeral the parser
+ * spells. A word that begins a literal or a bracket is left to its own
+ * check.
+ */
+function isRejectedValueWord(word: string): boolean {
+  if (/^["'/[{]/.test(word)) {
+    return false;
+  }
+  if (LIQE_KEYWORD_VALUE.test(word)) {
+    return true;
+  }
+  return !LIQE_UNQUOTED_VALUE.test(word) && !SPELLED_NUMERAL.test(word);
+}
+
+/**
+ * A closed quote or regex must be followed by the end of the text, Liqe
+ * whitespace or `)`; a quoted string may also be a field name, so `:` is
+ * accepted after it. Anything else glued to the literal (`status:"a"b`,
+ * `status:/a/ib`) is a syntax error. A literal inside a bracket body stays
+ * on the parser's rewrite.
+ */
+function hasGluedLiteralTail(input: string, map: IQueryTextMap): boolean {
+  const hasQuoteTail = map.literals.some(literal => {
+    if (!literal.closed || map.depth[literal.start] !== 0) {
+      return false;
+    }
+    const after = input[literal.end];
+    if (after === undefined || isLiqeWhitespace(after) || after === ')') {
+      return false;
+    }
+    return !(literal.kind === 'string' && after === ':');
+  });
+  // A membership list reaches Liqe as one quoted placeholder, so a tail
+  // glued to its closer (`status:in[a]b`) is glued to a quote as well.
+  return (
+    hasQuoteTail ||
+    someBracketExpression(input, span => {
+      const after = input[span.end];
+      return (
+        span.kind === 'membership' &&
+        after !== undefined &&
+        !isLiqeWhitespace(after) &&
+        after !== ')'
+      );
+    })
+  );
+}
+
+/**
+ * The unquoted word after a comparison operator must be Liqe's value or a
+ * numeral the parser spells, and not an operator word; a bare token that
+ * starts like a number must be a numeral. `a%b`, `-x`, `a=b`, `1x`, `2nd`,
+ * `a"b"` and `status:AND` are syntax errors.
+ */
+function hasRejectedValueWord(input: string, map: IQueryTextMap): boolean {
+  for (let index = 0; index < input.length; index += 1) {
+    if (!map.isCode[index] || map.depth[index] !== 0) {
+      continue;
+    }
+    if (input[index] === ':') {
+      const word = readValueWordAfterOperator(input, map, index);
+      if (word !== null && isRejectedValueWord(word)) {
+        return true;
+      }
+    } else if (
+      separatesBeforeField(input, map, index) &&
+      NUMERAL_LIKE_WORD.test(input.slice(index))
+    ) {
+      const word = readWordAt(input, map, index);
+      if (!SPELLED_NUMERAL.test(word)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function readWordAt(input: string, map: IQueryTextMap, start: number): string {
+  let end = start;
+  while (end < input.length) {
+    const char = input[end] ?? '';
+    if (map.isCode[end] && (isLiqeWhitespace(char) || /[()]/.test(char))) {
+      break;
+    }
+    end += 1;
+  }
+  return input.slice(start, end);
 }
 
 function hasRejectedEscape(input: string, literal: ILiteralAt): boolean {

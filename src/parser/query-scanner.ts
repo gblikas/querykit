@@ -403,9 +403,11 @@ export interface IBracketExpressionSpan {
    */
   field: string;
   /**
-   * `membership` for `in[...]` and `not in[...]`, else `bracket`.
+   * `membership` for `in[...]` and `not in[...]`, `bracket` for a plain
+   * opener, and `rejected` when the rewrite leaves the text to Liqe: an
+   * opener with no closer, or a membership list whose closer is not `]`.
    */
-  kind: 'membership' | 'bracket';
+  kind: 'membership' | 'bracket' | 'rejected';
   opener: string;
   closer: string;
   /**
@@ -439,33 +441,286 @@ export function readBracketExpression(
   if (!field || input[field.end] !== ':') {
     return null;
   }
-  const membership = MEMBERSHIP_OPENER.exec(input.slice(field.end + 1));
-  const kind = membership ? 'membership' : 'bracket';
-  const openerIndex = membership
-    ? field.end + membership[0].length
+  // `field:!=[...]` is rewritten to `NOT field:[...]` before the bracket
+  // rewrite, so the not-equals operator may stand before the opener.
+  const operatorEnd = input.startsWith(':!=', field.end)
+    ? field.end + 3
     : field.end + 1;
+  const membership = MEMBERSHIP_OPENER.exec(input.slice(operatorEnd));
+  const kind = membership ? 'membership' : 'bracket';
+  const openerIndex = operatorEnd + (membership ? membership[0].length : 0);
   const opener = input[openerIndex] ?? '';
   if (opener !== '[' && opener !== '{') {
+    return null;
+  }
+  const closeIndex = readBracketEnd(input, openerIndex);
+  const closer = closeIndex === null ? '' : (input[closeIndex] ?? '');
+  const isRejected =
+    closeIndex === null || (kind === 'membership' && closer !== ']');
+  return {
+    start: index,
+    end: closeIndex === null ? openerIndex + 1 : closeIndex + 1,
+    field: field.text,
+    kind: isRejected ? 'rejected' : kind,
+    opener,
+    closer,
+    body: closeIndex === null ? '' : input.slice(openerIndex + 1, closeIndex),
+    bodyStart: openerIndex + 1
+  };
+}
+
+/**
+ * Whether the rewrite would leave a closed bracket body in place for Liqe,
+ * which rejects it: a body of only whitespace; a range (no comma, one
+ * ` TO `) with a `null` or boolean bound, both bounds `*`, or an empty
+ * bound; or a `{...}` body that is neither a comma list nor a range.
+ *
+ * @param span A bracket span
+ * @returns True when the parser does not rewrite the body
+ */
+export function isRejectedBracketBody(span: IBracketExpressionSpan): boolean {
+  if (span.kind !== 'bracket') {
+    return false;
+  }
+  if (span.body.trim().length === 0) {
+    return true;
+  }
+  if (hasCodeComma(span.body)) {
+    return false;
+  }
+  const bounds = splitRangeBounds(span.body);
+  if (!bounds) {
+    return span.opener === '{';
+  }
+  const { min, max } = bounds;
+  return (
+    (min === '*' && max === '*') ||
+    (min !== '*' && min.length === 0) ||
+    (max !== '*' && max.length === 0) ||
+    isRejectedNullRangeBound(min) ||
+    isRejectedNullRangeBound(max) ||
+    isBooleanRangeEndpoint(min) ||
+    isBooleanRangeEndpoint(max)
+  );
+}
+
+/**
+ * Whether a bracket expression in `input` is one the parser's rewrite does
+ * not consume whole: an unclosed opener, a membership list with the wrong
+ * closer, or a body `isRejectedBracketBody` names.
+ *
+ * @param input Query text
+ * @returns True when such an expression is written
+ */
+export function hasRejectedBracketExpression(input: string): boolean {
+  return someBracketExpression(
+    input,
+    span => span.kind === 'rejected' || isRejectedBracketBody(span)
+  );
+}
+
+/**
+ * Whether a span's body is rewritten member by member: a comma list with
+ * either opener, or a `[...]` body with no range separator.
+ *
+ * @param span A bracket span
+ * @returns True for a list body
+ */
+export function isListBody(span: IBracketExpressionSpan): boolean {
+  if (span.kind !== 'bracket' || span.body.trim().length === 0) {
+    return false;
+  }
+  if (hasCodeComma(span.body)) {
+    return true;
+  }
+  return span.opener === '[' && splitRangeBounds(span.body) === null;
+}
+
+/**
+ * Whether a token begins and ends with the same quote, which the rewrite
+ * copies as written.
+ *
+ * @param token A list member or range bound, trimmed
+ * @returns True for a token the rewrite treats as already quoted
+ */
+export function isQuotedToken(token: string): boolean {
+  return (
+    token.length >= 2 &&
+    ((token.startsWith('"') && token.endsWith('"')) ||
+      (token.startsWith("'") && token.endsWith("'")))
+  );
+}
+
+/**
+ * Whether the rewrite writes a list member back unquoted: it is not a quoted
+ * token and holds no whitespace, parenthesis or colon, so Liqe reads it as
+ * typed.
+ *
+ * @param member A list member, trimmed
+ * @returns True when the member reaches Liqe unquoted
+ */
+export function writesBackUnquoted(member: string): boolean {
+  return !isQuotedToken(member) && !/\s|[():]/.test(member);
+}
+
+/**
+ * Whether a list in `input` has a member the rewrite writes back unquoted
+ * that `isRejectedMember` refuses. Membership lists and ranges are not
+ * lists here; their members are quoted or decoded by the parser.
+ *
+ * @param input Query text
+ * @param isRejectedMember Decides one unquoted member
+ * @returns True when such a member is written
+ *
+ * @example
+ * ```typescript
+ * hasRejectedListMember('status:[x, AND]', member => member === 'AND'); // true
+ * ```
+ */
+export function hasRejectedListMember(
+  input: string,
+  isRejectedMember: (member: string) => boolean
+): boolean {
+  return someBracketExpression(
+    input,
+    span =>
+      isListBody(span) &&
+      splitListMembers(span.body).some(
+        member => writesBackUnquoted(member) && isRejectedMember(member)
+      )
+  );
+}
+
+/**
+ * Whether a bracket member or bound is copied as written with a tail glued
+ * to its literal: an unquoted list member that begins with a quote or regex
+ * but does not end with that literal; a range bound the rewrite treats as
+ * quoted that is not one closed literal; or a quoted membership member that
+ * is not one closed literal, which the membership decode refuses.
+ *
+ * @param input Query text
+ * @returns True when such a member is written
+ */
+export function hasCopiedBracketMember(input: string): boolean {
+  return someBracketExpression(input, span => {
+    if (span.kind === 'membership') {
+      return splitListMembers(span.body).some(
+        member => isQuotedToken(member) && !isOneClosedLiteral(member)
+      );
+    }
+    if (isListBody(span)) {
+      return splitListMembers(span.body).some(
+        member =>
+          (isQuotedToken(member) ||
+            (writesBackUnquoted(member) && /^["'/]/.test(member))) &&
+          !isOneClosedLiteral(member)
+      );
+    }
+    const bounds = readRangeBounds(span);
+    return (
+      bounds !== null &&
+      [bounds.min, bounds.max].some(
+        bound => isQuotedToken(bound) && !isOneClosedLiteral(bound)
+      )
+    );
+  });
+}
+
+function isOneClosedLiteral(token: string): boolean {
+  const literal = readLiteralAt(token, 0);
+  return (
+    literal.kind !== 'none' && literal.closed && literal.end === token.length
+  );
+}
+
+/**
+ * The decimals Liqe reads and the spellings the parser turns into one.
+ */
+const SPELLED_DECIMAL = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/;
+
+/**
+ * Whether a `[`, `]`, `{` or `}` in `input` reaches Liqe where Liqe does not
+ * read one: outside the bracket expressions the rewrite consumes and
+ * outside Liqe's own `field:>[decimal TO decimal]` range, or inside a list
+ * member written back unquoted. Brackets in literals, in ranges (whose
+ * bounds are quoted) and in membership lists (whose members are decoded)
+ * are values.
+ *
+ * @param input Query text
+ * @returns True when a bracket is stray
+ */
+export function hasStrayBracket(input: string): boolean {
+  let index = 0;
+  while (index < input.length) {
+    const span = readBracketExpression(input, index);
+    if (span) {
+      if (isListBody(span) && listMemberHoldsBracket(span)) {
+        return true;
+      }
+      index = span.end;
+      continue;
+    }
+    const rangeEnd = readLiqeRangeEnd(input, index);
+    if (rangeEnd !== null) {
+      index = rangeEnd;
+      continue;
+    }
+    const literal = readLiteralAt(input, index);
+    if (literal.kind !== 'none') {
+      index = literal.end;
+      continue;
+    }
+    if (/[[\]{}]/.test(input[index] ?? '')) {
+      return true;
+    }
+    index += 1;
+  }
+  return false;
+}
+
+function listMemberHoldsBracket(span: IBracketExpressionSpan): boolean {
+  return splitListMembers(span.body).some(
+    member =>
+      writesBackUnquoted(member) &&
+      segmentQueryText(member).some(
+        segment => segment.kind === 'code' && /[[\]{}]/.test(segment.text)
+      )
+  );
+}
+
+/**
+ * The end of Liqe's own range at `index`: a field no name character
+ * precedes, a colon, an ordered operator, and `[decimal TO decimal]` or the
+ * `{...}` form with exactly one space on each side of `TO`.
+ */
+function readLiqeRangeEnd(input: string, index: number): number | null {
+  if (followsNameCharacter(input, index)) {
+    return null;
+  }
+  const field = readBracketFieldToken(input, index);
+  if (!field || input[field.end] !== ':') {
+    return null;
+  }
+  const operator = /^(?:>=|<=|>|<|=)/.exec(input.slice(field.end + 1));
+  if (!operator) {
+    return null;
+  }
+  const openerIndex = field.end + 1 + operator[0].length;
+  if (!/[[{]/.test(input[openerIndex] ?? '')) {
     return null;
   }
   const closeIndex = readBracketEnd(input, openerIndex);
   if (closeIndex === null) {
     return null;
   }
-  const closer = input[closeIndex] ?? '';
-  if (kind === 'membership' && closer !== ']') {
+  const bounds = input.slice(openerIndex + 1, closeIndex).split(' TO ');
+  if (
+    bounds.length !== 2 ||
+    !bounds.every(bound => SPELLED_DECIMAL.test(bound))
+  ) {
     return null;
   }
-  return {
-    start: index,
-    end: closeIndex + 1,
-    field: field.text,
-    kind,
-    opener,
-    closer,
-    body: input.slice(openerIndex + 1, closeIndex),
-    bodyStart: openerIndex + 1
-  };
+  return closeIndex + 1;
 }
 
 /**

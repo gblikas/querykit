@@ -842,10 +842,14 @@ describe('Input Parser', () => {
       expect(result.terms[0].key).toBe('created_at');
     });
 
-    it('should handle field names with hyphens', () => {
+    it('does not read a hyphen as part of a field name', () => {
+      // Liqe's field name is `[$A-Z_a-z][\w$.]*`; `last-updated:yesterday`
+      // is a bare word and a negated field, and the parser rejects it.
       const result = parseQueryInput('last-updated:yesterday');
 
-      expect(result.terms[0].key).toBe('last-updated');
+      expect(result.terms[0]).toMatchObject({ key: null, value: 'last' });
+      expect(result.terms[1]).toMatchObject({ key: '-updated' });
+      expect(isInputComplete('last-updated:yesterday')).toBe(false);
     });
 
     it('should handle numeric values', () => {
