@@ -10,9 +10,9 @@
  * with `owners` a second table) is rejected: SQLite has no such column in
  * the FROM clause, and nothing is logged.
  *
- * The in-memory assertions land with layer 5 (in-memory compare and sort),
- * where the adapter resolves a qualifier against its records and rejects
- * one that is not the selected table with an `InMemoryAdapterError`.
+ * The in-memory adapter resolves a qualifier against its records the same
+ * way and rejects one that is not the selected table with an
+ * `InMemoryAdapterError` before any row is read.
  */
 
 import { createRequire } from 'module';
@@ -210,10 +210,9 @@ describe('a table qualifier in another letter case', () => {
     }
   );
 
-  // Layer 5 (in-memory compare and sort): the in-memory adapter reads the
-  // column of a qualifier that resolves to the selected table and rejects
-  // any other qualifier before a row is read.
-  describe.skip('in memory (layer 5)', () => {
+  // The in-memory adapter reads the column of a qualifier that resolves to
+  // the selected table and rejects any other qualifier before a row is read.
+  describe('in memory', () => {
     it.each(resolvedFilters)(
       '%s reads the column',
       async (query, expression, _sql, expectedIds) => {

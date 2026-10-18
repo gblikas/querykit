@@ -7,7 +7,8 @@
  * SQL, the Drizzle translator and the Drizzle adapter, as `createQueryKit`
  * already did. An omitted or empty list allows every field.
  *
- * The in-memory assertions land with layer 5 (in-memory compare and sort).
+ * The in-memory adapter, `filterByExpression` and `filterInMemory` take the
+ * list on their options and reject before any row is read.
  */
 
 import { createRequire } from 'module';
@@ -234,11 +235,7 @@ describe('field allowlist', () => {
     ).rejects.toThrow(QuerySecurityError);
   });
 
-  // Layer 5 (in-memory compare and sort): the in-memory adapter takes the
-  // list on its execution options and rejects before the row loop; layer 5
-  // adds the same cases for filterByExpression and filterInMemory with the
-  // parameters it gives them.
-  describe.skip('in memory (layer 5)', () => {
+  describe('in memory', () => {
     it.each(['secret:1', 'status:open OR secret:1'])(
       'rejects %s before rows are read',
       async query => {
@@ -246,9 +243,57 @@ describe('field allowlist', () => {
         const memory = inMemoryAdapter({ records: { items: rows } });
         await expect(
           memory.execute('items', expression, { allowedFields })
+        ).rejects.toThrow(QuerySecurityError);
+        await expect(
+          memory.execute('items', expression, { allowedFields })
         ).rejects.toThrow(REJECTED);
+        expect(() =>
+          filterByExpression(expression, rows, { allowedFields })
+        ).toThrow(QuerySecurityError);
+        expect(() =>
+          filterInMemory(query, rows, undefined, { allowedFields })
+        ).toThrow(REJECTED);
       }
     );
+
+    it('rejects before a row is read on an empty table', () => {
+      const reads: string[] = [];
+      const watched = [
+        new Proxy(rows[0] as Record<string, unknown>, {
+          get(target, property): unknown {
+            reads.push(String(property));
+            return target[property as string];
+          }
+        })
+      ];
+      expect(() =>
+        filterByExpression(parser.parse('secret:1'), watched, {
+          allowedFields
+        })
+      ).toThrow(QuerySecurityError);
+      expect(reads).toEqual([]);
+    });
+
+    it('still matches status:open with the list', async () => {
+      const expression = parser.parse('status:open');
+      const memory = inMemoryAdapter({ records: { items: rows } });
+      const executed = await memory.execute<{ id: number }>(
+        'items',
+        expression,
+        { allowedFields }
+      );
+      expect(executed.map(row => row.id)).toEqual([1]);
+      expect(
+        filterByExpression(expression, rows, { allowedFields }).map(
+          row => row.id
+        )
+      ).toEqual([1]);
+      expect(
+        filterInMemory('status:open', rows, undefined, { allowedFields }).map(
+          row => row.id
+        )
+      ).toEqual([1]);
+    });
 
     it('still reads rows with no list', () => {
       expect(filterInMemory('secret:1', rows).map(row => row.id)).toEqual([
@@ -256,6 +301,11 @@ describe('field allowlist', () => {
       ]);
       expect(
         filterByExpression(parser.parse('secret:1'), rows).map(row => row.id)
+      ).toEqual([1, 2]);
+      expect(
+        filterByExpression(parser.parse('secret:1'), rows, {
+          allowedFields: []
+        }).map(row => row.id)
       ).toEqual([1, 2]);
     });
   });

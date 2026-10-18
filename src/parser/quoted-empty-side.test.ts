@@ -217,4 +217,10 @@ describe('quoted field names with an empty side of a dot', () => {
       'Invalid field name: table.'
     );
   });
+
+  it('does not read column table or column in memory for a literal name', () => {
+    const columnRows = [{ id: 1, table: 'open', column: 'open' }];
+    expect(filterInMemory('"table.":open', columnRows)).toEqual([]);
+    expect(filterInMemory('".column":open', columnRows)).toEqual([]);
+  });
 });

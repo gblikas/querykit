@@ -7,7 +7,7 @@
  * the Drizzle adapter, as `createQueryKit` already did. The cap is not an
  * option and does not move with `maxValueLength`.
  *
- * The in-memory assertions land with layer 5 (in-memory compare and sort).
+ * The in-memory adapter rejects the list before it walks the table.
  */
 
 import { createRequire } from 'module';
@@ -18,7 +18,8 @@ import {
   SQLiteSyncDialect
 } from 'drizzle-orm/sqlite-core';
 import { DrizzleAdapter } from '../adapters/drizzle';
-import { inMemoryAdapter } from '../adapters/memory';
+import { filterInMemory, inMemoryAdapter } from '../adapters/memory';
+import { filterByExpression } from '../adapters/memory/match-expression';
 import { createQueryKit } from '../index';
 import { QueryParser } from '../parser';
 import { QueryExpression } from '../parser/types';
@@ -178,14 +179,29 @@ describe('array item cap', () => {
     ).toThrow(MESSAGE);
   });
 
-  // Layer 5 (in-memory compare and sort): the in-memory adapter rejects the
-  // list before it walks the table.
-  describe.skip('in memory (layer 5)', () => {
+  describe('in memory', () => {
     it('rejects a 101-item list before rows are read', async () => {
       const memory = inMemoryAdapter({ records: { items: rows } });
       await expect(
         memory.execute('items', parser.parse(membershipQuery(101)))
       ).rejects.toThrow(MESSAGE);
+      expect(() =>
+        filterByExpression(parser.parse(membershipQuery(101)), rows, {
+          maxValueLength: 5000
+        })
+      ).toThrow(MESSAGE);
+      expect(() => filterInMemory(membershipQuery(101), rows)).toThrow(
+        QuerySecurityError
+      );
+    });
+
+    it('still matches a 100-item list', async () => {
+      const memory = inMemoryAdapter({ records: { items: rows } });
+      const matched = await memory.execute<{ id: number }>(
+        'items',
+        parser.parse(membershipQuery(100))
+      );
+      expect(matched.map(row => row.id)).toEqual([1]);
     });
   });
 });

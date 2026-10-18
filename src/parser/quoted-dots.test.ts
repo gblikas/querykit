@@ -218,6 +218,17 @@ describe('quoted field names that contain a dot', () => {
     expect(filterInMemory(query, rows).map(row => row.id)).toEqual([1]);
   });
 
+  it('does not read column b in memory for a literal name without an own key', () => {
+    const columnRows = [
+      { id: 1, b: 'open' },
+      { id: 2, b: 'closed' }
+    ];
+    expect(filterInMemory('"a.b":open', columnRows)).toEqual([]);
+    expect(filterInMemory('a.b:open', columnRows).map(row => row.id)).toEqual([
+      1
+    ]);
+  });
+
   it('keeps unquoted table. one identifier', () => {
     const expression = parser.parse('table.:open');
     expect(expression).toEqual({

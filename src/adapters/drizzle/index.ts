@@ -32,7 +32,7 @@ export interface IDrizzleDatabase {
 export interface IDrizzleQueryBuilder {
   where: (condition: SQL) => IDrizzleQueryBuilder;
   orderBy: (...clauses: SQL[]) => IDrizzleQueryBuilder;
-  limit: (limit: number) => IDrizzleQueryBuilder;
+  limit: (limit: number | SQL) => IDrizzleQueryBuilder;
   offset: (offset: number) => IDrizzleQueryBuilder;
   // This is already a Promise due to Drizzle's thenable implementation
   [Symbol.toStringTag]: string;
@@ -202,9 +202,9 @@ export class DrizzleAdapter<
         }
       }
 
-      // Add limit if specified
-      if (options?.limit !== undefined) {
-        query = query.limit(options.limit);
+      const limit = this.limitClause(options);
+      if (limit !== undefined) {
+        query = query.limit(limit);
       }
 
       // Add offset if specified
@@ -223,6 +223,25 @@ export class DrizzleAdapter<
         `Failed to execute query: ${error instanceof Error ? error.message : String(error)}`
       );
     }
+  }
+
+  /**
+   * The LIMIT of one execution. SQLite rejects an OFFSET with no LIMIT and
+   * reads `LIMIT -1` as no limit, while Drizzle drops a negative number, so
+   * an offset with no limit, or beside a negative limit, is written as the
+   * raw `-1`; a negative limit with no offset is omitted. A non-negative
+   * limit is passed as given.
+   */
+  private limitClause(
+    options?: IDrizzleQueryExecutionOptions
+  ): number | SQL | undefined {
+    const { limit, offset } = options ?? {};
+    if (limit !== undefined && limit >= 0) {
+      return limit;
+    }
+    const hasOffset =
+      limit === undefined ? (offset ?? 0) > 0 : offset !== undefined;
+    return hasOffset ? sql.raw('-1') : undefined;
   }
 
   /**

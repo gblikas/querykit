@@ -7,8 +7,8 @@
  * SQL, the Drizzle translator and the Drizzle adapter, as `createQueryKit`
  * already did. A raised `maxValueLength` still matches it.
  *
- * The in-memory assertions land with layer 5 (in-memory compare and sort);
- * the kit forwarding a raised cap into the adapter lands with layer 6.
+ * The in-memory adapter checks the cap before it walks the table; the kit
+ * forwarding a raised cap into the adapter lands with layer 6.
  */
 
 import { createRequire } from 'module';
@@ -20,7 +20,8 @@ import {
   text
 } from 'drizzle-orm/sqlite-core';
 import { DrizzleAdapter } from '../adapters/drizzle';
-import { inMemoryAdapter } from '../adapters/memory';
+import { filterInMemory, inMemoryAdapter } from '../adapters/memory';
+import { filterByExpression } from '../adapters/memory/match-expression';
 import { createQueryKit } from '../index';
 import { QueryParser } from '../parser';
 import { QueryExpression } from '../parser/types';
@@ -224,9 +225,9 @@ describe('string value length', () => {
     );
   });
 
-  // Layer 5 (in-memory compare and sort): the in-memory adapter checks the
-  // cap before it walks the table and honours a raised cap on its options.
-  describe.skip('in memory (layer 5)', () => {
+  // The in-memory adapter checks the cap before it walks the table and
+  // honours a raised cap on its options, as do the direct functions.
+  describe('in memory', () => {
     it.each([
       [`label:"${OVER_CAP}"`, EQUALITY_MESSAGE],
       [`label:in["${OVER_CAP}"]`, MEMBERSHIP_MESSAGE]
@@ -235,12 +236,21 @@ describe('string value length', () => {
       await expect(
         memory.execute('items', parser.parse(query))
       ).rejects.toThrow(message);
+      expect(() => filterByExpression(parser.parse(query), rows)).toThrow(
+        message
+      );
+      expect(() => filterInMemory(query, rows)).toThrow(message);
       const raised = await memory.execute<{ id: number }>(
         'items',
         parser.parse(query),
         { maxValueLength: 1001 }
       );
       expect(raised.map(row => row.id)).toEqual([2]);
+      expect(
+        filterInMemory(query, rows, undefined, { maxValueLength: 1001 }).map(
+          row => row.id
+        )
+      ).toEqual([2]);
     });
   });
 });

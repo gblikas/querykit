@@ -4,8 +4,13 @@ import {
   QueryExpression,
   QueryValue
 } from '../../parser/types';
+import { readFieldIdentifiers } from '../../translators/field-identifiers';
 import { LIKE_ESCAPE, toSqlLikePattern } from '../../translators/like-pattern';
-import { foldAsciiCase } from '../../translators/own-key-case';
+import {
+  findOwnKeyIgnoringCase,
+  foldAsciiCase
+} from '../../translators/own-key-case';
+import { enforceTranslationSecurity } from '../../translators/translation-security';
 import { InMemoryAdapterError } from './in-memory-adapter-error';
 import {
   compareStored,
@@ -14,6 +19,8 @@ import {
   StoredValue,
   storedValueOf
 } from './stored-value';
+import { assertQualifiersInScope } from './table-qualifier';
+import { IInMemoryFilterOptions } from './types';
 
 /**
  * SQL truth value. `null` means unknown, which a WHERE clause excludes.
@@ -38,31 +45,135 @@ const REGEX_MESSAGE = 'Unsupported operator: REGEX';
  * value, a Date is its ISO-8601 text, NaN is NULL, and every string is
  * greater than every number.
  *
+ * Before any row is read, the shared security checks run on the query as
+ * written (allowlist, value length, depth and clause caps, with the same
+ * `QuerySecurityError` the translators throw) and the enforced exclusions
+ * are appended; then `fieldMappings` rename the fields and, with a
+ * `tableScope`, a `table.column` naming another table is rejected.
+ *
  * This walks the existing AST. It does not parse a second grammar, rank
  * rows, or build an index.
  *
  * @param expression Expression the Drizzle translator would compile
  * @param records Rows to test. Matches keep their original order and identity.
+ * @param options Security settings, field mappings and the selected table
  * @returns Matching rows
+ * @throws {QuerySecurityError} When the query breaks a cap or names a field outside the allowlist
  * @throws {InMemoryAdapterError} When the expression cannot be applied. The
  * check runs before any row is read, so an empty table rejects the same
  * expressions as a populated one.
  *
  * @example
  * const open = filterByExpression(parser.parse('status:active'), tasks);
+ * const safe = filterByExpression(expression, tasks, {
+ *   allowedFields: ['status'],
+ *   enforceExcludedValues: { status: ['hidden'] }
+ * });
  */
 export function filterByExpression<T extends object>(
   expression: QueryExpression,
-  records: readonly T[]
+  records: readonly T[],
+  options: IInMemoryFilterOptions = {}
 ): T[] {
-  assertMatchableExpression(expression);
+  const prepared = prepareExpression(expression, options);
   const matched: T[] = [];
   for (const record of records) {
-    if (expressionTruth(expression, record) === true) {
+    if (expressionTruth(prepared, record) === true) {
       matched.push(record);
     }
   }
   return matched;
+}
+
+/**
+ * Run the security checks, append the exclusions, apply the field mappings,
+ * check the table qualifiers and the shape, in that order, so every check
+ * sees the names the caller wrote and the reader sees the mapped names.
+ *
+ * @param expression Expression as the caller passed it
+ * @param options Security settings, field mappings and the selected table
+ * @returns The expression the rows are tested against
+ * @throws {QuerySecurityError} From the shared checks
+ * @throws {InMemoryAdapterError} From the qualifier and shape checks
+ */
+function prepareExpression(
+  expression: QueryExpression,
+  options: IInMemoryFilterOptions
+): QueryExpression {
+  const constrained = enforceTranslationSecurity(expression, options);
+  const mapped = mapExpressionFields(constrained, options.fieldMappings);
+  if (options.tableScope) {
+    assertQualifiersInScope(mapped, options.tableScope);
+  }
+  assertMatchableExpression(mapped);
+  return mapped;
+}
+
+/**
+ * Apply `fieldMappings` to one field name: an own entry renames it, anything
+ * else (including a prototype name such as `constructor`) is left alone.
+ *
+ * @param field Field name from the expression or the sort options
+ * @param fieldMappings Query field name to row key
+ * @returns The mapped name, or the field itself when it has no mapping
+ *
+ * @example
+ * resolveMappedField('status', { status: 'task_status' }); // 'task_status'
+ * resolveMappedField('toString', { status: 'task_status' }); // 'toString'
+ */
+export function resolveMappedField(
+  field: string,
+  fieldMappings: Record<string, string> = {}
+): string {
+  if (Object.prototype.hasOwnProperty.call(fieldMappings, field)) {
+    return fieldMappings[field] ?? field;
+  }
+  return field;
+}
+
+/**
+ * Return a copy of the expression with every comparison field mapped. A
+ * renamed field loses the parser's literal marking, as it does in the
+ * translators, so the mapped name splits as written. Raw and malformed
+ * nodes are returned unchanged.
+ *
+ * @param expression Expression to rewrite
+ * @param fieldMappings Query field name to row key
+ * @returns The rewritten expression, or the same one when there is no map
+ */
+function mapExpressionFields(
+  expression: QueryExpression,
+  fieldMappings?: Record<string, string>
+): QueryExpression {
+  if (
+    !expression ||
+    !fieldMappings ||
+    Object.keys(fieldMappings).length === 0
+  ) {
+    return expression;
+  }
+  if (expression.type === 'comparison') {
+    const field = resolveMappedField(expression.field, fieldMappings);
+    if (field === expression.field) {
+      return expression;
+    }
+    return {
+      type: 'comparison',
+      field,
+      operator: expression.operator,
+      value: expression.value
+    };
+  }
+  if (expression.type !== 'logical') {
+    return expression;
+  }
+  return {
+    ...expression,
+    left: mapExpressionFields(expression.left, fieldMappings),
+    ...(expression.right && {
+      right: mapExpressionFields(expression.right, fieldMappings)
+    })
+  };
 }
 
 /**
@@ -319,7 +430,11 @@ function comparisonTruth(
   expression: IComparisonExpression,
   record: object
 ): SqlTruth {
-  const fieldValue = readField(record, expression.field);
+  const fieldValue = readRowField(
+    record,
+    expression.field,
+    expression.isLiteral
+  );
   switch (expression.operator) {
     case '==':
       return equalityTruth(fieldValue, expression.value);
@@ -584,17 +699,58 @@ function inTruth(fieldValue: unknown, value: QueryValue): SqlTruth {
 }
 
 /**
- * Read a field by the name stored on the AST.
+ * Read a field off a row the way SQLite resolves the identifiers the
+ * translators write for it. The whole name is read as an own key, exactly
+ * or by the one own key differing only by ASCII case (`Status` reads
+ * `status`). Failing that, a single unmarked `table.column` reads the own
+ * key `column` by the same rule, since SQL addresses column `city` for
+ * `owner.city`; the qualifier itself is not read here but checked by the
+ * table scope. A name the parser marked literal (`"a.b"`, `column.`) is
+ * one identifier and does not fall through. A nested object is not walked
+ * and a prototype property is never read.
  *
  * @param record Row
- * @param field Field name
+ * @param field Field name as the AST or the sort options store it
+ * @param isLiteral True when the parser marked the name one identifier
  * @returns The field value, or undefined when the row has no such key
+ *
+ * @example
+ * readRowField({ status: 'open' }, 'STATUS'); // 'open'
+ * readRowField({ city: 'Austin' }, 'owner.City'); // 'Austin'
+ * readRowField({ city: 'Austin' }, 'owner.city', true); // undefined
  */
-function readField(record: object, field: string): unknown {
-  if (!Object.prototype.hasOwnProperty.call(record, field)) {
+export function readRowField(
+  record: object,
+  field: string,
+  isLiteral?: boolean
+): unknown {
+  const key = resolveRowKey(record, field, isLiteral);
+  if (key === undefined) {
     return undefined;
   }
-  return (record as Record<string, unknown>)[field];
+  return (record as Record<string, unknown>)[key];
+}
+
+/**
+ * @param record Row
+ * @param field Field name
+ * @param isLiteral True when the parser marked the name one identifier
+ * @returns The own key the name resolves to, or undefined
+ */
+function resolveRowKey(
+  record: object,
+  field: string,
+  isLiteral?: boolean
+): string | undefined {
+  const ownKey = findOwnKeyIgnoringCase(record, field);
+  if (ownKey !== undefined) {
+    return ownKey;
+  }
+  const parts = readFieldIdentifiers(field, isLiteral);
+  if (parts.length !== 2 || parts[0] === '' || parts[1] === '') {
+    return undefined;
+  }
+  return findOwnKeyIgnoringCase(record, parts[1] ?? '');
 }
 
 /**

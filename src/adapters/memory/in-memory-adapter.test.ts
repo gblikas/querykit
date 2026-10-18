@@ -427,16 +427,18 @@ describe('in-memory filtering', () => {
       expect(adapter.canExecute(expression)).toBe(false);
     });
 
-    it('rejects a negative limit', async () => {
+    it('reads a negative limit as no limit, like SQLite', async () => {
       const expression: QueryExpression = {
         type: 'comparison',
         field: 'status',
         operator: '==',
         value: 'done'
       };
+      const actual = await adapter.execute('tasks', expression, { limit: -1 });
+      expect(actual).toEqual([inputTasks[2]]);
       await expect(
-        adapter.execute('tasks', expression, { limit: -1 })
-      ).rejects.toThrow('Limit must be a non-negative integer');
+        adapter.execute('tasks', expression, { limit: 1.5 })
+      ).rejects.toThrow('Limit must be an integer');
     });
 
     it('evaluates equality, LIKE, and NOT on a resolved expression', async () => {

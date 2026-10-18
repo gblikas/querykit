@@ -9,8 +9,8 @@
  * Raised caps still run the larger query. A server exclusion is appended
  * after the checks, so a query at either cap still runs with one.
  *
- * The in-memory assertions land with layer 5 (in-memory compare and sort);
- * the kit forwarding raised caps, and raising them by one per injected
+ * The in-memory adapter checks the caps before it walks the table; the kit
+ * forwarding raised caps, and raising them by one per injected
  * exclusion, lands with layer 6.
  */
 
@@ -24,6 +24,7 @@ import {
 } from 'drizzle-orm/sqlite-core';
 import { DrizzleAdapter } from '../adapters/drizzle';
 import { inMemoryAdapter } from '../adapters/memory';
+import { filterByExpression } from '../adapters/memory/match-expression';
 import { createQueryKit } from '../index';
 import { IComparisonExpression, QueryExpression } from '../parser/types';
 import { DrizzleTranslator } from '../translators/drizzle';
@@ -302,9 +303,9 @@ describe('depth and clause caps', () => {
     });
   });
 
-  // Layer 5 (in-memory compare and sort): the in-memory adapter checks the
-  // caps before it walks the table and honours raised caps on its options.
-  describe.skip('in memory (layer 5)', () => {
+  // The in-memory adapter checks the caps before it walks the table and
+  // honours raised caps on its options, as does filterByExpression.
+  describe('in memory', () => {
     it.each([
       [buildComparisonChain(12), DEPTH_MESSAGE, { maxQueryDepth: 11 }],
       [buildBalancedTree(51), CLAUSE_MESSAGE, { maxClauseCount: 51 }]
@@ -313,12 +314,30 @@ describe('depth and clause caps', () => {
       await expect(memory.execute('items', expression)).rejects.toThrow(
         message
       );
+      expect(() => filterByExpression(expression, rows)).toThrow(message);
       const matched = await memory.execute<{ id: number }>(
         'items',
         expression,
         raised
       );
       expect(matched.map(row => row.id)).toEqual([1]);
+      expect(
+        filterByExpression(expression, rows, raised).map(row => row.id)
+      ).toEqual([1]);
+    });
+
+    it('still runs a query at each cap with an exclusion on its options', () => {
+      const enforceExcludedValues = { status: ['hidden'] };
+      for (const expression of [
+        buildComparisonChain(11),
+        buildBalancedTree(50)
+      ]) {
+        expect(
+          filterByExpression(expression, rows, { enforceExcludedValues }).map(
+            row => row.id
+          )
+        ).toEqual([1]);
+      }
     });
   });
 });

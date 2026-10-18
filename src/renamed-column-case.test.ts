@@ -10,8 +10,8 @@
  * kit's schema-derived allowlist still rejects those spellings on every
  * adapter; only the sort keys and the direct adapters reach the column.
  *
- * The in-memory assertions land with layer 5 (in-memory compare and sort),
- * where the row reader resolves the one key differing only by ASCII case.
+ * The in-memory row reader and sort reader resolve the one key differing
+ * only by ASCII case the same way.
  */
 
 import { createRequire } from 'module';
@@ -210,9 +210,9 @@ describe.each<[string, IParserOptions]>([
     }
   );
 
-  // Layer 5 (in-memory compare and sort): the row reader and the sort reader
-  // resolve the one key differing only by ASCII case.
-  describe.skip('in memory (layer 5)', () => {
+  // The row reader and the sort reader resolve the one key differing only
+  // by ASCII case.
+  describe('in memory', () => {
     it.each(filters)('%s reads the property', async (query, _sql, ids) => {
       const matched = await memoryAdapter.execute<IItem>(
         'items',

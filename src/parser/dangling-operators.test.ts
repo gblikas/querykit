@@ -37,9 +37,11 @@ describe('dangling operators', () => {
     expect(() => filterInMemory(query, rows)).toThrow(QueryParseError);
   });
 
+  // `and.status` is one field, a single `table.column`; with no own key of
+  // that name the in-memory reader reads the column `status`.
   it.each([
     ['status:a AND NOT status:b', [1]],
-    ['and.status:a', []],
+    ['and.status:a', [1]],
     ['status:a AND and.status:b', []],
     ['status:a AND(status:b)', []],
     ['note:"AND status:a" OR status:a', [1]]

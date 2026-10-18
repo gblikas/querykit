@@ -232,4 +232,21 @@ describe('unquoted field names with an empty side of a dot', () => {
     }).translate(parser.parse('column.:open'));
     expect(mappedByTranslator).toBe(`"a"."b" = 'open'`);
   });
+
+  it('does not read column column in memory for the literal column.', () => {
+    const columnRows = [{ id: 1, column: 'open' }];
+    expect(filterInMemory('column.:open', columnRows)).toEqual([]);
+  });
+
+  it('reads the renamed column in memory when a mapping drops the flag', () => {
+    const columnRows = [
+      { id: 1, b: 'open' },
+      { id: 2, b: 'closed' }
+    ];
+    expect(
+      filterInMemory('column.:open', columnRows, {
+        fieldMappings: { 'column.': 'a.b' }
+      }).map(row => row.id)
+    ).toEqual([1]);
+  });
 });

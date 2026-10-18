@@ -1,8 +1,14 @@
 import { IAdapter } from '../types';
 import { QueryExpression } from '../../parser/types';
 import { InMemoryAdapterError } from './in-memory-adapter-error';
-import { canMatchExpression, filterByExpression } from './match-expression';
+import {
+  canMatchExpression,
+  filterByExpression,
+  readRowField,
+  resolveMappedField
+} from './match-expression';
 import { compareStoredValues } from './stored-value';
+import { assertQualifierInScope, ITableScope } from './table-qualifier';
 import {
   IInMemoryAdapterOptions,
   IInMemoryQueryExecutionOptions
@@ -12,10 +18,14 @@ import {
  * Adapter that filters an already fetched array with the QueryKit AST.
  *
  * Pass the same expression the Drizzle adapter compiles. Virtual fields and
- * enforced exclusions are already folded into that expression. Sort, limit,
- * and offset run after filtering and do not score relevance. The adapter's
- * `fieldMappings` are applied to comparison and sort fields before any row
- * is read, with own-property lookups as in the Drizzle adapter.
+ * the kit's enforced exclusions are already folded into that expression;
+ * the shared security settings on the execution options (allowlist, value
+ * length, depth and clause caps, exclusions) are checked before any row is
+ * read. The adapter's `fieldMappings` are then applied to comparison and
+ * sort fields with own-property lookups, as in the Drizzle adapter, and a
+ * `table.column` is held to the selected table. Sort, limit, and offset run
+ * after filtering, order values the way SQLite orders a column, and do not
+ * score relevance.
  *
  * @example
  * const adapter = inMemoryAdapter({ records: { tasks } });
@@ -57,9 +67,10 @@ export class InMemoryAdapter implements IAdapter<IInMemoryAdapterOptions> {
    *
    * @param tableName Key in the records map
    * @param expression Resolved QueryKit expression
-   * @param options Result window
+   * @param options Security settings and the result window
    * @returns Matching rows
-   * @throws {InMemoryAdapterError} When the adapter is not initialized, the table is missing, or the window is invalid
+   * @throws {QuerySecurityError} When the query breaks a cap or names a field outside `allowedFields`
+   * @throws {InMemoryAdapterError} When the adapter is not initialized, the table is missing, a field names another table, or the window is invalid
    */
   public async execute<TResult = unknown>(
     tableName: string,
@@ -75,54 +86,23 @@ export class InMemoryAdapter implements IAdapter<IInMemoryAdapterOptions> {
     if (!hasTable || !records) {
       throw new InMemoryAdapterError(`Table ${tableName} not found in records`);
     }
-    this.assertWindow(options);
-    const matched = filterByExpression(
-      mapExpressionFields(expression, field => this.resolveFieldName(field)),
-      records
+    const window = resolveWindow(options);
+    const tableScope: ITableScope = { tableName, records: this.records };
+    const sortFields = resolveSortFields(
+      options?.orderBy,
+      this.fieldMappings,
+      tableScope
     );
-    return applyResultWindow(
-      matched,
-      this.mapWindowFields(options)
-    ) as TResult[];
-  }
-
-  /**
-   * Apply `fieldMappings` to one field name. Own-property lookup, so a name
-   * such as `constructor` is not mapped through the object prototype.
-   *
-   * @param field Field name from the expression or the sort options
-   * @returns The mapped name, or the field itself when it has no mapping
-   */
-  private resolveFieldName(field: string): string {
-    if (Object.prototype.hasOwnProperty.call(this.fieldMappings, field)) {
-      return this.fieldMappings[field] ?? field;
-    }
-    return field;
-  }
-
-  /**
-   * Apply `fieldMappings` to the sort fields of a result window. When two
-   * sort fields map to the same key, the first keeps its direction and the
-   * second is dropped, as a repeated `ORDER BY` key is a no-op in SQL.
-   *
-   * @param options Result window as the caller passed it
-   * @returns The window with mapped sort fields
-   */
-  private mapWindowFields(
-    options?: IInMemoryQueryExecutionOptions
-  ): IInMemoryQueryExecutionOptions | undefined {
-    if (!options?.orderBy) {
-      return options;
-    }
-    // No prototype, so a resolved key such as `__proto__` is an ordinary key.
-    const orderBy = Object.create(null) as Record<string, 'asc' | 'desc'>;
-    for (const [field, direction] of Object.entries(options.orderBy)) {
-      const resolved = this.resolveFieldName(field);
-      if (!(resolved in orderBy)) {
-        orderBy[resolved] = direction;
-      }
-    }
-    return { ...options, orderBy };
+    const matched = filterByExpression(expression, records, {
+      allowedFields: options?.allowedFields,
+      maxValueLength: options?.maxValueLength,
+      maxQueryDepth: options?.maxQueryDepth,
+      maxClauseCount: options?.maxClauseCount,
+      enforceExcludedValues: options?.enforceExcludedValues,
+      fieldMappings: this.fieldMappings,
+      tableScope
+    });
+    return applyResultWindow(matched, sortFields, window) as TResult[];
   }
 
   /**
@@ -137,32 +117,6 @@ export class InMemoryAdapter implements IAdapter<IInMemoryAdapterOptions> {
       return false;
     }
     return canMatchExpression(expression);
-  }
-
-  /**
-   * Reject limits, offsets, and sort directions that are not safe windows.
-   *
-   * @param options Result window
-   * @throws {InMemoryAdapterError} When limit or offset is not a non-negative integer, or a sort direction is not asc or desc
-   */
-  private assertWindow(options?: IInMemoryQueryExecutionOptions): void {
-    if (options?.orderBy) {
-      for (const direction of Object.values(options.orderBy)) {
-        normalizeDirection(direction);
-      }
-    }
-    if (
-      options?.limit !== undefined &&
-      (!Number.isInteger(options.limit) || options.limit < 0)
-    ) {
-      throw new InMemoryAdapterError('Limit must be a non-negative integer');
-    }
-    if (
-      options?.offset !== undefined &&
-      (!Number.isInteger(options.offset) || options.offset < 0)
-    ) {
-      throw new InMemoryAdapterError('Offset must be a non-negative integer');
-    }
   }
 
   /**
@@ -191,61 +145,92 @@ export function inMemoryAdapter(
 }
 
 /**
- * Return a copy of the expression with every comparison field renamed.
- *
- * @param expression Expression to rewrite
- * @param resolve Field name mapping
- * @returns The rewritten expression. Raw and malformed nodes are returned unchanged.
+ * A result window after SQLite's rules: rows to skip and rows to keep.
  */
-function mapExpressionFields(
-  expression: QueryExpression,
-  resolve: (field: string) => string
-): QueryExpression {
-  if (!expression) {
-    return expression;
+interface IResultWindow {
+  offset: number;
+  limit?: number;
+}
+
+/**
+ * Read the limit and offset the way SQLite does. A negative limit is no
+ * limit. A negative offset beside a limit is zero; with no limit it is
+ * rejected, as SQLite rejects a bare OFFSET. A fraction is rejected.
+ *
+ * @param options Result window as the caller passed it
+ * @returns The rows to skip and, when bounded, the rows to keep
+ * @throws {InMemoryAdapterError} When limit or offset is not an integer, or a negative offset has no limit
+ */
+function resolveWindow(
+  options?: IInMemoryQueryExecutionOptions
+): IResultWindow {
+  const { limit, offset } = options ?? {};
+  if (limit !== undefined && !Number.isInteger(limit)) {
+    throw new InMemoryAdapterError('Limit must be an integer');
   }
-  if (expression.type === 'comparison') {
-    return { ...expression, field: resolve(expression.field) };
+  if (offset !== undefined && !Number.isInteger(offset)) {
+    throw new InMemoryAdapterError('Offset must be an integer');
   }
-  if (expression.type !== 'logical') {
-    return expression;
+  if (offset !== undefined && offset < 0 && limit === undefined) {
+    throw new InMemoryAdapterError('Offset must be a non-negative integer');
   }
   return {
-    ...expression,
-    left: mapExpressionFields(expression.left, resolve),
-    ...(expression.right && {
-      right: mapExpressionFields(expression.right, resolve)
-    })
+    offset: Math.max(offset ?? 0, 0),
+    limit: limit === undefined || limit < 0 ? undefined : limit
   };
+}
+
+/**
+ * Map the sort fields and hold each to the selected table. When two keys
+ * map to the same name, the first keeps its direction and the second is
+ * dropped, as a repeated `ORDER BY` key is a no-op in SQL.
+ *
+ * @param orderBy Sort fields as the caller passed them
+ * @param fieldMappings Query field name to row key
+ * @param tableScope The selected table and the records map
+ * @returns Mapped field and direction pairs, in insertion order
+ * @throws {InMemoryAdapterError} When a direction is not asc or desc, or a key names another table
+ */
+function resolveSortFields(
+  orderBy: Record<string, 'asc' | 'desc'> | undefined,
+  fieldMappings: Record<string, string>,
+  tableScope: ITableScope
+): Array<[string, 'asc' | 'desc']> {
+  const fields: Array<[string, 'asc' | 'desc']> = [];
+  const seen = new Set<string>();
+  for (const [field, direction] of Object.entries(orderBy ?? {})) {
+    const normalized = normalizeDirection(direction);
+    const resolved = resolveMappedField(field, fieldMappings);
+    assertQualifierInScope(resolved, false, tableScope);
+    if (!seen.has(resolved)) {
+      seen.add(resolved);
+      fields.push([resolved, normalized]);
+    }
+  }
+  return fields;
 }
 
 /**
  * Sort and slice after the expression has chosen the matching rows.
  *
  * @param records Matching rows
- * @param options Field order, limit, and offset
+ * @param fields Mapped sort fields in order
+ * @param window Rows to skip and rows to keep
  * @returns The requested window. Field order is not a relevance rank.
  */
 function applyResultWindow<T extends object>(
   records: readonly T[],
-  options?: IInMemoryQueryExecutionOptions
+  fields: Array<[string, 'asc' | 'desc']>,
+  window: IResultWindow
 ): T[] {
   const rows = [...records];
-  const orderBy = options?.orderBy;
-  if (orderBy && Object.keys(orderBy).length > 0) {
-    const fields: Array<[string, 'asc' | 'desc']> = Object.entries(orderBy).map(
-      ([field, direction]): [string, 'asc' | 'desc'] => [
-        field,
-        normalizeDirection(direction)
-      ]
-    );
+  if (fields.length > 0) {
     rows.sort((left, right) => compareRows(left, right, fields));
   }
-  const offset = options?.offset ?? 0;
-  if (options?.limit === undefined) {
-    return rows.slice(offset);
+  if (window.limit === undefined) {
+    return rows.slice(window.offset);
   }
-  return rows.slice(offset, offset + options.limit);
+  return rows.slice(window.offset, window.offset + window.limit);
 }
 
 /**
@@ -269,10 +254,11 @@ function normalizeDirection(direction: unknown): 'asc' | 'desc' {
 
 /**
  * Compare two rows by the requested fields, in insertion order. Each field
- * orders the way SQLite orders a column: null and a missing field (and a
- * stored NaN) first, then numbers with a boolean as 0 or 1 and a bigint by
- * value, then text with a Date as its ISO-8601 instant. DESC reverses the
- * values and leaves the nulls last.
+ * is read the way the filter reads it (an own key by ASCII case, else the
+ * column of a single `table.column`) and orders the way SQLite orders a
+ * column: null and a missing field (and a stored NaN) first, then numbers
+ * with a boolean as 0 or 1 and a bigint by value, then text with a Date as
+ * its ISO-8601 instant. DESC reverses the values and leaves the nulls last.
  *
  * @param left Row
  * @param right Row
@@ -286,26 +272,12 @@ function compareRows(
 ): number {
   for (const [field, direction] of fields) {
     const compared = compareStoredValues(
-      readOwnValue(left, field),
-      readOwnValue(right, field)
+      readRowField(left, field),
+      readRowField(right, field)
     );
     if (compared !== 0) {
       return direction === 'desc' ? -compared : compared;
     }
   }
   return 0;
-}
-
-/**
- * Read a field without walking the row's prototype.
- *
- * @param record Row
- * @param field Field name
- * @returns The own value, or undefined when the row has no such key
- */
-function readOwnValue(record: object, field: string): unknown {
-  if (!Object.prototype.hasOwnProperty.call(record, field)) {
-    return undefined;
-  }
-  return (record as Record<string, unknown>)[field];
 }

@@ -8,7 +8,9 @@
 export { InMemoryAdapterError } from './in-memory-adapter-error';
 export { filterInMemory } from './filter-in-memory';
 export { InMemoryAdapter, inMemoryAdapter } from './in-memory-adapter';
+export type { ITableScope } from './table-qualifier';
 export type {
   IInMemoryAdapterOptions,
+  IInMemoryFilterOptions,
   IInMemoryQueryExecutionOptions
 } from './types';

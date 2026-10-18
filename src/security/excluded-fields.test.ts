@@ -7,7 +7,8 @@
  * when they are given the map, after the allowlist and complexity checks,
  * and return the kit's ids. An omitted or empty map injects nothing.
  *
- * The in-memory assertions land with layer 5 (in-memory compare and sort).
+ * The in-memory adapter, `filterByExpression` and `filterInMemory` append
+ * the comparison before the row loop when their options carry the map.
  */
 
 import { createRequire } from 'module';
@@ -19,7 +20,8 @@ import {
   text
 } from 'drizzle-orm/sqlite-core';
 import { DrizzleAdapter } from '../adapters/drizzle';
-import { inMemoryAdapter } from '../adapters/memory';
+import { filterInMemory, inMemoryAdapter } from '../adapters/memory';
+import { filterByExpression } from '../adapters/memory/match-expression';
 import { createQueryKit } from '../index';
 import { QueryParser } from '../parser';
 import { QueryExpression } from '../parser/types';
@@ -186,9 +188,7 @@ describe('excluded field values', () => {
     }
   );
 
-  // Layer 5 (in-memory compare and sort): the in-memory adapter appends the
-  // comparison before the row loop when its options carry the map.
-  describe.skip('in memory (layer 5)', () => {
+  describe('in memory', () => {
     it.each(cases)('%s applies the exclusion', async (query, _sql, ids) => {
       const memory = inMemoryAdapter({ records: { items: rows } });
       const matched = await memory.execute<{ id: number }>(
@@ -197,6 +197,16 @@ describe('excluded field values', () => {
         { enforceExcludedValues }
       );
       expect(matched.map(row => row.id)).toEqual(ids);
+      expect(
+        filterByExpression(parser.parse(query), rows, {
+          enforceExcludedValues
+        }).map(row => row.id)
+      ).toEqual(ids);
+      expect(
+        filterInMemory(query, rows, undefined, { enforceExcludedValues }).map(
+          row => row.id
+        )
+      ).toEqual(ids);
     });
   });
 });
