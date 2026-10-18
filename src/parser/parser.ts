@@ -42,22 +42,22 @@ import {
   QueryToken
 } from './input-parser';
 import {
-  isBooleanRangeEndpoint,
-  isLiqeWhitespace,
-  isRejectedNullRangeBound,
+  IBracketRewrite,
+  IRegexMemberSpan,
+  rewriteQueryForLiqe
+} from './query-rewrite';
+import {
+  isQuotedToken,
   measureQueryDelimiters,
-  readLiteralAt,
   readRegexSpans,
-  splitListMembers,
-  uppercaseBooleanOperators
+  splitListMembers
 } from './query-scanner';
 import {
   exactSqliteInteger,
   isPlainInteger,
   isUnstorableInteger,
   numeralAt,
-  outsideSignedRangeMessage,
-  spellNumerals
+  outsideSignedRangeMessage
 } from './stored-integer';
 import { foldAsciiCase } from '../security/schema-field-case';
 import { DEFAULT_SECURITY_OPTIONS, ISecurityOptions } from '../security/types';
@@ -87,18 +87,6 @@ interface IMembershipPlaceholder {
 }
 
 /**
- * Where a regex list member the bracket rewrite wrote back as typed sits in
- * the text handed to Liqe (`start` and the offset just past it), and whether
- * it stands inside a group the rewrite emitted, whose ` OR ` joiner and
- * closer a regex must not swallow.
- */
-interface IRegexMemberSpan {
-  start: number;
-  end: number;
-  isGrouped: boolean;
-}
-
-/**
  * State of one `parse()` call. `placeholders` are the membership clauses
  * lifted out of the query, keyed by the start offset of their placeholder
  * literal in the text handed to Liqe; a node is matched by that location,
@@ -123,39 +111,6 @@ interface IResolvedField {
   name: string;
   isLiteral: boolean;
 }
-
-/**
- * One rewrite of the query text. `placeholder` is set when the rewrite
- * lifted a membership clause: `offset` locates the placeholder inside `text`.
- * `regexMembers` locates, inside `text`, each regex list member the rewrite
- * wrote back as typed.
- */
-interface IQueryRewrite {
-  text: string;
-  end: number;
-  placeholder?: { offset: number; clause: IMembershipPlaceholder };
-  regexMembers?: IRegexMemberSpan[];
-}
-
-/**
- * Characters that make the bracket rewrite quote an unquoted list member
- * instead of writing it back as typed.
- */
-const QUOTED_MEMBER_CHARACTERS = /\s|[():]/;
-
-/**
- * The text `convertToOrExpression` joins list clauses with.
- */
-const OR_JOINER = ' OR ';
-
-/**
- * Inert quoted value written where a membership clause was lifted out. It
- * is found again by position, so it never has to be unique, and a caller
- * value that decodes to the same text is left alone. No randomness is
- * needed, and the parser keeps working in browsers, where Node's `crypto`
- * module is not available.
- */
-const MEMBERSHIP_PLACEHOLDER = '"\uE000"';
 
 /**
  * Escapes Liqe decodes after a backslash in either quote style, before the
@@ -353,256 +308,42 @@ export class QueryParser implements IQueryParser {
   }
 
   /**
-   * Pre-process a query string to convert non-standard syntax to Liqe-compatible syntax.
-   * Supports:
-   * - Numerals Liqe cannot read: `1e-7` → `0.0000001`, `+1` → `1`, `.5` → `0.5`
-   * - `field:[val1, val2, val3]` → `(field:val1 OR field:val2 OR field:val3)`
-   * - Lowercase boolean operators: `and` → `AND`, `or` → `OR`, `not` → `NOT`
-   *
-   * This keeps the syntax consistent with the `key:value` pattern used throughout QueryKit:
-   * - `priority:>2` (comparison)
-   * - `status:active` (equality)
-   * - `status:[todo, doing, done]` (IN / multiple values)
+   * Pre-process a query string to convert non-standard syntax to
+   * Liqe-compatible syntax, the shared `rewriteQueryForLiqe` the search box
+   * reads too: numerals Liqe cannot read are spelled, lowercase operator
+   * words uppercased, `field:!=` rewritten, `field:in[...]` lifted out as a
+   * placeholder and `field:[val1, val2]` written as
+   * `(field:val1 OR field:val2)`. Where each bracket expression lands is
+   * recorded for the AST conversion and the checks after Liqe.
    *
    * @throws {Error} When a numeral names an integer outside the signed
    * 64-bit range or an exponent that underflows to zero; `parse` wraps it
+   * @throws {QueryParseError} When a quoted membership member is not one
+   * Liqe would read
    */
   private preprocessQuery(query: string): string {
-    let result = query;
-    // Spell exponents and the leading-plus, leading-dot and trailing-dot
-    // forms as plain decimals first, so the bracket rewrite sees numbers and
-    // keeps range bounds and list members numeric.
-    result = spellNumerals(result);
-    // Normalize lowercase boolean operators to uppercase.
-    // Liqe only recognizes uppercase AND, OR, NOT as boolean operators;
-    // lowercase variants are treated as bare search terms causing crashes.
-    result = this.normalizeBooleanOperators(result);
-    // Liqe has no not-equals operator. The input parser and autocomplete
-    // both advertise `:!=`, so rewrite it before parsing.
-    result = this.rewriteInequalityOperators(result);
-    // Bracket lists, date/string ranges, and dotted fields. Liqe ranges only
-    // accept numbers, and a naive `field:[...]` replace corrupts dotted names
-    // and quoted text.
-    result = this.rewriteBracketExpressions(result);
-    return result;
-  }
-
-  /**
-   * Normalize lowercase boolean operators (and, or, not) to their uppercase
-   * equivalents (AND, OR, NOT) while preserving content inside quoted strings.
-   *
-   * Liqe only recognizes uppercase boolean operators. Without normalization,
-   * lowercase variants are parsed as bare search terms, which produces an
-   * incompatible AST that crashes during conversion.
-   */
-  private normalizeBooleanOperators(query: string): string {
-    return uppercaseBooleanOperators(query);
-  }
-
-  /**
-   * Rewrite `field:!=value` to `NOT field:value` outside of literals.
-   * Liqe's comparison operators do not include not-equals. The field may be
-   * bare or quoted, so this scans with the same field reader the bracket
-   * rewrite uses instead of a regex over the unquoted text.
-   */
-  private rewriteInequalityOperators(query: string): string {
-    let result = '';
-    let index = 0;
-    while (index < query.length) {
-      const rewritten = this.matchInequality(query, index);
-      if (rewritten) {
-        result += rewritten.text;
-        index = rewritten.end;
-        continue;
-      }
-      const literal = readLiteralAt(query, index);
-      if (literal.kind !== 'none') {
-        result += query.slice(index, literal.end);
-        index = literal.end;
-        continue;
-      }
-      result += query[index] ?? '';
-      index += 1;
-    }
-    return result;
-  }
-
-  private matchInequality(
-    query: string,
-    index: number
-  ): { text: string; end: number } | null {
-    if (!this.beginsClause(query, index)) {
-      return null;
-    }
-    const field = this.readFieldToken(query, index);
-    if (!field || !query.startsWith(':!=', field.end)) {
-      return null;
-    }
-    return { text: `NOT ${field.text}:`, end: field.end + 3 };
-  }
-
-  /**
-   * Whether a field may begin at `index`: the start of the text, Liqe
-   * whitespace, `(` or a clause-leading minus precedes it, the boundary the
-   * search box requires of a field colon. A `:!=` glued to the value before
-   * it (`status:a*y:!=b`) is left as typed for Liqe to reject, instead of
-   * writing `NOT ` into that value.
-   */
-  private beginsClause(query: string, index: number): boolean {
-    if (index === 0) {
-      return true;
-    }
-    const before = query[index - 1] ?? '';
-    if (before === '-') {
-      return index === 1 || this.separatesClauses(query[index - 2]);
-    }
-    return this.separatesClauses(before);
-  }
-
-  private separatesClauses(char: string | undefined): boolean {
-    return isLiqeWhitespace(char) || char === '(';
-  }
-
-  /**
-   * Rewrite `field:[...]` and `field:{...}` forms Liqe does not accept as-is:
-   * IN lists (including dotted fields) and non-numeric or whitespace ranges.
-   */
-  private rewriteBracketExpressions(query: string): string {
-    let result = '';
-    let index = 0;
-    while (index < query.length) {
-      const rewritten = this.matchBracketExpression(query, index);
-      if (rewritten) {
-        this.recordPlaceholder(result.length, rewritten);
-        this.recordRegexMembers(result.length, rewritten);
-        result += rewritten.text;
-        index = rewritten.end;
-        continue;
-      }
-      const literal = readLiteralAt(query, index);
-      if (literal.kind !== 'none') {
-        result += query.slice(index, literal.end);
-        index = literal.end;
-        continue;
-      }
-      result += query[index] ?? '';
-      index += 1;
-    }
-    return result;
-  }
-
-  /**
-   * Remember where a lifted membership clause's placeholder will sit in the
-   * text handed to Liqe. The bracket rewrite is the last preprocessing step,
-   * so offsets in its output are offsets in Liqe's input.
-   */
-  private recordPlaceholder(outputIndex: number, rewrite: IQueryRewrite): void {
-    if (!rewrite.placeholder) {
-      return;
-    }
-    this.parseState?.placeholders.set(
-      outputIndex + rewrite.placeholder.offset,
-      rewrite.placeholder.clause
+    return rewriteQueryForLiqe(query, rewrite =>
+      this.recordBracketRewrite(rewrite)
     );
   }
 
   /**
-   * Remember where each regex list member the bracket rewrite wrote back as
-   * typed will sit in the text handed to Liqe, for `assertRegexMembersRead`.
+   * Remember where a lifted membership clause's placeholder and each regex
+   * list member written back as typed will sit in the text handed to Liqe.
+   * The bracket rewrite is the last preprocessing step, so offsets in its
+   * output are offsets in Liqe's input. The membership values are decoded
+   * here, as the rewrite reaches them, so an invalid quoted member fails
+   * before Liqe runs.
    */
-  private recordRegexMembers(
-    outputIndex: number,
-    rewrite: IQueryRewrite
-  ): void {
-    for (const member of rewrite.regexMembers ?? []) {
-      this.parseState?.regexMembers.push({
-        ...member,
-        start: outputIndex + member.start,
-        end: outputIndex + member.end
+  private recordBracketRewrite(rewrite: IBracketRewrite): void {
+    const { span, offset } = rewrite;
+    if (span.kind === 'membership') {
+      this.parseState?.placeholders.set(offset + span.field.length + 1, {
+        operator: span.isNegatedMembership ? 'NOT IN' : 'IN',
+        value: this.parseMembershipValues(span.body)
       });
     }
-  }
-
-  private matchBracketExpression(
-    query: string,
-    index: number
-  ): IQueryRewrite | null {
-    if (index > 0 && /[\w$.]/.test(query[index - 1] ?? '')) {
-      return null;
-    }
-    const field = this.readFieldToken(query, index);
-    if (!field) {
-      return null;
-    }
-    if (query[field.end] !== ':') {
-      return null;
-    }
-    const membership = this.matchMembershipOperator(query, field.end + 1);
-    if (membership) {
-      const closeIndex = this.readBracketEnd(query, membership.openIndex);
-      // Membership always opens with `[`; a `}` closer is not a list.
-      if (closeIndex === null || query[closeIndex] !== ']') {
-        return null;
-      }
-      const body = query.slice(membership.openIndex + 1, closeIndex);
-      return {
-        ...this.rewriteMembership(field.text, membership.operatorText, body),
-        end: closeIndex + 1
-      };
-    }
-    const openerIndex = field.end + 1;
-    const opener = query[openerIndex];
-    if (opener !== '[' && opener !== '{') {
-      return null;
-    }
-    const closeIndex = this.readBracketEnd(query, openerIndex);
-    if (closeIndex === null) {
-      return null;
-    }
-    const closer = query[closeIndex] ?? '';
-    const body = query.slice(openerIndex + 1, closeIndex);
-    const replacement = this.rewriteBracketBody(
-      field.text,
-      opener,
-      closer,
-      body
-    );
-    if (replacement === null) {
-      return null;
-    }
-    return { ...replacement, end: closeIndex + 1 };
-  }
-
-  /**
-   * Liqe has no membership operator. `field:in[...]` and `field:not in[...]`
-   * are the strings the query builder emits, so recognize them before the
-   * bracket-list rewrite and keep the values for the AST.
-   */
-  private matchMembershipOperator(
-    query: string,
-    index: number
-  ): { openIndex: number; operatorText: string } | null {
-    const match = /^(not\s+in|in)\s*\[/i.exec(query.slice(index));
-    if (!match) {
-      return null;
-    }
-    return {
-      operatorText: match[1] ?? 'in',
-      openIndex: index + match[0].length - 1
-    };
-  }
-
-  private rewriteMembership(
-    field: string,
-    operatorText: string,
-    body: string
-  ): Omit<IQueryRewrite, 'end'> {
-    const operator = /^not/i.test(operatorText) ? 'NOT IN' : 'IN';
-    const value = this.parseMembershipValues(body);
-    return {
-      text: `${field}:${MEMBERSHIP_PLACEHOLDER}`,
-      placeholder: { offset: field.length + 1, clause: { operator, value } }
-    };
+    this.parseState?.regexMembers.push(...rewrite.regexMembers);
   }
 
   private parseMembershipValues(
@@ -611,7 +352,10 @@ export class QueryParser implements IQueryParser {
     if (body.trim().length === 0) {
       return [];
     }
-    return this.parseCommaSeparatedValues(body).map(token =>
+    // The split is the scanner's `splitListMembers`, which the search box
+    // mirrors, so a comma inside a string or regex literal stays in its
+    // member.
+    return splitListMembers(body).map(token =>
       this.parseMembershipToken(token)
     );
   }
@@ -619,7 +363,7 @@ export class QueryParser implements IQueryParser {
   private parseMembershipToken(
     token: string
   ): string | number | boolean | null {
-    if (this.isQuotedToken(token)) {
+    if (isQuotedToken(token)) {
       return decodeQuotedLiteral(token);
     }
     if (token === 'null') {
@@ -638,285 +382,6 @@ export class QueryParser implements IQueryParser {
       return Number(token);
     }
     return token;
-  }
-
-  private isQuotedToken(token: string): boolean {
-    return (
-      token.length >= 2 &&
-      ((token.startsWith('"') && token.endsWith('"')) ||
-        (token.startsWith("'") && token.endsWith("'")))
-    );
-  }
-
-  private readFieldToken(
-    query: string,
-    index: number
-  ): { text: string; end: number } | null {
-    const literal = readLiteralAt(query, index);
-    if (literal.kind === 'string' && literal.closed) {
-      return { text: query.slice(index, literal.end), end: literal.end };
-    }
-    const match = /^[A-Za-z_$][\w$.]*/.exec(query.slice(index));
-    if (!match) {
-      return null;
-    }
-    return { text: match[0], end: index + match[0].length };
-  }
-
-  private readBracketEnd(query: string, openIndex: number): number | null {
-    let depth = 1;
-    let index = openIndex + 1;
-    while (index < query.length) {
-      const literal = readLiteralAt(query, index);
-      if (literal.kind !== 'none') {
-        index = literal.end;
-        continue;
-      }
-      const char = query[index];
-      if (char === '[' || char === '{') {
-        depth += 1;
-      } else if (char === ']' || char === '}') {
-        depth -= 1;
-        if (depth === 0) {
-          return index;
-        }
-      }
-      index += 1;
-    }
-    return null;
-  }
-
-  private rewriteBracketBody(
-    field: string,
-    opener: string,
-    closer: string,
-    body: string
-  ): Omit<IQueryRewrite, 'end'> | null {
-    if (body.trim().length === 0) {
-      return null;
-    }
-    if (this.hasCodeComma(body)) {
-      return this.convertToOrExpression(field, body);
-    }
-    const bounds = this.splitRangeBounds(body);
-    if (bounds) {
-      const range = this.formatRange(
-        field,
-        opener,
-        closer,
-        bounds.min,
-        bounds.max
-      );
-      return range === null ? null : { text: range };
-    }
-    if (opener === '[') {
-      return this.convertToOrExpression(field, body);
-    }
-    return null;
-  }
-
-  private hasCodeComma(body: string): boolean {
-    let index = 0;
-    while (index < body.length) {
-      const literal = readLiteralAt(body, index);
-      if (literal.kind !== 'none') {
-        index = literal.end;
-        continue;
-      }
-      if (body[index] === ',') {
-        return true;
-      }
-      index += 1;
-    }
-    return false;
-  }
-
-  private splitRangeBounds(body: string): { min: string; max: string } | null {
-    const matches: Array<{ start: number; end: number }> = [];
-    let index = 0;
-    while (index < body.length) {
-      const literal = readLiteralAt(body, index);
-      if (literal.kind !== 'none') {
-        index = literal.end;
-        continue;
-      }
-      const separator = /^\s+to\s+/i.exec(body.slice(index));
-      if (separator) {
-        matches.push({ start: index, end: index + separator[0].length });
-        index += separator[0].length;
-        continue;
-      }
-      index += 1;
-    }
-    if (matches.length !== 1) {
-      return null;
-    }
-    const match = matches[0];
-    if (!match) {
-      return null;
-    }
-    return {
-      min: body.slice(0, match.start).trim(),
-      max: body.slice(match.end).trim()
-    };
-  }
-
-  /**
-   * Rewrite a `[min TO max]` range as two comparisons. Returns null, so the
-   * original text reaches Liqe and is rejected there, when both bounds are
-   * open, a bound is empty, or a bound is the unquoted keyword `null`,
-   * `true` or `false`: no engine orders a column against those, and quoting
-   * them would compare with the texts `"null"`, `"true"` and `"false"`.
-   */
-  private formatRange(
-    field: string,
-    opener: string,
-    closer: string,
-    min: string,
-    max: string
-  ): string | null {
-    if (min === '*' && max === '*') {
-      return null;
-    }
-    if (
-      (min !== '*' && min.length === 0) ||
-      (max !== '*' && max.length === 0)
-    ) {
-      return null;
-    }
-    if (isRejectedNullRangeBound(min) || isRejectedNullRangeBound(max)) {
-      return null;
-    }
-    if (isBooleanRangeEndpoint(min) || isBooleanRangeEndpoint(max)) {
-      return null;
-    }
-    const minOperator = opener === '{' ? '>' : '>=';
-    const maxOperator = closer === '}' ? '<' : '<=';
-    const parts: string[] = [];
-    if (min !== '*') {
-      parts.push(this.formatComparison(field, minOperator, min));
-    }
-    if (max !== '*') {
-      parts.push(this.formatComparison(field, maxOperator, max));
-    }
-    if (parts.length === 2) {
-      return `(${parts[0]} AND ${parts[1]})`;
-    }
-    return parts[0] ?? null;
-  }
-
-  private formatComparison(
-    field: string,
-    operator: string,
-    bound: string
-  ): string {
-    if (/^-?(?:\d+)(?:\.\d+)?$/.test(bound)) {
-      return `${field}:${operator}${bound}`;
-    }
-    if (this.isQuotedToken(bound)) {
-      return `${field}:${operator}${bound}`;
-    }
-    const escaped = bound.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-    return `${field}:${operator}"${escaped}"`;
-  }
-
-  /**
-   * Convert a field and comma-separated values to an OR expression string,
-   * locating in it each regex member written back as typed.
-   */
-  private convertToOrExpression(
-    field: string,
-    valuesStr: string
-  ): Omit<IQueryRewrite, 'end'> {
-    // Parse values respecting quoted strings (commas inside quotes are preserved)
-    const values = this.parseCommaSeparatedValues(valuesStr);
-    if (values.length === 0) {
-      return { text: `${field}:""` };
-    }
-    const clauses = values.map((v: string) => this.formatFieldValue(field, v));
-    if (clauses.length === 1) {
-      return {
-        text: clauses[0] ?? '',
-        regexMembers: this.locateRegexMembers(field, values, clauses, false)
-      };
-    }
-    // Build OR expression: (field:val1 OR field:val2 OR ...)
-    return {
-      text: `(${clauses.join(OR_JOINER)})`,
-      regexMembers: this.locateRegexMembers(field, values, clauses, true)
-    };
-  }
-
-  /**
-   * Where each regex member written back as typed sits once the clauses
-   * are joined with `OR_JOINER`, after the `(` of a group.
-   */
-  private locateRegexMembers(
-    field: string,
-    values: string[],
-    clauses: string[],
-    isGrouped: boolean
-  ): IRegexMemberSpan[] {
-    const members: IRegexMemberSpan[] = [];
-    let start = isGrouped ? 1 : 0;
-    clauses.forEach((clause, index) => {
-      if (this.isTypedRegexMember(values[index] ?? '')) {
-        members.push({
-          start: start + field.length + 1,
-          end: start + clause.length,
-          isGrouped
-        });
-      }
-      start += clause.length + OR_JOINER.length;
-    });
-    return members;
-  }
-
-  /**
-   * Whether `formatFieldValue` writes `value` back as typed and Liqe reads
-   * a regex literal there: an unquoted member that begins with a slash and
-   * holds no character that makes the rewrite quote it.
-   */
-  private isTypedRegexMember(value: string): boolean {
-    return value.startsWith('/') && !QUOTED_MEMBER_CHARACTERS.test(value);
-  }
-
-  /**
-   * Parse a comma-separated string into values, respecting string and regex
-   * literals. A comma inside a literal is part of the value, so a regex
-   * whose body holds a comma stays one member. The split is the scanner's
-   * `splitListMembers`, which the search box mirrors.
-   *
-   * Examples:
-   * - `a, b, c` → ['a', 'b', 'c']
-   * - `"John, Jr.", Jane` → ['"John, Jr."', 'Jane']
-   * - `'hello, world', test` → ["'hello, world'", 'test']
-   * - `/a,b/, c` → ['/a,b/', 'c']
-   */
-  private parseCommaSeparatedValues(input: string): string[] {
-    return splitListMembers(input);
-  }
-
-  /**
-   * Format a field:value pair, quoting the value if necessary
-   */
-  private formatFieldValue(field: string, value: string): string {
-    // If the value is already quoted, use it as-is
-    if (
-      (value.startsWith('"') && value.endsWith('"')) ||
-      (value.startsWith("'") && value.endsWith("'"))
-    ) {
-      return `${field}:${value}`;
-    }
-
-    // If value contains spaces or special characters, quote it.
-    // Escape backslashes first so a later quote escape is not doubled,
-    // and so `\b` stays a backslash rather than a backspace.
-    if (QUOTED_MEMBER_CHARACTERS.test(value)) {
-      const escapedValue = value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-      return `${field}:"${escapedValue}"`;
-    }
-    return `${field}:${value}`;
   }
 
   /**

@@ -446,6 +446,16 @@ export interface IBracketExpressionSpan {
    * opener with no closer, or a membership list whose closer is not `]`.
    */
   kind: 'membership' | 'bracket' | 'rejected';
+  /**
+   * `:!=` when the not-equals operator stands between the field and the
+   * opener, which the parser's inequality rewrite turns into `NOT field:`
+   * before its bracket rewrite runs; `:` otherwise.
+   */
+  operator: ':' | ':!=';
+  /**
+   * Whether a membership span's word is `not in` rather than `in`.
+   */
+  isNegatedMembership: boolean;
   opener: string;
   closer: string;
   /**
@@ -475,15 +485,14 @@ export function readBracketExpression(
   if (followsNameCharacter(input, index)) {
     return null;
   }
-  const field = readBracketFieldToken(input, index);
+  const field = readFieldToken(input, index);
   if (!field || input[field.end] !== ':') {
     return null;
   }
   // `field:!=[...]` is rewritten to `NOT field:[...]` before the bracket
   // rewrite, so the not-equals operator may stand before the opener.
-  const operatorEnd = input.startsWith(':!=', field.end)
-    ? field.end + 3
-    : field.end + 1;
+  const isNotEquals = input.startsWith(':!=', field.end);
+  const operatorEnd = field.end + (isNotEquals ? 3 : 1);
   const membership = MEMBERSHIP_OPENER.exec(input.slice(operatorEnd));
   const kind = membership ? 'membership' : 'bracket';
   const openerIndex = operatorEnd + (membership ? membership[0].length : 0);
@@ -500,6 +509,8 @@ export function readBracketExpression(
     end: closeIndex === null ? openerIndex + 1 : closeIndex + 1,
     field: field.text,
     kind: isRejected ? 'rejected' : kind,
+    operator: isNotEquals ? ':!=' : ':',
+    isNegatedMembership: membership !== null && /^not/i.test(membership[0]),
     opener,
     closer,
     body: closeIndex === null ? '' : input.slice(openerIndex + 1, closeIndex),
@@ -595,6 +606,12 @@ export function isQuotedToken(token: string): boolean {
 }
 
 /**
+ * Characters that make the bracket rewrite quote an unquoted list member
+ * instead of writing it back as typed.
+ */
+export const QUOTED_MEMBER_CHARACTERS = /\s|[():]/;
+
+/**
  * Whether the rewrite writes a list member back unquoted: it is not a quoted
  * token and holds no whitespace, parenthesis or colon, so Liqe reads it as
  * typed.
@@ -603,7 +620,7 @@ export function isQuotedToken(token: string): boolean {
  * @returns True when the member reaches Liqe unquoted
  */
 export function writesBackUnquoted(member: string): boolean {
-  return !isQuotedToken(member) && !/\s|[():]/.test(member);
+  return !isQuotedToken(member) && !QUOTED_MEMBER_CHARACTERS.test(member);
 }
 
 /**
@@ -937,7 +954,7 @@ function readLiqeRangeEnd(input: string, index: number): number | null {
   if (followsNameCharacter(input, index)) {
     return null;
   }
-  const field = readBracketFieldToken(input, index);
+  const field = readFieldToken(input, index);
   if (!field) {
     return null;
   }
@@ -1175,7 +1192,16 @@ function followsNameCharacter(input: string, index: number): boolean {
   return index > 0 && /[\w$.]/.test(input[index - 1] ?? '');
 }
 
-function readBracketFieldToken(
+/**
+ * The field written at `index`, as the parser's rewrites read one: a closed
+ * quoted string, or a bare name of Liqe's field characters that starts
+ * with a letter, `_` or `$`.
+ *
+ * @param input Query text
+ * @param index Index where a field might begin
+ * @returns The field as written and the index just past it, or null
+ */
+export function readFieldToken(
   input: string,
   index: number
 ): { text: string; end: number } | null {
