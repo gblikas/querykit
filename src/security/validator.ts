@@ -4,6 +4,11 @@ import {
   QueryValue
 } from '../parser/types';
 import {
+  foldAsciiCase,
+  resolveSchemaFieldCase,
+  SchemaTables
+} from './schema-field-case';
+import {
   DEFAULT_SECURITY_OPTIONS,
   DeniedValue,
   EnforcedExclusions,
@@ -373,11 +378,75 @@ export function applyEnforcedExclusions(
 }
 
 /**
- * Fold `A-Z` to `a-z` and nothing else, the case rule SQLite applies to an
- * identifier and both adapters apply when they resolve a field to a column.
+ * Respell a field as the schema's property under `caseInsensitiveFields`,
+ * through `resolveSchemaFieldCase`: a name that folds onto two properties
+ * differing only by case names no column either adapter could agree on and
+ * is rejected with the allowlist's wording, as a filter and as a sort key.
+ *
+ * @param schema - Tables keyed by name
+ * @param name - The field as the parser folded it
+ * @param isLiteral - True when the parser marked the name literal
+ * @returns The schema spelling, or the name as written when it names nothing
+ * @throws {QuerySecurityError} `Invalid query parameters` for an ambiguous name
+ *
+ * @example
+ * ```typescript
+ * canonicalFieldName({ items: { createdAt: 1 } }, 'createdat', false); // 'createdAt'
+ * ```
  */
-function foldAsciiCase(name: string): string {
-  return name.replace(/[A-Z]/g, letter => letter.toLowerCase());
+export function canonicalFieldName(
+  schema: SchemaTables,
+  name: string,
+  isLiteral: boolean
+): string {
+  const resolved = resolveSchemaFieldCase(schema, name, isLiteral);
+  if (resolved === undefined) {
+    throw new QuerySecurityError(INVALID_QUERY_PARAMETERS);
+  }
+  return resolved;
+}
+
+/**
+ * Every name a schema declares: each property bare and as `table.property`.
+ * Enumerable inherited keys count, as they always have for the filter check.
+ */
+function schemaFieldNames(schema: SchemaTables | undefined): Set<string> {
+  const schemaFields = new Set<string>();
+  if (!schema) {
+    return schemaFields;
+  }
+  for (const table in schema) {
+    if (typeof schema[table] === 'object') {
+      for (const field in schema[table]) {
+        schemaFields.add(`${table}.${field}`);
+        schemaFields.add(field);
+      }
+    }
+  }
+  return schemaFields;
+}
+
+/**
+ * Resolve a sort key to the schema's spelling. A schema that declares no
+ * property leaves the key as written; otherwise the key must resolve, by
+ * `resolveSchemaFieldCase`, to a declared name, bare or as `table.property`.
+ *
+ * @throws {QuerySecurityError} `Invalid query parameters` for a key the
+ * schema does not declare or that folds onto two properties
+ */
+function resolveSchemaSortField(
+  field: string,
+  schema: SchemaTables | undefined,
+  schemaFields: ReadonlySet<string>
+): string {
+  if (!schema || schemaFields.size === 0) {
+    return field;
+  }
+  const resolved = resolveSchemaFieldCase(schema, field);
+  if (resolved === undefined || !schemaFields.has(resolved)) {
+    throw new QuerySecurityError(INVALID_QUERY_PARAMETERS);
+  }
+  return resolved;
 }
 
 /**
@@ -850,20 +919,56 @@ export class QuerySecurityValidator {
       assertAllowedFields(expression, this.options.allowedFields);
       return;
     }
-    if (!schema) {
-      return;
-    }
-    const schemaFields = new Set<string>();
-    for (const table in schema) {
-      if (typeof schema[table] === 'object') {
-        for (const field in schema[table]) {
-          schemaFields.add(`${table}.${field}`);
-          schemaFields.add(field);
-        }
-      }
-    }
+    const schemaFields = schemaFieldNames(schema);
     for (const field of fieldSet) {
       if (schemaFields.size > 0 && !schemaFields.has(field)) {
+        throw new QuerySecurityError(INVALID_QUERY_PARAMETERS);
+      }
+    }
+  }
+
+  /**
+   * Validate the keys of an `orderBy` against the schema and the field
+   * lists, before an adapter orders by them. A key must name a schema
+   * property exactly or as the one property that differs only by ASCII
+   * case, bare or as `table.property`; a schema that declares no property
+   * leaves the key as written. The key is then held to `denyFields` and to
+   * a non-empty `allowedFields` as given and in the schema's spelling, so
+   * ordering by a field cannot reveal the order of a field a filter could
+   * not name. `createQueryKit` passes the folded and mapped keys and the
+   * schema of the selected table.
+   *
+   * @param fields - The sort keys as the adapter would receive them
+   * @param schema - Optional schema definition to validate the keys against
+   * @throws {QuerySecurityError} `Invalid query parameters` for a key the
+   * schema does not declare or a list blocks
+   *
+   * @example
+   * ```typescript
+   * const validator = new QuerySecurityValidator({ denyFields: ['secret'] });
+   * validator.validateSortFields(['status'], { items: { status: 1, secret: 1 } });
+   * validator.validateSortFields(['SECRET'], { items: { status: 1, secret: 1 } }); // throws
+   * ```
+   */
+  public validateSortFields(
+    fields: readonly string[],
+    schema?: Record<string, Record<string, unknown>>
+  ): void {
+    const schemaFields = schemaFieldNames(schema);
+    const allowedNames = new Set<string>(this.options.allowedFields);
+    for (const field of fields) {
+      const resolved = resolveSchemaSortField(field, schema, schemaFields);
+      if (
+        isDeniedName(field, this.deniedNames) ||
+        isDeniedName(resolved, this.deniedNames)
+      ) {
+        throw new QuerySecurityError(INVALID_QUERY_PARAMETERS);
+      }
+      if (
+        allowedNames.size > 0 &&
+        !isAllowedName(field, allowedNames) &&
+        !isAllowedName(resolved, allowedNames)
+      ) {
         throw new QuerySecurityError(INVALID_QUERY_PARAMETERS);
       }
     }

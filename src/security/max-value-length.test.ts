@@ -7,8 +7,8 @@
  * SQL, the Drizzle translator and the Drizzle adapter, as `createQueryKit`
  * already did. A raised `maxValueLength` still matches it.
  *
- * The in-memory adapter checks the cap before it walks the table; the kit
- * forwarding a raised cap into the adapter lands with layer 6.
+ * The in-memory adapter checks the cap before it walks the table, and
+ * `createQueryKit` forwards a raised cap into the adapter.
  */
 
 import { createRequire } from 'module';
@@ -202,10 +202,9 @@ describe('string value length', () => {
     }
   );
 
-  // Layer 6 (kit forwarding): createQueryKit passes the resolved cap into
-  // adapter.execute, so a raised cap is not forced back to 1000 by the
-  // adapter's own check.
-  describe.skip('through the kit (layer 6)', () => {
+  // createQueryKit passes the resolved cap into adapter.execute, so a raised
+  // cap is not forced back to 1000 by the adapter's own check.
+  describe('through the kit', () => {
     it.each([`label:"${OVER_CAP}"`, `label:in["${OVER_CAP}"]`])(
       'still matches %s when maxValueLength is raised',
       async query => {

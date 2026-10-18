@@ -9,9 +9,9 @@
  * Raised caps still run the larger query. A server exclusion is appended
  * after the checks, so a query at either cap still runs with one.
  *
- * The in-memory adapter checks the caps before it walks the table; the kit
- * forwarding raised caps, and raising them by one per injected
- * exclusion, lands with layer 6.
+ * The in-memory adapter checks the caps before it walks the table, and
+ * `createQueryKit` forwards raised caps, raised by one per injected
+ * exclusion.
  */
 
 import { createRequire } from 'module';
@@ -252,9 +252,9 @@ describe('depth and clause caps', () => {
     expect(logged[0]).toContain('"items"."status" not in (?)');
   });
 
-  // Layer 6 (kit forwarding): createQueryKit passes the resolved caps into
-  // adapter.execute, raised by one per injected exclusion.
-  describe.skip('through the kit (layer 6)', () => {
+  // createQueryKit passes the resolved caps into adapter.execute, raised by
+  // one per injected exclusion.
+  describe('through the kit', () => {
     it.each([
       ['depth', buildComparisonChain(12), { maxQueryDepth: 11 }],
       ['clause count', buildBalancedTree(51), { maxClauseCount: 51 }]

@@ -184,7 +184,13 @@ const qk = createQueryKit({
 qk.query('users').where('Status:active');
 qk.query('users').where('STATUS:active');
 qk.query('users').where('status:active');
+
+// A sort key is folded and mapped the same way, so this orders by
+// task_status on Drizzle and in memory alike
+qk.query('users').where('status:active').orderBy('STATUS', 'desc');
 ```
+
+The parser folds a field to lower case, so a camelCase property such as `createdAt` arrives as `createdat`. `createQueryKit` respells that folded name as the one schema property that differs from it only by ASCII case, in the query, in `orderBy`, and in `allowedFields`, `denyFields` and the keys of `denyValues`, before the allowlist compares it, so `CreatedAt:null`, `createdat:null` and `orderBy('createdAt')` all reach `createdAt` on Drizzle and in memory. A name that folds onto two properties differing only by case, such as `createdAt` beside `CreatedAt`, is rejected with `QuerySecurityError: Invalid query parameters` on both adapters, as a filter and as a sort key.
 
 ## Tolerant Parse Mode
 
@@ -298,6 +304,8 @@ const DEFAULT_SECURITY = {
   queryTimeout: 30000,         // 30 second timeout by default
 }
 ```
+
+With `allowedFields` empty, a query field the schema does not declare is rejected with `QuerySecurityError: Invalid query parameters` before either adapter runs. An `orderBy` key is checked against the schema whether or not `allowedFields` is set: it must name a schema property exactly or as the one property that differs only by ASCII case, bare or as `table.property`, so `orderBy('nope')`, `orderBy('items.nope')` and `orderBy('other.status')` are rejected on Drizzle and in memory alike instead of failing on one and tying every row on the other. A schema that declares no property leaves both checks to the adapter. `allowedFields` and `denyFields` apply to an `orderBy` key as they do to a query field, so a sort by a field the allowlist omits or the denylist names is rejected with the same `QuerySecurityError` before either adapter runs, since ordering by a field would reveal its order. A `denyFields` entry matches regardless of ASCII case and of a single `table.` qualifier on either side, the way both adapters resolve a name to a column: `denyFields: ['secret']` rejects `secret:a`, `SECRET:a`, `items.secret:a`, `Items.secret:a` and `"items.secret":a`, and a list spelled `SECRET` or `items.secret` rejects `secret:a` and `orderBy('secret')` too.
 
 Security configurations can be stored in a separate file and imported:
 
@@ -791,6 +799,13 @@ qk.query('tasks').where('my:invalid')
 qk.query('tasks').where('my:>assigned')
 // Error: Virtual field "my" does not allow comparison operators. 
 //        Only equality (":") is permitted.
+
+// Sorted on: a virtual field resolves to a filter, not a column, so no
+// engine can order by it. A fieldMappings alias or a spelling folded under
+// caseInsensitiveFields that resolves to the virtual field is rejected too.
+qk.query('tasks').where('status:open').orderBy('my')
+// Error: Virtual field "my" cannot be used in orderBy.
+//        It resolves to a filter, not a column.
 ```
 
 ### Complete Example

@@ -52,6 +52,7 @@ export interface ISecurityOptions {
    * An entry is matched as written: it ignores neither ASCII case nor a
    * `table.` qualifier. A `fieldMappings` alias and its target are one field,
    * so an entry in either spelling permits both (see `aliasSecurityFields`).
+   * The list applies to an `orderBy` key as it does to a query field.
    *
    * @example
    * ```typescript
@@ -70,7 +71,8 @@ export interface ISecurityOptions {
    * `table.` qualifier on either side, so `secret` denies `SECRET`,
    * `items.secret` and `Items.secret`, and `items.secret` denies `secret`.
    * A `fieldMappings` alias and its target are one field, so an entry in
-   * either spelling denies both.
+   * either spelling denies both. The list applies to an `orderBy` key as it
+   * does to a query field.
    *
    * @example
    * ```typescript

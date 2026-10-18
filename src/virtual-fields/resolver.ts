@@ -55,6 +55,43 @@ export function resolveVirtualFields<
 }
 
 /**
+ * Reject a sort key that names a virtual field. A virtual field resolves to
+ * a predicate, not a column, so no engine can order by it: SQLite would
+ * reject the unknown column while an in-memory sort would tie every row.
+ * `createQueryKit` calls this with the sort keys folded and mapped the way
+ * the parser treats a filter field, before `createContext` or an adapter
+ * runs.
+ *
+ * @param fields - The sort keys as the parser would resolve them
+ * @param virtualFields - Virtual field configuration, if any
+ * @throws {QueryParseError} When a key is an own key of `virtualFields`
+ *
+ * @example
+ * ```typescript
+ * assertNoVirtualSortField(['my'], virtualFields);
+ * // QueryParseError: Virtual field "my" cannot be used in orderBy. It resolves to a filter, not a column.
+ * ```
+ */
+export function assertNoVirtualSortField<
+  TSchema extends Record<string, object>,
+  TContext extends IQueryContext
+>(
+  fields: readonly string[],
+  virtualFields: VirtualFieldsConfig<TSchema, TContext> | undefined
+): void {
+  if (!virtualFields) {
+    return;
+  }
+  for (const field of fields) {
+    if (Object.prototype.hasOwnProperty.call(virtualFields, field)) {
+      throw new QueryParseError(
+        `Virtual field "${field}" cannot be used in orderBy. It resolves to a filter, not a column.`
+      );
+    }
+  }
+}
+
+/**
  * Resolve a comparison expression.
  * If the field is a virtual field, resolve it using the configuration.
  * Otherwise, return the expression unchanged.

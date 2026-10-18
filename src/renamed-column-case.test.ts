@@ -7,8 +7,9 @@
  * `ISDONE`), as written or folded under `caseInsensitiveFields`, resolves
  * the table's own property by ASCII case, so the SQL names the column
  * (`"items"."status_col"`) instead of leaking the spelling to SQLite. The
- * kit's schema-derived allowlist still rejects those spellings on every
- * adapter; only the sort keys and the direct adapters reach the column.
+ * kit's schema-derived allowlist still rejects those spellings as written
+ * on every adapter; under `caseInsensitiveFields` the kit respells the
+ * folded name as the property, so every spelling reaches the column there.
  *
  * The in-memory row reader and sort reader resolve the one key differing
  * only by ASCII case the same way.
@@ -194,15 +195,18 @@ describe.each<[string, IParserOptions]>([
     }
   );
 
-  it.each(filters.map(([query]) => query))(
-    'the kit still rejects %s on both adapters unless it folds to the property',
-    async query => {
-      const foldsToProperty =
-        parserOptions.caseInsensitiveFields === true && query === 'STATUS:open';
+  it.each(filters.map(([query, , ids]) => [query, ids] as [string, number[]]))(
+    'the kit rejects %s on both adapters unless it folds to the property',
+    async (query, expectedIds) => {
+      const foldsToProperty = parserOptions.caseInsensitiveFields === true;
       for (const kit of [drizzleKit, memoryKit]) {
-        const execution = kit.query('items').where(query).execute();
+        const execution = kit
+          .query('items')
+          .where(query)
+          .orderBy('id', 'asc')
+          .execute();
         if (foldsToProperty) {
-          expect(idsOf(await execution)).toEqual([1, 2, 4]);
+          expect(idsOf(await execution)).toEqual(expectedIds);
         } else {
           await expect(execution).rejects.toThrow(QuerySecurityError);
         }

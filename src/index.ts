@@ -12,15 +12,22 @@ import { QueryParser, IParserOptions } from './parser';
 import { SqlTranslator } from './translators/sql';
 import {
   DEFAULT_SECURITY_OPTIONS,
+  EnforcedExclusions,
   ISecurityOptions,
   QuerySecurityError,
   QuerySecurityValidator,
-  applyEnforcedExclusions
+  applyEnforcedExclusions,
+  canonicalFieldName
 } from './security';
-import { IAdapter, IAdapterOptions } from './adapters';
+import {
+  canonicalizeSecurityFields,
+  SchemaTables
+} from './security/schema-field-case';
+import { IAdapter, IAdapterOptions, IQueryExecutionOptions } from './adapters';
 import {
   IQueryContext,
   VirtualFieldsConfig,
+  assertNoVirtualSortField,
   resolveVirtualFields
 } from './virtual-fields';
 import { QueryExpression } from './parser/types';
@@ -94,6 +101,13 @@ export interface IQueryKitOptions<
    * Allows configuring field name mappings, case sensitivity, and other
    * parser-level settings at the QueryKit instance level.
    *
+   * An `orderBy` key is folded under `caseInsensitiveFields` and renamed
+   * through `fieldMappings` the way the parser treats a filter field. Under
+   * `caseInsensitiveFields` a folded filter field or sort key is then
+   * respelled as the one schema property differing only by ASCII case, as
+   * are `allowedFields`, `denyFields` and the keys of `denyValues`; a name
+   * that folds onto two properties is rejected with `QuerySecurityError`.
+   *
    * @example
    * parserOptions: {
    *   caseInsensitiveFields: true,
@@ -154,10 +168,30 @@ export interface IQueryKitOptions<
 // Define interfaces for return types
 export interface IQueryExecutor<TResult> {
   execute(): Promise<TResult[]>;
+  /**
+   * Add a sort key. The first direction given for a key stays, as SQL keeps
+   * the first of a repeated `ORDER BY` key, and a later key still breaks
+   * ties. Before the adapter runs, the key is folded under
+   * `caseInsensitiveFields`, renamed through `fieldMappings`, respelled as
+   * the schema property it differs from only by ASCII case, and checked:
+   * a virtual field is rejected with `QueryParseError`, and a key the schema
+   * does not declare, that folds onto two properties, that `denyFields`
+   * names or that a non-empty `allowedFields` omits is rejected with
+   * `QuerySecurityError`, since ordering by a field would reveal its order.
+   */
   orderBy(field: string, direction?: 'asc' | 'desc'): IQueryExecutor<TResult>;
   limit(count: number): IQueryExecutor<TResult>;
   offset(count: number): IQueryExecutor<TResult>;
 }
+
+/** What the kit needs to resolve a written field name before validation. */
+interface IFieldResolution {
+  schema: SchemaTables;
+  parserOptions: IParserOptions;
+}
+
+/** A field name as the parser resolved it, with its literal marking. */
+type FieldRespelling = (name: string, isLiteral: boolean) => string;
 
 export interface IWhereClause<TResult> {
   where(queryString: string): IQueryExecutor<TResult>;
@@ -340,6 +374,131 @@ function createTimeoutError(timeoutMs: number): QuerySecurityError {
 }
 
 /**
+ * Respell a field the parser resolved: under `caseInsensitiveFields`, the
+ * folded name becomes the schema property it differs from only by ASCII
+ * case, so the allowlist and both adapters see one spelling.
+ *
+ * @throws {QuerySecurityError} When the name folds onto two properties
+ */
+function resolveQueryField(
+  name: string,
+  isLiteral: boolean,
+  resolution: IFieldResolution
+): string {
+  if (!resolution.parserOptions.caseInsensitiveFields) {
+    return name;
+  }
+  return canonicalFieldName(resolution.schema, name, isLiteral);
+}
+
+/**
+ * Copy an expression with every comparison field respelled. An unchanged
+ * node is returned as itself, a raw node is kept, and the literal marking
+ * of a comparison is preserved.
+ */
+function respellFields(
+  expression: QueryExpression,
+  respell: FieldRespelling
+): QueryExpression {
+  if (expression.type === 'comparison') {
+    const field = respell(expression.field, expression.isLiteral === true);
+    return field === expression.field ? expression : { ...expression, field };
+  }
+  if (expression.type !== 'logical') {
+    return expression;
+  }
+  const left = respellFields(expression.left, respell);
+  const right = expression.right
+    ? respellFields(expression.right, respell)
+    : expression.right;
+  if (left === expression.left && right === expression.right) {
+    return expression;
+  }
+  return { ...expression, left, right };
+}
+
+/**
+ * Resolve a sort key the way the parser resolves a filter field: fold it
+ * under `caseInsensitiveFields`, rename it through an own `fieldMappings`
+ * entry, then respell it as the schema property.
+ *
+ * @throws {QuerySecurityError} When the name folds onto two properties
+ */
+function resolveSortField(field: string, resolution: IFieldResolution): string {
+  const { caseInsensitiveFields, fieldMappings } = resolution.parserOptions;
+  const folded = caseInsensitiveFields ? field.toLowerCase() : field;
+  const mapped =
+    fieldMappings && Object.prototype.hasOwnProperty.call(fieldMappings, folded)
+      ? fieldMappings[folded]
+      : folded;
+  return resolveQueryField(mapped, false, resolution);
+}
+
+/**
+ * Resolve every `orderBy` key for the adapter. Two keys that resolve to one
+ * name keep the direction of the first, as a repeated `ORDER BY` key does.
+ */
+function mapOrderFields(
+  orderBy: Record<string, 'asc' | 'desc'>,
+  resolution: IFieldResolution
+): Record<string, 'asc' | 'desc'> {
+  const mapped: Record<string, 'asc' | 'desc'> = {};
+  for (const [field, direction] of Object.entries(orderBy)) {
+    const resolved = resolveSortField(field, resolution);
+    if (!Object.prototype.hasOwnProperty.call(mapped, resolved)) {
+      mapped[resolved] = direction;
+    }
+  }
+  return mapped;
+}
+
+/** The number of `NOT IN` comparisons `applyEnforcedExclusions` appends. */
+function countInjectedExclusions(exclusions: EnforcedExclusions): number {
+  return Object.values(exclusions).filter(values => values.length > 0).length;
+}
+
+/**
+ * The allowlist the adapters receive: the kit's list widened by the field
+ * of every injected exclusion, since the adapters check the query after
+ * the exclusions are appended. An empty list stays empty, allowing every
+ * field, and is not forwarded.
+ */
+function executionAllowedFields(
+  security: Required<ISecurityOptions>
+): string[] | undefined {
+  if (security.allowedFields.length === 0) {
+    return undefined;
+  }
+  const widened = [...security.allowedFields];
+  for (const [field, values] of Object.entries(
+    security.enforceExcludedValues
+  )) {
+    if (values.length > 0 && !widened.includes(field)) {
+      widened.push(field);
+    }
+  }
+  return widened;
+}
+
+/**
+ * The security settings forwarded into `adapter.execute`: the resolved
+ * caps, raised by one per injected exclusion so an exclusion never pushes a
+ * query the kit accepted over a cap, and the widened allowlist. The kit's
+ * own exclusions are already in the expression and are not forwarded.
+ */
+function executionSecurity(
+  security: Required<ISecurityOptions>
+): IQueryExecutionOptions {
+  const injected = countInjectedExclusions(security.enforceExcludedValues);
+  return {
+    allowedFields: executionAllowedFields(security),
+    maxValueLength: security.maxValueLength,
+    maxQueryDepth: security.maxQueryDepth + injected,
+    maxClauseCount: security.maxClauseCount + injected
+  };
+}
+
+/**
  * Create a new QueryKit instance
  */
 export function createQueryKit<
@@ -350,7 +509,13 @@ export function createQueryKit<
   }
 >(options: IQueryKitOptions<TSchema, TContext>): QueryKit<TSchema, TRows> {
   const parser = new QueryParser(options.parserOptions);
-  const securityOptions = resolveSecurityOptions(options.security);
+  const parserOptions = options.parserOptions ?? {};
+  const schema = options.schema as unknown as SchemaTables;
+  const securityOptions = canonicalizeSecurityFields(
+    resolveSecurityOptions(options.security),
+    schema,
+    parserOptions.caseInsensitiveFields === true
+  );
   const securityValidator = new QuerySecurityValidator(securityOptions);
   const isTolerant = options.tolerant ?? false;
 
@@ -414,7 +579,11 @@ export function createQueryKit<
               field: string,
               direction: 'asc' | 'desc' = 'asc'
             ): IQueryExecutor<TRows[K]> => {
-              orderByState = { ...orderByState, [field]: direction };
+              // The first direction for a key stays, as SQL keeps the
+              // first of a repeated ORDER BY key.
+              if (!Object.prototype.hasOwnProperty.call(orderByState, field)) {
+                orderByState = { ...orderByState, [field]: direction };
+              }
               return executor;
             },
             limit: (count: number): IQueryExecutor<TRows[K]> => {
@@ -433,6 +602,18 @@ export function createQueryKit<
                 );
               }
 
+              // Resolve the sort keys the way the parser resolves a filter
+              // field, before any context or timer runs; a virtual field
+              // keeps its own rejection.
+              const resolution: IFieldResolution = { schema, parserOptions };
+              assertNoVirtualSortField(
+                Object.keys(orderByState).map(field =>
+                  resolveSortField(field, resolution)
+                ),
+                options.virtualFields
+              );
+              const orderBy = mapOrderFields(orderByState, resolution);
+
               // Get context if virtual fields are configured
               let context: TContext | undefined;
               if (options.virtualFields && options.createContext) {
@@ -449,19 +630,23 @@ export function createQueryKit<
                 );
               }
 
-              // Validate the resolved query
-              securityValidator.validate(
+              // Respell the fields as the schema declares them, then validate
+              // the query and the sort keys against it and the field lists
+              const respelledExpression = respellFields(
                 resolvedExpression,
-                options.schema as unknown as Record<
-                  string,
-                  Record<string, unknown>
-                >
+                (name, isLiteral) =>
+                  resolveQueryField(name, isLiteral, resolution)
               );
+              securityValidator.validate(respelledExpression, schema);
+              const sortFields = Object.keys(orderBy);
+              if (sortFields.length > 0) {
+                securityValidator.validateSortFields(sortFields, schema);
+              }
 
               // Apply enforced exclusions after validation (server-side RBAC enforcement)
               const finalExpression = applyEnforcedExclusions(
-                resolvedExpression,
-                options.security?.enforceExcludedValues
+                respelledExpression,
+                securityOptions.enforceExcludedValues
               );
 
               // Delegate to adapter with resource limits from security settings
@@ -472,10 +657,8 @@ export function createQueryKit<
               const results = await executeWithTimeout(
                 () =>
                   options.adapter.execute(table, finalExpression, {
-                    orderBy:
-                      Object.keys(orderByState).length > 0
-                        ? orderByState
-                        : undefined,
+                    ...executionSecurity(securityOptions),
+                    orderBy: sortFields.length > 0 ? orderBy : undefined,
                     limit: effectiveLimit,
                     offset: offsetState
                   }),
