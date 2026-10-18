@@ -3,9 +3,13 @@
  */
 
 /**
- * Fold `A-Z` to `a-z` and nothing else.
+ * Fold `A-Z` to `a-z` and nothing else, the case rule SQLite applies to an
+ * identifier and to the characters of a LIKE pattern.
+ *
+ * @param name - Text to fold
+ * @returns The text with ASCII capitals lowered; `Σ` and `ö` are unchanged
  */
-function foldAsciiCase(name: string): string {
+export function foldAsciiCase(name: string): string {
   return name.replace(/[A-Z]/g, letter => letter.toLowerCase());
 }
 

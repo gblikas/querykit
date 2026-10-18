@@ -2,6 +2,7 @@ import { IAdapter } from '../types';
 import { QueryExpression } from '../../parser/types';
 import { InMemoryAdapterError } from './in-memory-adapter-error';
 import { canMatchExpression, filterByExpression } from './match-expression';
+import { compareStoredValues } from './stored-value';
 import {
   IInMemoryAdapterOptions,
   IInMemoryQueryExecutionOptions
@@ -267,7 +268,11 @@ function normalizeDirection(direction: unknown): 'asc' | 'desc' {
 }
 
 /**
- * Compare two rows by the requested fields, in insertion order.
+ * Compare two rows by the requested fields, in insertion order. Each field
+ * orders the way SQLite orders a column: null and a missing field (and a
+ * stored NaN) first, then numbers with a boolean as 0 or 1 and a bigint by
+ * value, then text with a Date as its ISO-8601 instant. DESC reverses the
+ * values and leaves the nulls last.
  *
  * @param left Row
  * @param right Row
@@ -280,7 +285,7 @@ function compareRows(
   fields: Array<[string, 'asc' | 'desc']>
 ): number {
   for (const [field, direction] of fields) {
-    const compared = compareFieldValues(
+    const compared = compareStoredValues(
       readOwnValue(left, field),
       readOwnValue(right, field)
     );
@@ -289,40 +294,6 @@ function compareRows(
     }
   }
   return 0;
-}
-
-/**
- * Compare two field values. Null and a missing field sort first, matching
- * SQLite. Numbers stay numeric. Everything else is text order.
- *
- * @param left Field value
- * @param right Field value
- * @returns Negative when left comes first
- */
-function compareFieldValues(left: unknown, right: unknown): number {
-  if (left === right) {
-    return 0;
-  }
-  const leftMissing = left === null || left === undefined;
-  const rightMissing = right === null || right === undefined;
-  if (leftMissing && rightMissing) {
-    return 0;
-  }
-  if (leftMissing) {
-    return -1;
-  }
-  if (rightMissing) {
-    return 1;
-  }
-  if (typeof left === 'number' && typeof right === 'number') {
-    return left - right;
-  }
-  const leftText = String(left);
-  const rightText = String(right);
-  if (leftText === rightText) {
-    return 0;
-  }
-  return leftText < rightText ? -1 : 1;
 }
 
 /**

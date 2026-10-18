@@ -6,8 +6,7 @@
  * writes the digits, parameterized SQL and Drizzle bind the bigint, and the
  * row holding the exact value is the only match. `count:1` is unchanged.
  *
- * The in-memory assertions land with layer 5 (in-memory compare and sort),
- * where a bigint field equals a finite number of the same value.
+ * In memory a bigint field equals a finite number of the same value.
  */
 
 import { createRequire } from 'module';
@@ -164,9 +163,9 @@ describe('equality with an integer past the safe range', () => {
     });
   });
 
-  // Layer 5 (in-memory compare and sort): a bigint field equals a finite
-  // number of the same value, so `count:1` keeps the `1n` row as well.
-  describe.skip('in memory (layer 5)', () => {
+  // A bigint field equals a finite number of the same value, so `count:1`
+  // keeps the `1n` row as well.
+  describe('in memory', () => {
     it.each(cases)('%s matches the SQL engines', (query, _value, _d, ids) => {
       expect(filterInMemory(query, rows).map(row => row.id)).toEqual(ids);
     });

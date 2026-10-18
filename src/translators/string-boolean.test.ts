@@ -8,8 +8,7 @@
  * whose encoder would otherwise turn `m` into `1` inside the ordered
  * operators.
  *
- * The in-memory assertions land with layer 5 (in-memory compare and sort),
- * where every string is greater than every boolean.
+ * In memory every string is greater than every boolean.
  */
 
 import { createRequire } from 'module';
@@ -166,9 +165,9 @@ describe('a string ordered against a boolean', () => {
     }
   );
 
-  // Layer 5 (in-memory compare and sort): every string, including the empty
-  // string, is greater than every boolean, in either direction.
-  describe.skip('in memory (layer 5)', () => {
+  // Every string, including the empty string, is greater than every boolean,
+  // in either direction.
+  describe('in memory', () => {
     it.each(cases)('%s matches the SQL engines', (query, ...rest) => {
       const ids = rest[rest.length - 1] as number[];
       expect(filterInMemory(query, rows).map(row => row.id)).toEqual(ids);

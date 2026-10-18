@@ -8,7 +8,7 @@
  * including under NOT. On mixed rows the engines follow SQLite: a boolean is
  * its integer, and every string is greater than every number.
  *
- * The in-memory assertions land with layer 5 (in-memory compare and sort).
+ * The in-memory matcher applies the same order to real booleans.
  */
 
 import { createRequire } from 'module';
@@ -199,10 +199,9 @@ describe('boolean parity', () => {
     }
   );
 
-  // Layer 5 (in-memory compare and sort): false orders before true, a
-  // boolean is its integer in equality and order, and every string is
-  // greater than every number and every boolean.
-  describe.skip('in memory (layer 5)', () => {
+  // False orders before true, a boolean is its integer in equality and
+  // order, and every string is greater than every number and every boolean.
+  describe('in memory', () => {
     it.each(orderedCases)('%s matches the SQL engines', (query, _sql, ids) => {
       expect(filterInMemory(query, flagRows).map(row => row.id)).toEqual(ids);
     });

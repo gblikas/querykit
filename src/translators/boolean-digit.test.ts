@@ -7,8 +7,7 @@
  * number as itself, including a boolean-mode Drizzle column, whose encoder
  * would otherwise turn `2` into `1`.
  *
- * The in-memory assertions land with layer 5 (in-memory compare and sort),
- * where equality treats boolean true as 1 and boolean false as 0.
+ * In memory equality treats boolean true as 1 and boolean false as 0.
  */
 
 import { createRequire } from 'module';
@@ -152,9 +151,9 @@ describe('boolean digit equality', () => {
     }
   );
 
-  // Layer 5 (in-memory compare and sort): equality treats boolean true as 1
-  // and boolean false as 0, in either direction; 2 still matches no boolean.
-  describe.skip('in memory (layer 5)', () => {
+  // Equality treats boolean true as 1 and boolean false as 0, in either
+  // direction; 2 still matches no boolean.
+  describe('in memory', () => {
     it.each(cases)('%s matches the SQL engines', (query, _value, ids) => {
       expect(filterInMemory(query, rows).map(row => row.id)).toEqual(ids);
     });

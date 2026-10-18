@@ -8,8 +8,7 @@
  * still receives the `Date`. LIKE on a year prefix and a sort on the column
  * agree the same way.
  *
- * The in-memory assertions land with layer 5 (in-memory compare and sort),
- * where a `Date` field is its ISO instant in equality, LIKE and sort.
+ * In memory a `Date` field is its ISO instant in equality, LIKE and sort.
  */
 
 import { createRequire } from 'module';
@@ -229,9 +228,8 @@ describe('virtual field opened', () => {
     });
   });
 
-  // Layer 5 (in-memory compare and sort): a Date field is its ISO instant in
-  // equality, LIKE, membership and sort.
-  describe.skip('in memory (layer 5)', () => {
+  // A Date field is its ISO instant in equality, LIKE, membership and sort.
+  describe('in memory', () => {
     it('matches a Date at the same instant', () => {
       expect(
         filterByExpression(resolve('opened:then'), rows).map(row => row.id)

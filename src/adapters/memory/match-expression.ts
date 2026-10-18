@@ -5,7 +5,15 @@ import {
   QueryValue
 } from '../../parser/types';
 import { LIKE_ESCAPE, toSqlLikePattern } from '../../translators/like-pattern';
+import { foldAsciiCase } from '../../translators/own-key-case';
 import { InMemoryAdapterError } from './in-memory-adapter-error';
+import {
+  compareStored,
+  isStoredNull,
+  likeTextOf,
+  StoredValue,
+  storedValueOf
+} from './stored-value';
 
 /**
  * SQL truth value. `null` means unknown, which a WHERE clause excludes.
@@ -24,7 +32,11 @@ const REGEX_MESSAGE = 'Unsupported operator: REGEX';
 /**
  * Filter rows with a QueryKit expression using the same operators the
  * Drizzle translator emits. `==` is equality, and `LIKE` is SQL LIKE
- * (`*` is `%`, `?` is `_`, case-sensitive, anchored to the whole value).
+ * (`*` is `%`, `?` is `_`, anchored to the whole value, ASCII letters
+ * matching in either case as in SQLite). Values compare the way SQLite
+ * compares a column: a boolean is 0 or 1, a bigint and a number compare by
+ * value, a Date is its ISO-8601 text, NaN is NULL, and every string is
+ * greater than every number.
  *
  * This walks the existing AST. It does not parse a second grammar, rank
  * rows, or build an index.
@@ -338,6 +350,9 @@ function comparisonTruth(
 /**
  * QueryKit `== null` is `IS NULL`. A null field matches, and a non-null
  * field does not. A null field compared with any other value is unknown.
+ * Otherwise the two values are equal when SQLite would store them as the
+ * same class and value: `true` equals 1, `10n` equals 10, a Date equals its
+ * ISO-8601 text, and a string never equals a number.
  *
  * @param left Field value
  * @param right Query value
@@ -347,18 +362,36 @@ function equalityTruth(left: unknown, right: QueryValue): SqlTruth {
   if (right === null) {
     return isNullish(left);
   }
-  if (isNullish(left)) {
+  const stored = storedValueOf(left);
+  if (stored.kind === 'null') {
     return null;
   }
   if (Array.isArray(right)) {
     return false;
   }
-  return left === right;
+  return isSameStoredValue(stored, storedValueOf(right));
 }
 
 /**
- * Compare numbers numerically and strings lexicographically.
- * A null side is unknown. Different types are false.
+ * @param left Classified field value
+ * @param right Classified query value
+ * @returns True when both are numbers of the same value or the same text
+ */
+function isSameStoredValue(left: StoredValue, right: StoredValue): boolean {
+  if (left.kind !== right.kind) {
+    return false;
+  }
+  if (left.kind === 'other') {
+    return false;
+  }
+  return compareStored(left, right) === 0;
+}
+
+/**
+ * Order two values the way SQLite orders a column: numbers (a boolean as 0
+ * or 1, a bigint by value) compare numerically, strings and Dates by code
+ * point, and every string is greater than every number. A null side is
+ * unknown. A field outside those classes is false.
  *
  * @param left Field value
  * @param right Query value
@@ -370,43 +403,39 @@ function orderedTruth(
   right: QueryValue,
   operator: '>' | '>=' | '<' | '<='
 ): SqlTruth {
-  if (isNullish(left) || right === null) {
+  if (right === null) {
     return null;
   }
-  if (Array.isArray(right)) {
+  const stored = storedValueOf(left);
+  if (stored.kind === 'null') {
+    return null;
+  }
+  if (Array.isArray(right) || stored.kind === 'other') {
     return false;
   }
-  if (typeof left === 'number' && typeof right === 'number') {
-    return applyOrder(left, right, operator);
-  }
-  if (typeof left === 'string' && typeof right === 'string') {
-    return applyOrder(left, right, operator);
-  }
-  return false;
+  return holdsOrder(compareStored(stored, storedValueOf(right)), operator);
 }
 
 /**
- * Apply an ordered operator to two values of the same comparable type.
+ * Read an ordered operator off a three-way comparison.
  *
- * @param left Field value
- * @param right Query value
+ * @param compared Negative when the field orders first, positive when the query value does
  * @param operator Ordered comparison
  * @returns True when the comparison holds
  */
-function applyOrder<T extends number | string>(
-  left: T,
-  right: T,
+function holdsOrder(
+  compared: number,
   operator: '>' | '>=' | '<' | '<='
 ): boolean {
   switch (operator) {
     case '>':
-      return left > right;
+      return compared > 0;
     case '>=':
-      return left >= right;
+      return compared >= 0;
     case '<':
-      return left < right;
+      return compared < 0;
     case '<=':
-      return left <= right;
+      return compared <= 0;
     default: {
       const unexpected: never = operator;
       throw new InMemoryAdapterError(
@@ -417,8 +446,10 @@ function applyOrder<T extends number | string>(
 }
 
 /**
- * Match a whole string with SQL LIKE. `*` and `?` are converted by the
+ * Match a whole value with SQL LIKE. `*` and `?` are converted by the
  * same helper the SQL and Drizzle translators use, including its escape.
+ * The value is the text SQLite would apply the pattern to: a string, a
+ * Date's ISO-8601 text, or a number's or bigint's decimal digits.
  *
  * @param fieldValue Field value
  * @param pattern QueryKit wildcard pattern
@@ -430,10 +461,11 @@ function likeTruth(fieldValue: unknown, pattern: QueryValue): SqlTruth {
   if (isNullish(fieldValue)) {
     return null;
   }
-  if (typeof fieldValue !== 'string') {
+  const text = likeTextOf(fieldValue);
+  if (text === undefined) {
     return false;
   }
-  return matchesLikePattern(toSqlLikePattern(pattern), fieldValue);
+  return matchesLikePattern(toSqlLikePattern(pattern), text);
 }
 
 /**
@@ -476,19 +508,22 @@ function tokenizeLikePattern(sqlPattern: string): LikeToken[] {
 }
 
 /**
- * Match a whole value against a SQL LIKE pattern, case-sensitively, in
- * O(pattern × value) time. The matcher remembers the last `%` and resumes
- * from it instead of backtracking through every split, so a pattern such as
- * `*a*a*a*ab` cannot stall the event loop on a long value the way a compiled
- * regular expression with repeated `.*` groups does.
+ * Match a whole value against a SQL LIKE pattern in O(pattern × value)
+ * time. ASCII letters match in either case and every other character
+ * exactly, which is SQLite's default LIKE (`open*` keeps `Open`; `ö` and
+ * `Ö` stay distinct); an escaped letter folds the same way. The matcher
+ * remembers the last `%` and resumes from it instead of backtracking
+ * through every split, so a pattern such as `*a*a*a*ab` cannot stall the
+ * event loop on a long value the way a compiled regular expression with
+ * repeated `.*` groups does.
  *
  * @param sqlPattern SQL LIKE pattern
  * @param value Field value
  * @returns True when the whole value matches
  */
 function matchesLikePattern(sqlPattern: string, value: string): boolean {
-  const tokens = tokenizeLikePattern(sqlPattern);
-  const chars = Array.from(value);
+  const tokens = tokenizeLikePattern(foldAsciiCase(sqlPattern));
+  const chars = Array.from(foldAsciiCase(value));
   let tokenIndex = 0;
   let charIndex = 0;
   let lastAnyToken = -1;
@@ -526,7 +561,9 @@ function matchesLikePattern(sqlPattern: string, value: string): boolean {
 /**
  * SQL `IN` after the translator's null rewrite. An empty list is false.
  * A null member agrees with `IS NULL` and does not make the other members
- * unknown. A null field with no null member stays unknown.
+ * unknown. A null field with no null member stays unknown. Each other
+ * member is tested with the equality rule, so a bigint field matches a
+ * numeric member of the same value.
  *
  * @param fieldValue Field value
  * @param value List of members
@@ -538,21 +575,12 @@ function inTruth(fieldValue: unknown, value: QueryValue): SqlTruth {
   if (value.length === 0) {
     return false;
   }
-  const fieldIsNull = isNullish(fieldValue);
-  let sawNullMember = false;
-  for (const item of value) {
-    if (item === null) {
-      sawNullMember = true;
-      continue;
-    }
-    if (!fieldIsNull && fieldValue === item) {
-      return true;
-    }
+  if (isNullish(fieldValue)) {
+    return value.includes(null) ? true : null;
   }
-  if (fieldIsNull) {
-    return sawNullMember ? true : null;
-  }
-  return false;
+  return value.some(
+    member => member !== null && equalityTruth(fieldValue, member) === true
+  );
 }
 
 /**
@@ -570,11 +598,11 @@ function readField(record: object, field: string): unknown {
 }
 
 /**
- * Treat a missing field the same as SQL null.
+ * Treat a missing field, and a stored NaN, the same as SQL null.
  *
  * @param value Field or query value
- * @returns True when the value is null or undefined
+ * @returns True when the value is null, undefined, NaN or an invalid Date
  */
 function isNullish(value: unknown): boolean {
-  return value === null || value === undefined;
+  return isStoredNull(value);
 }

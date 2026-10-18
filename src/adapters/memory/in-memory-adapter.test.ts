@@ -128,12 +128,13 @@ describe('Drizzle predicate parity', () => {
     expect(quoted).toMatchObject({ operator: 'LIKE', value: 'Ship*' });
     expect(JSON.stringify(translator.translate(wildcard))).toContain('LIKE');
     expect(JSON.stringify(translator.translate(quoted))).toContain('LIKE');
+    // SQLite's LIKE folds ASCII case, so `ship release` matches as well.
     expect(filterInMemory('title:Ship*', inputRows).map(row => row.id)).toEqual(
-      [1, 2]
+      [1, 2, 3]
     );
     expect(
       filterInMemory('title:"Ship*"', inputRows).map(row => row.id)
-    ).toEqual([1, 2]);
+    ).toEqual([1, 2, 3]);
   });
 });
 
@@ -204,7 +205,7 @@ describe('in-memory filtering', () => {
         { id: 3, note: '100%off' }
       ];
       expect(filterInMemory('title:Sh?p', titles).map(row => row.id)).toEqual([
-        1, 2
+        1, 2, 4
       ]);
       expect(filterInMemory('note:"100%*"', notes).map(row => row.id)).toEqual([
         1, 3
@@ -214,7 +215,7 @@ describe('in-memory filtering', () => {
       ]);
       expect(
         filterInMemory('NOT title:Sh?p', titles).map(row => row.id)
-      ).toEqual([3, 4]);
+      ).toEqual([3]);
     });
 
     it('treats a space between clauses as AND', () => {
