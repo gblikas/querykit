@@ -11,14 +11,23 @@
 import {
   hasBooleanRangeEndpoint,
   hasNullRangeEndpoint,
+  ILiteralAt,
   IQueryTextMap,
   isLiqeWhitespace,
   mapQueryText,
   measureQueryDelimiters,
   readLiqe,
   readLiteralAt,
+  readRangeBounds,
+  someBracketExpression,
+  splitListMembers,
   uppercaseBooleanOperators
 } from './query-scanner';
+import {
+  isPlainInteger,
+  isUnstorableInteger,
+  spellNumerals
+} from './stored-integer';
 
 /**
  * Represents the context of where the cursor is within a query term
@@ -545,7 +554,18 @@ export function findTrailingLogicalOperator(
  *   U+205F, U+3000, U+FEFF) outside quotes and outside every term; inside
  *   an unquoted value it is a value character, as it is to Liqe;
  * - a `[min TO max]` range whose unquoted bound is `null`, `true` or
- *   `false`, which the parser leaves to Liqe to reject.
+ *   `false`, which the parser leaves to Liqe to reject;
+ * - a character Liqe never accepts outside a literal: `&`, `|`, `;`, `^`,
+ *   `~`, a `!` that is not the one in `:!=`, or a `?` outside every value
+ *   (`status:open?` is a wildcard; `?status:open` is not);
+ * - a `--` or `-` stacked on another negation, a `NOT` followed by `NOT`, a
+ *   minus or a `:!=` clause, which reaches Liqe as `NOT NOT`;
+ * - an unquoted value that starts like a number but is not one Liqe reads
+ *   or the parser spells (`0x10`, `1_0`, `1e`, `1.2.3`, `--1`, `+`, `.`),
+ *   or a numeral the parser rejects (an integer outside the signed 64-bit
+ *   range, an exponent that underflows to zero);
+ * - a closed quote followed by the same quote (`"a""b"`), or a quoted
+ *   backslash sequence Liqe does not accept (`"a\q"`, `"\U0041"`).
  *
  * @param input The query input string
  * @returns true if the input appears complete, false if it looks incomplete
@@ -588,7 +608,11 @@ const COMPLETENESS_CHECKS: CompletenessCheck[] = [
   hasImplicitFieldTerm,
   hasUncoveredUnicodeSpace,
   (input): boolean => hasNullRangeEndpoint(input),
-  (input): boolean => hasBooleanRangeEndpoint(input)
+  (input): boolean => hasBooleanRangeEndpoint(input),
+  hasBareSymbol,
+  hasStackedNegation,
+  hasBrokenNumeral,
+  hasRejectedQuote
 ];
 
 /**
@@ -603,6 +627,35 @@ const UNICODE_SPACE =
  */
 const FIELD_NAME_START = /^[A-Za-z_$]/;
 const FIELD_NAME_CHARACTER = /[\w$.]/;
+const FIELD_NAME = /^[A-Za-z_$][\w$.]*/;
+
+/**
+ * Characters Liqe accepts nowhere outside a literal.
+ */
+const REJECTED_SYNTAX_CHARACTER = /[&|;^~]/;
+
+/**
+ * The comparison operators the parser accepts after a field, longest first.
+ */
+const COMPARISON_OPERATORS = [':>=', ':<=', ':!=', ':>', ':<', ':=', ':'];
+
+/**
+ * A word that begins like a number: an optional sign or dot before a digit,
+ * or nothing but signs and dots.
+ */
+const NUMERAL_LIKE_WORD = /^(?:[+-.]*\d|[+-.]+$)/;
+
+/**
+ * The decimals Liqe reads and the spellings the parser turns into one:
+ * `1`, `-1.5`, `+1`, `1.`, `.5`, `1e-7`, `1.e5`.
+ */
+const SPELLED_NUMERAL = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/;
+
+/**
+ * Escapes Liqe decodes after a backslash in either quote style; `\'` only in
+ * single quotes, and `\u` with four hex digits in both.
+ */
+const SIMPLE_ESCAPES = '"/\\bfnrt';
 
 function isValuelessTerm(term: IQueryInputTerm): boolean {
   return term.key !== null && term.operator !== null && term.value === null;
@@ -872,6 +925,216 @@ function hasUncoveredUnicodeSpace(
         term => term.startPosition <= index && index < term.endPosition
       )
     ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * `&`, `|`, `;`, `^` and `~` are neither operators nor value characters to
+ * Liqe, so one outside a literal is a syntax error wherever it stands. A
+ * `!` is only accepted as the one in `:!=`, which the parser rewrites. A `?`
+ * is a wildcard inside a value and a syntax error anywhere else.
+ */
+function hasBareSymbol(
+  input: string,
+  map: IQueryTextMap,
+  terms: IQueryInputTerm[]
+): boolean {
+  for (let index = 0; index < input.length; index += 1) {
+    if (!map.isCode[index] || map.depth[index] !== 0) {
+      continue;
+    }
+    const char = input[index] ?? '';
+    if (REJECTED_SYNTAX_CHARACTER.test(char)) {
+      return true;
+    }
+    if (char === '!' && !isNotEqualsBang(input, index)) {
+      return true;
+    }
+    if (char === '?' && !isInsideValue(index, terms)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isNotEqualsBang(input: string, index: number): boolean {
+  return input[index - 1] === ':' && input[index + 1] === '=';
+}
+
+function isInsideValue(index: number, terms: IQueryInputTerm[]): boolean {
+  return terms.some(
+    term =>
+      term.value !== null &&
+      term.endPosition - term.value.length <= index &&
+      index < term.endPosition
+  );
+}
+
+/**
+ * Liqe's `NOT` and minus each take one tag or, for `NOT`, one group. After
+ * a `NOT` operator and Liqe whitespace, or directly after a clause-leading
+ * minus, another `NOT`, a minus, or a field followed by `:!=` (which the
+ * parser rewrites to `NOT field:`) stacks two negations, which Liqe
+ * rejects. A parenthesis is not skipped, so `NOT (NOT a:1)` is complete.
+ */
+function hasStackedNegation(input: string, map: IQueryTextMap): boolean {
+  for (let index = 0; index < input.length; index += 1) {
+    if (!map.isCode[index] || map.depth[index] !== 0) {
+      continue;
+    }
+    if (readLogicalOperator(input, index) === 'NOT') {
+      let next = index + 3;
+      while (isLiqeWhitespace(input[next])) {
+        next += 1;
+      }
+      if (next > index + 3 && startsNegation(input, map, next)) {
+        return true;
+      }
+    } else if (
+      input[index] === '-' &&
+      startsMinusNegation(input, map, index) &&
+      startsNegation(input, map, index + 1)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Whether a negation begins at `index`: a `NOT` word, a minus, or a field
+ * (bare or closed quoted) followed by `:!=`.
+ */
+function startsNegation(
+  input: string,
+  map: IQueryTextMap,
+  index: number
+): boolean {
+  if (input[index] === '-' || /^NOT(?=$|[\s()])/i.test(input.slice(index))) {
+    return true;
+  }
+  const quoted = map.literals.find(
+    literal =>
+      literal.start === index && literal.kind === 'string' && literal.closed
+  );
+  if (quoted) {
+    return input.startsWith(':!=', quoted.end);
+  }
+  const name = FIELD_NAME.exec(input.slice(index));
+  return name !== null && input.startsWith(':!=', index + name[0].length);
+}
+
+/**
+ * The parser spells `+1`, `1.`, `.5` and exponents into Liqe's decimal and
+ * rejects an integer outside the signed 64-bit range or an exponent that
+ * underflows to zero; any other word that starts like a number is a Liqe
+ * syntax error. Membership members are read with `Number`, so a wide
+ * integer inside `in[...]` is not rejected there.
+ */
+function hasBrokenNumeral(input: string, map: IQueryTextMap): boolean {
+  try {
+    spellNumerals(input);
+  } catch {
+    return true;
+  }
+  for (let index = 0; index < input.length; index += 1) {
+    if (!map.isCode[index] || map.depth[index] !== 0 || input[index] !== ':') {
+      continue;
+    }
+    const word = readValueWordAfterOperator(input, map, index);
+    if (word !== null && isBrokenNumeralWord(word)) {
+      return true;
+    }
+  }
+  return someBracketExpression(input, span => {
+    if (span.kind !== 'bracket') {
+      return false;
+    }
+    const bounds = readRangeBounds(span);
+    const written = bounds
+      ? [bounds.min, bounds.max]
+      : splitListMembers(span.body);
+    return written.some(
+      token => isPlainInteger(token) && isUnstorableInteger(token)
+    );
+  });
+}
+
+function isBrokenNumeralWord(word: string): boolean {
+  if (NUMERAL_LIKE_WORD.test(word) && !SPELLED_NUMERAL.test(word)) {
+    return true;
+  }
+  return isPlainInteger(word) && isUnstorableInteger(word);
+}
+
+/**
+ * The unquoted word after the comparison operator whose colon is at
+ * `colonIndex`, up to Liqe whitespace, a parenthesis or the end of the text.
+ * Null when no word follows, or when it begins a literal, a bracket, or a
+ * membership list, which other checks read.
+ */
+function readValueWordAfterOperator(
+  input: string,
+  map: IQueryTextMap,
+  colonIndex: number
+): string | null {
+  const operator = COMPARISON_OPERATORS.find(candidate =>
+    input.startsWith(candidate, colonIndex)
+  );
+  const start = colonIndex + (operator ?? ':').length;
+  if (
+    !map.isCode[start] ||
+    /^(?:[[{]|(?:not\s+in|in)\s*\[)/i.test(input.slice(start))
+  ) {
+    return null;
+  }
+  let end = start;
+  while (end < input.length) {
+    const char = input[end] ?? '';
+    if (map.isCode[end] && (isLiqeWhitespace(char) || /[()]/.test(char))) {
+      break;
+    }
+    end += 1;
+  }
+  return end === start ? null : input.slice(start, end);
+}
+
+/**
+ * A closed quote directly followed by the same quote leaves a stray quote
+ * Liqe rejects (`"a""b"` is not `a"b`), and a quoted backslash sequence
+ * outside Liqe's escapes is a syntax error (`"a\q"` is not `aq`).
+ */
+function hasRejectedQuote(input: string, map: IQueryTextMap): boolean {
+  return map.literals.some(
+    literal =>
+      literal.kind === 'string' &&
+      literal.closed &&
+      (input[literal.end] === input[literal.start] ||
+        hasRejectedEscape(input, literal))
+  );
+}
+
+function hasRejectedEscape(input: string, literal: ILiteralAt): boolean {
+  const quote = input[literal.start];
+  let index = literal.start + 1;
+  while (index < literal.end - 1) {
+    if (input[index] !== '\\') {
+      index += 1;
+      continue;
+    }
+    const escaped = input[index + 1] ?? '';
+    const isSimple = escaped !== '' && SIMPLE_ESCAPES.includes(escaped);
+    if (isSimple || (escaped === "'" && quote === "'")) {
+      index += 2;
+    } else if (
+      escaped === 'u' &&
+      /^[0-9A-Fa-f]{4}/.test(input.slice(index + 2))
+    ) {
+      index += 6;
+    } else {
       return true;
     }
   }

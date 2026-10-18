@@ -350,7 +350,8 @@ describe('Parser invariants', () => {
         try {
           subject.parse('foo');
         } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
+          const message =
+            error instanceof Error ? error.message : String(error);
           expect(message).not.toMatch(/toLowerCase/);
           expect(message).toMatch(/field/i);
         }

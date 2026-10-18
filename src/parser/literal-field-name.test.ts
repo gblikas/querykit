@@ -17,6 +17,7 @@
  * is the input parser's rule.
  */
 
+import { isInputComplete } from './input-parser';
 import { QueryParseError, QueryParser } from './parser';
 import { IComparisonExpression } from './types';
 
@@ -78,6 +79,13 @@ describe('literal field names', () => {
     expect(() => parser.parse('.column:open')).toThrow(
       'Failed to parse query: Syntax error at line 1 column 1'
     );
+    expect(isInputComplete('.column:open')).toBe(false);
+    const context = parser.parseWithContext('.column:open');
+    expect(context.structure.isComplete).toBe(false);
+    expect(context.success).toBe(false);
+    expect(context.recovery?.autofix).toBeUndefined();
+    expect(isInputComplete('column.:open')).toBe(true);
+    expect(isInputComplete('".column":open')).toBe(true);
   });
 
   it('carries the flag on every comparison the field produces', () => {

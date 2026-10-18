@@ -17,6 +17,7 @@
  * search-box completeness of a rejected spelling is the input parser's rule.
  */
 
+import { isInputComplete } from './input-parser';
 import { QueryParseError, QueryParser } from './parser';
 import {
   exactSqliteInteger,
@@ -308,6 +309,49 @@ describe('stored integers', () => {
       expect(spellNumerals('count:++1 count:--1 count:1.2.3')).toBe(
         'count:++1 count:--1 count:1.2.3'
       );
+    });
+  });
+
+  describe('search-box completeness', () => {
+    it.each([
+      'count:9223372036854775809',
+      'count:>=9223372036854775809',
+      'count:-9223372036854775809',
+      'count:1000000000000000000000',
+      'count:[1000000000000000000000]',
+      'count:[1 TO 1000000000000000000000]',
+      'count:1e21',
+      'count:1e+21',
+      'count:1E21',
+      'count:1.5e21',
+      'count:-1e21',
+      'count:[1e21 TO 5]',
+      'count:in[1e21]',
+      'count:1e-400',
+      'count:1e-324',
+      'count:-1e-400'
+    ])('treats the rejected spelling %p as incomplete', query => {
+      expect(() => parser.parse(query)).toThrow(QueryParseError);
+      expect(isInputComplete(query)).toBe(false);
+    });
+
+    it.each([
+      'count:9223372036854775808',
+      'count:9223372036854775807',
+      'count:-9223372036854775808',
+      'count:9007199254740993',
+      'count:1e18',
+      'count:1e2',
+      'count:0e-400',
+      'count:1e-323',
+      'count:"1e21"',
+      'count:"-9223372036854775809"',
+      'count:"1000000000000000000000"',
+      'count:"1e-400"',
+      'count:in[1000000000000000000000]'
+    ])('keeps %p complete', query => {
+      expect(() => parser.parse(query)).not.toThrow();
+      expect(isInputComplete(query)).toBe(true);
     });
   });
 });
