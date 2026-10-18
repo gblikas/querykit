@@ -4,14 +4,11 @@ import {
   QueryExpression,
   QueryValue
 } from '../../parser/types';
-import { readFieldIdentifiers } from '../../translators/field-identifiers';
 import { LIKE_ESCAPE, toSqlLikePattern } from '../../translators/like-pattern';
-import {
-  findOwnKeyIgnoringCase,
-  foldAsciiCase
-} from '../../translators/own-key-case';
+import { foldAsciiCase } from '../../translators/own-key-case';
 import { enforceTranslationSecurity } from '../../translators/translation-security';
 import { InMemoryAdapterError } from './in-memory-adapter-error';
+import { resolveRowKey } from './row-key';
 import {
   compareStored,
   isStoredNull,
@@ -19,7 +16,7 @@ import {
   StoredValue,
   storedValueOf
 } from './stored-value';
-import { assertQualifiersInScope } from './table-qualifier';
+import { assertFieldsInScope } from './table-scope';
 import { IInMemoryFilterOptions } from './types';
 
 /**
@@ -49,7 +46,8 @@ const REGEX_MESSAGE = 'Unsupported operator: REGEX';
  * written (allowlist, value length, depth and clause caps, with the same
  * `QuerySecurityError` the translators throw) and the enforced exclusions
  * are appended; then `fieldMappings` rename the fields and, with a
- * `tableScope`, a `table.column` naming another table is rejected.
+ * `tableScope`, a `table.column` naming another table and a name that no
+ * row of the selected table has are rejected.
  *
  * This walks the existing AST. It does not parse a second grammar, rank
  * rows, or build an index.
@@ -87,14 +85,15 @@ export function filterByExpression<T extends object>(
 
 /**
  * Run the security checks, append the exclusions, apply the field mappings,
- * check the table qualifiers and the shape, in that order, so every check
- * sees the names the caller wrote and the reader sees the mapped names.
+ * check the fields against the table scope and check the shape, in that
+ * order, so every check sees the names the caller wrote and the reader
+ * sees the mapped names.
  *
  * @param expression Expression as the caller passed it
  * @param options Security settings, field mappings and the selected table
  * @returns The expression the rows are tested against
  * @throws {QuerySecurityError} From the shared checks
- * @throws {InMemoryAdapterError} From the qualifier and shape checks
+ * @throws {InMemoryAdapterError} From the scope and shape checks
  */
 function prepareExpression(
   expression: QueryExpression,
@@ -103,7 +102,7 @@ function prepareExpression(
   const constrained = enforceTranslationSecurity(expression, options);
   const mapped = mapExpressionFields(constrained, options.fieldMappings);
   if (options.tableScope) {
-    assertQualifiersInScope(mapped, options.tableScope);
+    assertFieldsInScope(mapped, options.tableScope);
   }
   assertMatchableExpression(mapped);
   return mapped;
@@ -699,15 +698,12 @@ function inTruth(fieldValue: unknown, value: QueryValue): SqlTruth {
 }
 
 /**
- * Read a field off a row the way SQLite resolves the identifiers the
- * translators write for it. The whole name is read as an own key, exactly
- * or by the one own key differing only by ASCII case (`Status` reads
- * `status`). Failing that, a single unmarked `table.column` reads the own
- * key `column` by the same rule, since SQL addresses column `city` for
- * `owner.city`; the qualifier itself is not read here but checked by the
- * table scope. A name the parser marked literal (`"a.b"`, `column.`) is
- * one identifier and does not fall through. A nested object is not walked
- * and a prototype property is never read.
+ * Read a field off a row by the own key {@link resolveRowKey} gives it:
+ * the whole name, or the column of a single unmarked `table.column`, each
+ * exactly or by the one own key differing only by ASCII case. The table
+ * scope, not this reader, checks the qualifier and that some row has the
+ * key. A nested object is not walked and a prototype property is never
+ * read.
  *
  * @param record Row
  * @param field Field name as the AST or the sort options store it
@@ -729,28 +725,6 @@ export function readRowField(
     return undefined;
   }
   return (record as Record<string, unknown>)[key];
-}
-
-/**
- * @param record Row
- * @param field Field name
- * @param isLiteral True when the parser marked the name one identifier
- * @returns The own key the name resolves to, or undefined
- */
-function resolveRowKey(
-  record: object,
-  field: string,
-  isLiteral?: boolean
-): string | undefined {
-  const ownKey = findOwnKeyIgnoringCase(record, field);
-  if (ownKey !== undefined) {
-    return ownKey;
-  }
-  const parts = readFieldIdentifiers(field, isLiteral);
-  if (parts.length !== 2 || parts[0] === '' || parts[1] === '') {
-    return undefined;
-  }
-  return findOwnKeyIgnoringCase(record, parts[1] ?? '');
 }
 
 /**

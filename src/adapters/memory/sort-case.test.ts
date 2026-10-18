@@ -5,7 +5,9 @@
  * sort reader uses the same rule as the filter reader: an exact own key,
  * else the one own key differing only by ASCII case. A row with both
  * spellings sorts each by its own key, and letters outside ASCII stay
- * distinct.
+ * distinct; a spelling that resolves to no key, because two keys fold
+ * alike or the difference is outside ASCII, is rejected as the Drizzle
+ * adapter rejects a sort key that is not a property of the table.
  */
 
 import { createRequire } from 'module';
@@ -120,7 +122,7 @@ describe('a sort key in another letter case', () => {
     }
   );
 
-  it('sorts each spelling by its own key and leaves an ambiguous one unread', async () => {
+  it('sorts each spelling by its own key and rejects an ambiguous one', async () => {
     const twoSpellings = [
       { id: 1, status: 'b', Status: 'a' },
       { id: 2, status: 'a', Status: 'b' }
@@ -135,10 +137,11 @@ describe('a sort key in another letter case', () => {
       orderBy: { Status: 'asc' }
     });
     expect(byUpper.map(row => row.id)).toEqual([1, 2]);
-    const ambiguous = await both.execute<{ id: number }>('items', expression, {
-      orderBy: { STATUS: 'desc' }
-    });
-    expect(ambiguous.map(row => row.id)).toEqual([1, 2]);
+    await expect(
+      both.execute<{ id: number }>('items', expression, {
+        orderBy: { STATUS: 'desc' }
+      })
+    ).rejects.toThrow('Field STATUS does not name a property of table items');
   });
 
   it('does not fold letters outside ASCII', async () => {
@@ -155,9 +158,10 @@ describe('a sort key in another letter case', () => {
       orderBy: { σtatus: 'asc' }
     });
     expect(exact.map(row => row.id)).toEqual([2, 1]);
-    const folded = await greek.execute<{ id: number }>('items', expression, {
-      orderBy: { Σtatus: 'asc' }
-    });
-    expect(folded.map(row => row.id)).toEqual([1, 2]);
+    await expect(
+      greek.execute<{ id: number }>('items', expression, {
+        orderBy: { Σtatus: 'asc' }
+      })
+    ).rejects.toThrow('Field Σtatus does not name a property of table items');
   });
 });

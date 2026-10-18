@@ -47,6 +47,15 @@ interface IResolvedField {
 }
 
 /**
+ * A schema table under the key it was declared with, whose own keys are
+ * the properties a query may name.
+ */
+interface ISchemaTable {
+  name: string;
+  columns: Record<string, unknown>;
+}
+
+/**
  * The driver value a column's encoder produces for a boolean or a `Date`,
  * or the value itself when the column has no encoder or the encoder leaves
  * the value alone (or cannot take it, such as a timestamp encoder given a
@@ -461,7 +470,15 @@ export class DrizzleTranslator implements ITranslator<SQL> {
    * a three-part `a.b.c`, is one column key read from the table the adapter
    * selected, or from the schema's only table when translating standalone;
    * with several tables and no selection a bare name is ambiguous and is
-   * quoted instead.
+   * quoted instead. When the table is in the schema, the query names its
+   * properties: a name that resolves to none of them is rejected rather
+   * than quoted as a raw identifier, so the column name `status_col` does
+   * not reach the engine in place of the property `status`. A table the
+   * schema lacks, and every name of a translator without a schema, is
+   * quoted as written for the engine to accept or reject.
+   *
+   * @throws {DrizzleTranslationError} When the table is in the schema and
+   * the name could be an identifier but resolves to none of its properties
    */
   private getSchemaField(
     fieldName: string,
@@ -469,14 +486,28 @@ export class DrizzleTranslator implements ITranslator<SQL> {
     isLiteral: boolean
   ): SQLWrapper | null {
     const parts = readFieldIdentifiers(fieldName, isLiteral);
-    if (parts.length === 2) {
-      return this.columnOf(parts[0] ?? '', parts[1] ?? '');
-    }
-    const scopeTable = tableName ?? this.onlyTableName();
+    const scopeTable =
+      parts.length === 2 ? parts[0] : (tableName ?? this.onlyTableName());
     if (scopeTable === undefined) {
       return null;
     }
-    return this.columnOf(scopeTable, parts[0] ?? '');
+    const table = this.tableOf(scopeTable);
+    if (table === undefined) {
+      return null;
+    }
+    const columnKey = findOwnKeyIgnoringCase(
+      table.columns,
+      parts[parts.length - 1] ?? ''
+    );
+    if (columnKey !== undefined) {
+      return table.columns[columnKey] as SQLWrapper;
+    }
+    if (!isQuotableFieldName(fieldName, isLiteral)) {
+      return null;
+    }
+    throw new DrizzleTranslationError(
+      `Field ${fieldName} does not name a property of table ${table.name}`
+    );
   }
 
   /**
@@ -488,28 +519,25 @@ export class DrizzleTranslator implements ITranslator<SQL> {
   }
 
   /**
-   * Own-key lookup of a column. The table key and the column key each
-   * resolve exactly or by the one own key differing only by ASCII case, the
-   * rule SQLite applies to an identifier, so `Items.CreatedAt` reaches the
-   * renamed column `created_at` through its property. Two keys that fold
-   * alike resolve nothing, and `constructor.name` must not resolve the
-   * inherited Object constructor as a table and its `name` as a column.
+   * Own-key lookup of a table. The key resolves exactly or by the one own
+   * key differing only by ASCII case, the rule SQLite applies to an
+   * identifier, so `Items.CreatedAt` reaches the table `items`; its column
+   * key resolves the same way and reaches the renamed column `created_at`
+   * through its property. Two keys that fold alike resolve nothing, and
+   * `constructor.name` must not resolve the inherited Object constructor
+   * as a table and its `name` as a column.
    */
-  private columnOf(tableName: string, columnName: string): SQLWrapper | null {
+  private tableOf(tableName: string): ISchemaTable | undefined {
     const tableKey = findOwnKeyIgnoringCase(this.options.schema, tableName);
     if (tableKey === undefined) {
-      return null;
+      return undefined;
     }
-    const table = this.options.schema[tableKey] as
+    const columns = this.options.schema[tableKey] as
       | Record<string, unknown>
       | undefined;
-    if (!table) {
-      return null;
+    if (!columns) {
+      return undefined;
     }
-    const columnKey = findOwnKeyIgnoringCase(table, columnName);
-    if (columnKey === undefined) {
-      return null;
-    }
-    return table[columnKey] as SQLWrapper;
+    return { name: tableKey, columns };
   }
 }

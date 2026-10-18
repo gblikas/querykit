@@ -3,7 +3,9 @@
  *
  * `ORDER BY "owner"."City"` sorts column `city` in SQLite. The in-memory
  * sort reader resolves the column by ASCII case the way the filter reader
- * does, after an own key of the whole name. A nested object stays unread.
+ * does, after an own key of the whole name. A nested object stays unread:
+ * a row without the own key sorts as missing, and when no row has it the
+ * key is rejected.
  */
 
 import { createRequire } from 'module';
@@ -141,8 +143,11 @@ describe('a dotted sort key in another letter case', () => {
       { id: 2, owner: { city: 'Austin' } },
       { id: 3, owner: { city: 'Boston' } }
     ];
-    expect(await memoryOrder(nestedRows, 'asc')).toEqual([1, 2, 3]);
-    expect(await memoryOrder(nestedRows, 'desc')).toEqual([1, 2, 3]);
+    for (const direction of ['asc', 'desc'] as Direction[]) {
+      await expect(memoryOrder(nestedRows, direction)).rejects.toThrow(
+        'Field owner.City does not name a property of table owner'
+      );
+    }
     const mixedRows = [
       { id: 1, owner: { city: 'Chicago' } },
       { id: 2, city: 'Boston' },

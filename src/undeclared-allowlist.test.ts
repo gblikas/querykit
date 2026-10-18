@@ -13,7 +13,8 @@
  * before either runs. A listed path into a declared column is forwarded,
  * and neither built-in adapter evaluates it as a path: both read
  * `metadata.tags` as `table.column` and reject it, while a name with two
- * dots is one identifier that Drizzle rejects and memory reads as missing.
+ * dots is one identifier that names no property of `items`, which both
+ * adapters reject with their own error.
  */
 
 import { createRequire } from 'module';
@@ -315,19 +316,24 @@ describe('a listed field the table does not declare', () => {
     expect(memoryCalls).toHaveLength(1);
   });
 
-  it('forwards the listed path metadata.dimensions.width, one identifier Drizzle rejects and memory reads as missing', async () => {
+  it('forwards the listed path metadata.dimensions.width, one identifier both adapters reject as no property of items', async () => {
     const testCase = {
       allowedFields: ['status', 'metadata.dimensions.width'],
       query: 'metadata.dimensions.width:1'
     };
+    const unknown =
+      'Field metadata.dimensions.width does not name a property of table items';
     const [drizzleKit, memoryKit] = kits(testCase);
     expect(await runOf(drizzleKit, testCase)).toEqual(
       expect.objectContaining({
         name: 'DrizzleAdapterError',
-        message: expect.stringContaining('no such column')
+        message: expect.stringContaining(unknown)
       })
     );
-    expect(await runOf(memoryKit, testCase)).toEqual([]);
+    const inMemory = await runOf(memoryKit, testCase);
+    expect(inMemory).toBeInstanceOf(InMemoryAdapterError);
+    expect((inMemory as Error).message).toBe(unknown);
+    expect(logged).toHaveLength(0);
     expect(drizzleCalls).toHaveLength(1);
     expect(memoryCalls).toHaveLength(1);
   });

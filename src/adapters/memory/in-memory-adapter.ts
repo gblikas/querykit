@@ -8,7 +8,7 @@ import {
   resolveMappedField
 } from './match-expression';
 import { compareStoredValues } from './stored-value';
-import { assertQualifierInScope, ITableScope } from './table-qualifier';
+import { assertFieldInScope, ITableScope } from './table-scope';
 import {
   IInMemoryAdapterOptions,
   IInMemoryQueryExecutionOptions
@@ -22,10 +22,12 @@ import {
  * the shared security settings on the execution options (allowlist, value
  * length, depth and clause caps, exclusions) are checked before any row is
  * read. The adapter's `fieldMappings` are then applied to comparison and
- * sort fields with own-property lookups, as in the Drizzle adapter, and a
- * `table.column` is held to the selected table. Sort, limit, and offset run
- * after filtering, order values the way SQLite orders a column, and do not
- * score relevance.
+ * sort fields with own-property lookups, as in the Drizzle adapter, and
+ * each field is held to the selected table: a `table.column` must name it
+ * and the name must be a key of its rows, as a Drizzle schema holds a
+ * query to the table's properties. Sort, limit, and offset run after
+ * filtering, order values the way SQLite orders a column, and do not score
+ * relevance.
  *
  * @example
  * const adapter = inMemoryAdapter({ records: { tasks } });
@@ -70,7 +72,7 @@ export class InMemoryAdapter implements IAdapter<IInMemoryAdapterOptions> {
    * @param options Security settings and the result window
    * @returns Matching rows
    * @throws {QuerySecurityError} When the query breaks a cap or names a field outside `allowedFields`
-   * @throws {InMemoryAdapterError} When the adapter is not initialized, the table is missing, a field names another table, or the window is invalid
+   * @throws {InMemoryAdapterError} When the adapter is not initialized, the table is missing, a field names another table or a property no row has, or the window is invalid
    */
   public async execute<TResult = unknown>(
     tableName: string,
@@ -181,7 +183,9 @@ function resolveWindow(
 }
 
 /**
- * Map the sort fields and hold each to the selected table. When two keys
+ * Map the sort fields and hold each to the selected table: its qualifier
+ * must name the table and some row must have the key, as the Drizzle
+ * adapter sorts only by a property of the selected table. When two keys
  * map to the same name, the first keeps its direction and the second is
  * dropped, as a repeated `ORDER BY` key is a no-op in SQL.
  *
@@ -189,7 +193,7 @@ function resolveWindow(
  * @param fieldMappings Query field name to row key
  * @param tableScope The selected table and the records map
  * @returns Mapped field and direction pairs, in insertion order
- * @throws {InMemoryAdapterError} When a direction is not asc or desc, or a key names another table
+ * @throws {InMemoryAdapterError} When a direction is not asc or desc, or a key names another table or a property no row has
  */
 function resolveSortFields(
   orderBy: Record<string, 'asc' | 'desc'> | undefined,
@@ -201,7 +205,7 @@ function resolveSortFields(
   for (const [field, direction] of Object.entries(orderBy ?? {})) {
     const normalized = normalizeDirection(direction);
     const resolved = resolveMappedField(field, fieldMappings);
-    assertQualifierInScope(resolved, false, tableScope);
+    assertFieldInScope(resolved, false, tableScope);
     if (!seen.has(resolved)) {
       seen.add(resolved);
       fields.push([resolved, normalized]);

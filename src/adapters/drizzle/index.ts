@@ -288,25 +288,52 @@ export class DrizzleAdapter<
   }
 
   /**
-   * Get a field from the schema
-   */
-  /**
-   * Build one ORDER BY clause.
-   * Direction is accepted only as ASC or DESC. Unmapped fields are validated
-   * before quoting because Drizzle's identifier escaping does not double quotes.
+   * Build one ORDER BY clause. The direction is accepted only as ASC or
+   * DESC. A key that resolves to a column of the selected table sorts by
+   * that column; a `table.column` naming another table is quoted as
+   * written, since Drizzle's identifier escaping does not double quotes,
+   * for the engine to reject as a table outside its FROM clause; any other
+   * key the selected table lacks is rejected here, because with a schema
+   * the query names the property and the column name `created_at` must not
+   * be guessed as a raw identifier.
+   *
+   * @throws {DrizzleAdapterError} When the direction is not asc or desc,
+   * the key cannot be quoted, or it names no property of the selected table
    */
   private orderClause(
     tableName: string,
     field: string,
     direction: string
   ): SQL {
+    const sortDirection = this.sortDirection(direction);
     const resolvedField = this.resolveFieldName(field);
     const schemaField = this.getSchemaField(tableName, resolvedField);
-    const sortDirection = this.sortDirection(direction);
     if (schemaField) {
       return sortDirection === 'ASC' ? asc(schemaField) : desc(schemaField);
     }
-    return sql`${this.quoteFieldName(resolvedField)} ${sql.raw(sortDirection)}`;
+    const quotedField = this.quoteFieldName(resolvedField);
+    this.assertNamesAnotherTable(tableName, resolvedField);
+    return sql`${quotedField} ${sql.raw(sortDirection)}`;
+  }
+
+  /**
+   * Allow the raw path only for a single `table.column` whose table part
+   * does not resolve to the selected table.
+   *
+   * @throws {DrizzleAdapterError} `Field <field> does not name a property
+   * of table <table>` for any other key the selected table lacks
+   */
+  private assertNamesAnotherTable(tableName: string, fieldName: string): void {
+    const parts = readFieldIdentifiers(fieldName);
+    if (
+      parts.length === 2 &&
+      findOwnKeyIgnoringCase(this.schema, parts[0] ?? '') !== tableName
+    ) {
+      return;
+    }
+    throw new DrizzleAdapterError(
+      `Field ${fieldName} does not name a property of table ${tableName}`
+    );
   }
 
   private resolveFieldName(fieldName: string): string {
@@ -358,8 +385,8 @@ export class DrizzleAdapter<
    * resolves to the selected table. Each key resolves exactly or by the one
    * own key differing only by ASCII case, the rule SQLite applies to an
    * identifier, so `orderBy('CreatedAt')` and `orderBy('Items.createdAt')`
-   * reach the renamed column through its property. Anything else is quoted
-   * as written for the engine to accept or reject.
+   * reach the renamed column through its property. Anything else resolves
+   * nothing, and `orderClause` decides whether it is quoted or rejected.
    */
   private getSchemaField(
     tableName: string,

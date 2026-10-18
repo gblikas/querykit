@@ -4,7 +4,9 @@
  * `ORDER BY "owner"."city"` sorts column `city` of table `owner`. The
  * in-memory sort reader reads an own key `owner.city` when the row has one
  * and otherwise the own key `city`, as the filter reader does. A nested
- * `{ owner: { city } }` is not walked and sorts as missing.
+ * `{ owner: { city } }` is not walked: a row without the own key sorts as
+ * missing, and when no row has it the key is rejected, as the Drizzle
+ * adapter rejects a sort key that is not a property of the table.
  */
 
 import { createRequire } from 'module';
@@ -149,12 +151,13 @@ describe('a dotted sort key', () => {
       { id: 2, owner: { city: 'Austin' } },
       { id: 3, owner: { city: 'Boston' } }
     ];
-    expect(await memoryOrder(nestedRows, 'owner.city', 'asc')).toEqual([
-      1, 2, 3
-    ]);
-    expect(await memoryOrder(nestedRows, 'owner.city', 'desc')).toEqual([
-      1, 2, 3
-    ]);
+    for (const direction of ['asc', 'desc'] as Direction[]) {
+      await expect(
+        memoryOrder(nestedRows, 'owner.city', direction)
+      ).rejects.toThrow(
+        'Field owner.city does not name a property of table owner'
+      );
+    }
     const mixedRows = [
       { id: 1, owner: { city: 'Chicago' } },
       { id: 2, city: 'Boston' },

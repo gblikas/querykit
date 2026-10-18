@@ -7,8 +7,9 @@
  * `fieldMappings` and through `createQueryKit` with the map on
  * `parserOptions`, whose `orderBy` keys the kit renames before the adapter
  * runs. A mapping that lives on the prototype is not a mapping: the kit
- * rejects the unknown field and the unknown sort key against its schema, and
- * the bare adapters read the name as written.
+ * rejects the unknown field and the unknown sort key against its schema,
+ * the SQL translator keeps the name as written, and the in-memory adapter
+ * rejects it as a name no row has.
  */
 
 import { createRequire } from 'module';
@@ -175,9 +176,10 @@ describe('field mappings', () => {
   });
 
   // A kit with the inherited mapping rejects `status` as an unknown field
-  // and an unknown sort key against its schema; had the mapping been read,
-  // `status` would have resolved to the known `task_status`. The bare
-  // adapters keep the name as written.
+  // and an unknown sort key against its schema, and the bare in-memory
+  // adapter rejects it as a name no row has; had the mapping been read,
+  // `status` would have resolved to the known `task_status`. The SQL
+  // translator keeps the name as written.
   it('does not read a mapping from the prototype', async () => {
     const inherited: Record<string, string> = Object.create(fieldMappings);
     const expression = new QueryParser({ fieldMappings: inherited }).parse(
@@ -193,16 +195,15 @@ describe('field mappings', () => {
       records: { tasks: rows },
       fieldMappings: inherited
     });
-    const matched = await memory.execute<ITask>('tasks', expression);
-    expect(matched).toEqual([]);
-    const sorted = await memory.execute<ITask>(
-      'tasks',
-      parser.parse('id:>=0'),
-      {
-        orderBy: { status: 'asc' }
-      }
+    const unmapped = 'Field status does not name a property of table tasks';
+    await expect(memory.execute<ITask>('tasks', expression)).rejects.toThrow(
+      unmapped
     );
-    expect(sorted.map(row => row.id)).toEqual([1, 2]);
+    await expect(
+      memory.execute<ITask>('tasks', parser.parse('id:>=0'), {
+        orderBy: { status: 'asc' }
+      })
+    ).rejects.toThrow(unmapped);
     const kit = createQueryKit({
       adapter: inMemoryAdapter({ records: { tasks: rows } }),
       schema: { tasks: { id: {}, task_status: {} } },

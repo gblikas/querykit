@@ -2,10 +2,12 @@
  * Three-part field names.
  *
  * `a.b.c` is one identifier, `"a.b.c"`, on inline SQL, parameterized SQL
- * and Drizzle, in a filter and in a sort. Exactly one dot is `table.column`;
- * any other count of dots is one name. Drizzle accepts the name instead of
- * rejecting it, and the quoted column `"a.b.c"` is read rather than column
- * `c`. Memory reads the own key spelled `a.b.c`.
+ * and the schema-less Drizzle translator, in a filter and in a sort.
+ * Exactly one dot is `table.column`; any other count of dots is one name,
+ * and the quoted column `"a.b.c"` is read rather than column `c`. With a
+ * schema, Drizzle names properties: `a.b.c` is not one of `item`'s and is
+ * rejected, while the property `abc` reaches the column `"a.b.c"`. Memory
+ * reads the own key spelled `a.b.c`.
  */
 
 import { createRequire } from 'module';
@@ -16,11 +18,11 @@ import {
   SQLiteSyncDialect,
   text
 } from 'drizzle-orm/sqlite-core';
-import { DrizzleAdapter } from '../adapters/drizzle';
+import { DrizzleAdapter, DrizzleAdapterError } from '../adapters/drizzle';
 import { filterInMemory, inMemoryAdapter } from '../adapters/memory';
 import { QueryParser } from '../parser';
 import { QueryExpression } from '../parser/types';
-import { DrizzleTranslator } from './drizzle';
+import { DrizzleTranslationError, DrizzleTranslator } from './drizzle';
 import { SqlTranslator } from './sql';
 
 const nodeRequire = createRequire(__filename);
@@ -122,17 +124,26 @@ describe('three-part field names', () => {
       sql: '"a.b.c" = ?',
       params: [1]
     });
-    expect(compileDrizzle(expression, { item })).toEqual({
-      sql: '"a.b.c" = ?',
-      params: [1]
-    });
+    expect(() => compileDrizzle(expression, { item })).toThrow(
+      DrizzleTranslationError
+    );
+    expect(() => compileDrizzle(expression, { item })).toThrow(
+      'Field a.b.c does not name a property of table item'
+    );
     expect(idsOfSql({ sql: inlineSql, params: [] })).toEqual([1]);
     expect(idsOfSql(parameterized)).toEqual([1]);
     expect(idsOfSql(compileDrizzle(expression))).toEqual([1]);
     logged.length = 0;
-    const rows = await adapter.execute<{ id: number }>('item', expression);
+    await expect(adapter.execute('item', expression)).rejects.toThrow(
+      DrizzleAdapterError
+    );
+    expect(logged).toHaveLength(0);
+    const rows = await adapter.execute<{ id: number }>(
+      'item',
+      parser.parse('abc:1')
+    );
     expect(rows.map(row => row.id)).toEqual([1]);
-    expect(logged[0]).toContain('where "a.b.c" = ?');
+    expect(logged[0]).toContain('where "item"."a.b.c" = ?');
     expect(filterInMemory('a.b.c:1', literalRows).map(row => row.id)).toEqual([
       1
     ]);
@@ -146,11 +157,15 @@ describe('three-part field names', () => {
     ) as IParameterizedSql;
     expect(idsOfSql(parameterized, '"a.b.c" ASC')).toEqual([3, 1, 2]);
     logged.length = 0;
+    await expect(
+      adapter.execute('item', expression, { orderBy: { 'a.b.c': 'asc' } })
+    ).rejects.toThrow('Field a.b.c does not name a property of table item');
+    expect(logged).toHaveLength(0);
     const rows = await adapter.execute<{ id: number }>('item', expression, {
-      orderBy: { 'a.b.c': 'asc' }
+      orderBy: { abc: 'asc' }
     });
     expect(rows.map(row => row.id)).toEqual([3, 1, 2]);
-    expect(logged[0]).toContain('order by "a.b.c" ASC');
+    expect(logged[0]).toContain('order by "item"."a.b.c" asc');
     const memory = inMemoryAdapter({ records: { item: literalRows } });
     const sorted = await memory.execute<{ id: number }>('item', expression, {
       orderBy: { 'a.b.c': 'asc' }

@@ -1,6 +1,6 @@
 import { IAdapterOptions, IQueryExecutionOptions } from '../types';
 import { ITranslationSecurity } from '../../translators/types';
-import { ITableScope } from './table-qualifier';
+import { ITableScope } from './table-scope';
 
 /**
  * Options for the in-memory adapter.
@@ -37,8 +37,10 @@ export interface IInMemoryFilterOptions extends ITranslationSecurity {
   /**
    * The selected table, when the rows belong to one. A single `table.column`
    * whose qualifier does not resolve to it is rejected before any row is
-   * read, as SQLite rejects a table outside its FROM clause. Without a scope
-   * the column of any single qualifier is read.
+   * read, as SQLite rejects a table outside its FROM clause, and so is a
+   * name that no row of the table has, as the Drizzle adapter rejects a
+   * name that is not a property of the selected table. Without a scope the
+   * column of any single qualifier is read and a missing key reads as null.
    */
   tableScope?: ITableScope;
 }

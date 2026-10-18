@@ -18,7 +18,9 @@ export interface IAdapterOptions {
   schema?: Record<string, unknown>;
 
   /**
-   * Field mappings from QueryKit fields to target database fields
+   * Field mappings from QueryKit fields to the names the adapter reads: a
+   * Drizzle schema property or an in-memory row key, not a database column
+   * name, which neither adapter resolves
    */
   fieldMappings?: Record<string, string>;
 }

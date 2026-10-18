@@ -243,13 +243,25 @@ describe('DrizzleAdapter', () => {
       expect(mockOrderBy).not.toHaveBeenCalled();
     });
 
-    it('accepts DESC in upper case for an unmapped field', async () => {
+    it('accepts DESC in upper case for a schema field', async () => {
       const expression = parser.parse('status:"active"');
       await adapter.execute('todos', expression, {
-        orderBy: { unknownField: 'DESC' as 'desc' }
+        orderBy: { priority: 'DESC' as 'desc' }
       });
       expect(mockOrderBy).toHaveBeenCalled();
-      expect(getOrderBySqlString()).toContain('DESC');
+      expect(getOrderBySqlString().toLowerCase()).toContain('desc');
+    });
+
+    it('rejects a sort key the selected table does not have before any ORDER BY is built', async () => {
+      const expression = parser.parse('status:"active"');
+      await expect(
+        adapter.execute('todos', expression, {
+          orderBy: { unknownField: 'DESC' as 'desc' }
+        })
+      ).rejects.toThrow(
+        'Field unknownField does not name a property of table todos'
+      );
+      expect(mockOrderBy).not.toHaveBeenCalled();
     });
   });
 
@@ -314,10 +326,14 @@ describe('DrizzleAdapter', () => {
 
     it('does not treat inherited properties as order columns', async (): Promise<void> => {
       const expression = parser.parse('status:"active"');
-      await adapter.execute('todos', expression, {
-        orderBy: { toString: 'asc' }
-      });
-      expect(compiledOrderBy()).toBe('"toString" ASC');
+      await expect(
+        adapter.execute('todos', expression, {
+          orderBy: { toString: 'asc' }
+        })
+      ).rejects.toThrow(
+        'Field toString does not name a property of table todos'
+      );
+      expect(mockOrderBy).not.toHaveBeenCalled();
     });
   });
 });

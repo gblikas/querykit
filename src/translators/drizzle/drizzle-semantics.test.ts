@@ -7,7 +7,7 @@
  */
 
 import { createRequire } from 'module';
-import { sql, SQL } from 'drizzle-orm';
+import { sql } from 'drizzle-orm';
 import {
   integer,
   sqliteTable,
@@ -200,8 +200,12 @@ describe('DrizzleTranslator semantics', () => {
       schema: { items: { id: sql.raw('id'), name: sql.raw('name') } }
     });
     const expression = comparison('toString', '==', 'x');
-    const translated: SQL = translator.translate(expression);
-    expect(dialect.sqlToQuery(translated).sql).toBe('"toString" = ?');
+    expect(() => translator.translate(expression)).toThrow(
+      DrizzleTranslationError
+    );
+    expect(() => translator.translate(expression)).toThrow(
+      'Field toString does not name a property of table items'
+    );
   });
 
   it('rejects non-finite numbers instead of binding them as null', (): void => {
@@ -368,13 +372,15 @@ describe('DrizzleTranslator table context', () => {
     expect(compiled.sql).toBe('"displayName" = ?');
   });
 
-  it('quotes a bare field the selected table does not have', (): void => {
-    const compiled = compile(
-      comparison('displayName', '==', 'Ada'),
-      twoTables,
-      { tableName: 'teams' }
+  it('rejects a bare field the selected table does not have', (): void => {
+    const translate = (): ICompiledSql =>
+      compile(comparison('displayName', '==', 'Ada'), twoTables, {
+        tableName: 'teams'
+      });
+    expect(translate).toThrow(DrizzleTranslationError);
+    expect(translate).toThrow(
+      'Field displayName does not name a property of table teams'
     );
-    expect(compiled.sql).toBe('"displayName" = ?');
   });
 
   it('reads a qualified field from the full schema whatever table is selected', (): void => {
