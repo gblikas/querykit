@@ -410,12 +410,16 @@ describe('QueryParser', () => {
       });
     });
 
-    it('fails instead of dropping a membership list that a regex literal swallows', () => {
-      const swallowed = (): QueryExpression =>
-        parser.parse('a:/x/ AND NOT NOT b:in[1] OR c:/y/');
-      expect(swallowed).toThrow(QueryParseError);
-      expect(swallowed).toThrow(/membership list/);
-      expect(parser.validate('a:/x/ AND NOT NOT b:in[1] OR c:/y/')).toBe(false);
+    it('keeps a regex Liqe reads as one literal, membership text included', () => {
+      // Liqe's only parse of this text is one regex, so the membership
+      // list is never lifted and the regex is not executed here.
+      expect(parser.parse('a:/x/ AND NOT NOT b:in[1] OR c:/y/')).toEqual({
+        type: 'comparison',
+        field: 'a',
+        operator: 'REGEX',
+        value: '/x/ AND NOT NOT b:in[1] OR c:/y/'
+      });
+      expect(parser.validate('a:/x/ AND NOT NOT b:in[1] OR c:/y/')).toBe(true);
     });
 
     it('rejects a quoted membership member that is not a single literal', () => {

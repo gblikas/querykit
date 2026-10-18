@@ -4,7 +4,7 @@
  */
 
 import { QueryParser, QueryParseError } from './parser';
-import { parseQueryInput } from './input-parser';
+import { isInputComplete, parseQueryInput } from './input-parser';
 import {
   IComparisonExpression,
   ILogicalExpression,
@@ -407,6 +407,89 @@ describe('Parser invariants', () => {
       expect(result.success).toBe(true);
       expect(result.fieldValidation?.valid).toBe(false);
       expect(result.fieldValidation?.unknownFields).toEqual(['toString']);
+    });
+  });
+
+  describe('raw line feed inside quotes', () => {
+    it.each(['name:"foo\nbar"', "name:'foo\nbar'"])(
+      'rejects %p and keeps one term',
+      query => {
+        expect(() => parser.parse(query)).toThrow(QueryParseError);
+        expect(parseQueryInput(query).terms).toHaveLength(1);
+      }
+    );
+
+    it('rejects a line feed inside a quoted membership member', () => {
+      expect(() => parser.parse('status:in["foo\nbar"]')).toThrow(
+        QueryParseError
+      );
+    });
+
+    it('keeps the two-character escape as a newline in the value', () => {
+      expect(parser.parse('name:"foo\\nbar"')).toEqual({
+        type: 'comparison',
+        field: 'name',
+        operator: '==',
+        value: 'foo\nbar'
+      });
+    });
+  });
+
+  describe('regex spans follow Liqe', () => {
+    const regexOf = (field: string, value: string): IComparisonExpression => ({
+      type: 'comparison',
+      field,
+      operator: 'REGEX',
+      value
+    });
+
+    it('keeps slash pairs that only parse as one regex inside the literal', () => {
+      expect(parser.parse('name:/foo/) AND status:/bar/')).toEqual(
+        regexOf('name', '/foo/) AND status:/bar/')
+      );
+      expect(isInputComplete('name:/foo/) AND status:/bar/')).toBe(true);
+    });
+
+    it('rejects two regex literals Liqe reads two ways', () => {
+      expect(() => parser.parse('name:/foo/ AND status:/bar/')).toThrow(
+        'Ambiguous results.'
+      );
+      expect(isInputComplete('name:/foo/ AND status:/bar/')).toBe(false);
+    });
+
+    it('parentheses keep two regex literals as two comparisons', () => {
+      expect(parser.parse('name:/foo/ AND (status:/bar/)')).toEqual({
+        type: 'logical',
+        operator: 'AND',
+        left: regexOf('name', '/foo/'),
+        right: regexOf('status', '/bar/')
+      });
+      expect(isInputComplete('name:/foo/ AND (status:/bar/)')).toBe(true);
+    });
+
+    it('keeps a slash inside the regex body', () => {
+      expect(parser.parse('name:/a/b/')).toEqual(regexOf('name', '/a/b/'));
+      expect(isInputComplete('name:/a/b/')).toBe(true);
+    });
+
+    it('keeps a boolean word inside the regex body lowercase', () => {
+      expect(parser.parse('name:/foo/not/bar/')).toEqual(
+        regexOf('name', '/foo/not/bar/')
+      );
+    });
+
+    it('still lifts a membership list beside a regex Liqe rejects as written', () => {
+      expect(parser.parse('name:/foo/ AND tags:in[a, b]')).toEqual({
+        type: 'logical',
+        operator: 'AND',
+        left: regexOf('name', '/foo/'),
+        right: {
+          type: 'comparison',
+          field: 'tags',
+          operator: 'IN',
+          value: ['a', 'b']
+        }
+      });
     });
   });
 });

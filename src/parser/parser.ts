@@ -47,7 +47,7 @@ import {
   measureQueryDelimiters,
   readLiteralAt,
   splitListMembers,
-  transformCodeSegments
+  uppercaseBooleanOperators
 } from './query-scanner';
 import {
   exactSqliteInteger,
@@ -316,11 +316,7 @@ export class QueryParser implements IQueryParser {
    * incompatible AST that crashes during conversion.
    */
   private normalizeBooleanOperators(query: string): string {
-    return transformCodeSegments(query, code =>
-      code.replace(/(?<![^\s()])\b(and|or|not)\b(?![^\s()])/gi, match =>
-        match.toUpperCase()
-      )
-    );
+    return uppercaseBooleanOperators(query);
   }
 
   /**

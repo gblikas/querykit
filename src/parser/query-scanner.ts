@@ -5,9 +5,18 @@
  * characters that live inside string or regex literals. Liqe treats `/.../`
  * as a regex value and quotes as literals; counting those characters as
  * syntax changes the meaning of a query the parser has already accepted.
- * Inside a regex, a slash within a character class such as `[/]` does not
- * close the literal.
+ *
+ * Liqe's regex body may itself contain `/`, so the span of a regex is
+ * whatever makes the whole text parse. When Liqe reads the text one way,
+ * its `RegexExpression` spans are the literals; `name:/foo/) AND
+ * status:/bar/` is one regex. When Liqe rejects the text, or reads it two
+ * ways, the local scan closes a regex at the first slash outside a
+ * character class such as `[/]`. The pattern is only ever read as text and
+ * is never compiled or executed here.
  */
+
+import { parse as liqeParse } from 'liqe';
+import type { LiqeQuery } from 'liqe';
 
 /**
  * A span of query text that is either raw syntax or one literal.
@@ -46,6 +55,123 @@ interface IQueryTextSegment {
 }
 
 /**
+ * One literal found while mapping query text.
+ */
+export interface ILiteralAt {
+  start: number;
+  end: number;
+  kind: 'string' | 'regex';
+  closed: boolean;
+}
+
+/**
+ * Which characters of a query are syntax, how deeply each sits inside
+ * `[`/`{` brackets, and where its literals are. Completeness checks walk
+ * this map instead of re-reading literals.
+ */
+export interface IQueryTextMap {
+  /**
+   * True at an index that is syntax rather than part of a literal.
+   */
+  isCode: boolean[];
+  /**
+   * Number of `[` or `{` still open before the character at each index, so
+   * an opener itself sits at the depth outside it.
+   */
+  depth: number[];
+  /**
+   * Every literal, in order.
+   */
+  literals: ILiteralAt[];
+}
+
+/**
+ * How Liqe reads a text: its AST when the text has exactly one parse,
+ * whether the failure was `Ambiguous results.`, and the regex spans of the
+ * unique parse, filled in on first use.
+ */
+export interface ILiqeReading {
+  ast: LiqeQuery | null;
+  isAmbiguous: boolean;
+  regexSpans: Map<number, number> | null;
+}
+
+const LIQE_READING_CACHE_LIMIT = 32;
+const liqeReadings = new Map<string, ILiqeReading>();
+
+/**
+ * Parse `input` with Liqe, remembering the outcome. The parser's own
+ * preprocessing and the completeness checks read the same few texts many
+ * times, once per index, so the cache keeps the Earley parse to one run per
+ * text. Nothing in the result is executed; a regex stays its source text.
+ *
+ * @param input Text as Liqe would receive it
+ * @returns The unique AST, or null with `isAmbiguous` set when Liqe found two parses
+ */
+export function readLiqe(input: string): ILiqeReading {
+  const cached = liqeReadings.get(input);
+  if (cached) {
+    return cached;
+  }
+  let reading: ILiqeReading;
+  try {
+    reading = { ast: liqeParse(input), isAmbiguous: false, regexSpans: null };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    reading = {
+      ast: null,
+      isAmbiguous: message === 'Ambiguous results.',
+      regexSpans: null
+    };
+  }
+  if (liqeReadings.size >= LIQE_READING_CACHE_LIMIT) {
+    liqeReadings.clear();
+  }
+  liqeReadings.set(input, reading);
+  return reading;
+}
+
+/**
+ * Whether `char` is whitespace to Liqe: tab, line feed, vertical tab, form
+ * feed or a space. A carriage return and every Unicode space are not.
+ *
+ * @param char One character, or undefined past the end of the text
+ * @returns True for Liqe's five whitespace characters
+ */
+export function isLiqeWhitespace(char: string | undefined): boolean {
+  return (
+    char === ' ' ||
+    char === '\t' ||
+    char === '\n' ||
+    char === '\v' ||
+    char === '\f'
+  );
+}
+
+/**
+ * Uppercase `and`, `or` and `not` where they stand as operator words:
+ * bounded by the start or end of the text, whitespace or a parenthesis, and
+ * outside every literal. Liqe only recognizes the uppercase words. This is
+ * the parser's normalization, shared so the search box reads the text the
+ * parser hands to Liqe.
+ *
+ * @param input Query text
+ * @returns The text with operator words uppercased
+ *
+ * @example
+ * ```typescript
+ * uppercaseBooleanOperators('a:1 and not.b:2'); // 'a:1 AND not.b:2'
+ * ```
+ */
+export function uppercaseBooleanOperators(input: string): string {
+  return transformCodeSegments(input, code =>
+    code.replace(/(?<![^\s()])\b(and|or|not)\b(?![^\s()])/gi, match =>
+      match.toUpperCase()
+    )
+  );
+}
+
+/**
  * Read a string or regex literal that begins at `start`.
  *
  * @param input Query text
@@ -61,6 +187,69 @@ export function readLiteralAt(input: string, start: number): ILiteralSpan {
     return readRegexLiteral(input, start);
   }
   return { kind: 'none', end: start, closed: true };
+}
+
+let lastMappedText: string | null = null;
+let lastTextMap: IQueryTextMap | null = null;
+
+/**
+ * Map which characters of `input` are syntax, their bracket depth, and the
+ * literals. The last map is kept, since every completeness check walks the
+ * same text.
+ *
+ * @param input Query text
+ * @returns The map
+ */
+export function mapQueryText(input: string): IQueryTextMap {
+  if (lastTextMap && lastMappedText === input) {
+    return lastTextMap;
+  }
+  const isCode: boolean[] = new Array<boolean>(input.length).fill(true);
+  const depth: number[] = new Array<number>(input.length).fill(0);
+  const literals: ILiteralAt[] = [];
+  let index = 0;
+  let open = 0;
+  while (index < input.length) {
+    const literal = readLiteralAt(input, index);
+    if (literal.kind !== 'none') {
+      literals.push({
+        start: index,
+        end: literal.end,
+        kind: literal.kind,
+        closed: literal.closed
+      });
+      for (let inside = index; inside < literal.end; inside += 1) {
+        isCode[inside] = false;
+        depth[inside] = open;
+      }
+      index = literal.end;
+      continue;
+    }
+    depth[index] = open;
+    open = nextBracketDepth(open, input[index] ?? '');
+    index += 1;
+  }
+  lastMappedText = input;
+  lastTextMap = { isCode, depth, literals };
+  return lastTextMap;
+}
+
+/**
+ * The bracket depth after reading `char` at `depth`. Only `[` and `{` open
+ * and `]` and `}` close; a stray closer never goes below zero.
+ *
+ * @param depth Depth before the character
+ * @param char The character
+ * @returns Depth after it
+ */
+export function nextBracketDepth(depth: number, char: string): number {
+  if (char === '[' || char === '{') {
+    return depth + 1;
+  }
+  if (char === ']' || char === '}') {
+    return Math.max(0, depth - 1);
+  }
+  return depth;
 }
 
 /**
@@ -196,6 +385,289 @@ export function isBooleanRangeEndpoint(bound: string): boolean {
   return bound === 'true' || bound === 'false';
 }
 
+/**
+ * A `field:[...]`, `field:{...}` or `field:in[...]` span, read the way the
+ * parser's bracket rewrite reads it.
+ */
+export interface IBracketExpressionSpan {
+  /**
+   * Index of the field's first character.
+   */
+  start: number;
+  /**
+   * Index just past the closing bracket.
+   */
+  end: number;
+  /**
+   * The field as written, quoted or bare.
+   */
+  field: string;
+  /**
+   * `membership` for `in[...]` and `not in[...]`, else `bracket`.
+   */
+  kind: 'membership' | 'bracket';
+  opener: string;
+  closer: string;
+  /**
+   * Text between the brackets.
+   */
+  body: string;
+  /**
+   * Index of the body's first character.
+   */
+  bodyStart: number;
+}
+
+/**
+ * Read the bracket expression the parser's rewrite would consume at
+ * `index`: a field no name character precedes, a colon, then either the
+ * membership operator and a `[`, or a `[` or `{` opener, through the
+ * matching closer. A membership list whose closer is not `]` is not a span.
+ *
+ * @param input Query text
+ * @param index Index where a field might begin
+ * @returns The span, or null when no bracket expression begins here
+ */
+export function readBracketExpression(
+  input: string,
+  index: number
+): IBracketExpressionSpan | null {
+  if (followsNameCharacter(input, index)) {
+    return null;
+  }
+  const field = readBracketFieldToken(input, index);
+  if (!field || input[field.end] !== ':') {
+    return null;
+  }
+  const membership = MEMBERSHIP_OPENER.exec(input.slice(field.end + 1));
+  const kind = membership ? 'membership' : 'bracket';
+  const openerIndex = membership
+    ? field.end + membership[0].length
+    : field.end + 1;
+  const opener = input[openerIndex] ?? '';
+  if (opener !== '[' && opener !== '{') {
+    return null;
+  }
+  const closeIndex = readBracketEnd(input, openerIndex);
+  if (closeIndex === null) {
+    return null;
+  }
+  const closer = input[closeIndex] ?? '';
+  if (kind === 'membership' && closer !== ']') {
+    return null;
+  }
+  return {
+    start: index,
+    end: closeIndex + 1,
+    field: field.text,
+    kind,
+    opener,
+    closer,
+    body: input.slice(openerIndex + 1, closeIndex),
+    bodyStart: openerIndex + 1
+  };
+}
+
+/**
+ * Find the bracket that closes the one opened at `openIndex`, skipping
+ * literals and nested brackets.
+ *
+ * @param input Query text
+ * @param openIndex Index of a `[` or `{`
+ * @returns Index of the closer, or null when the bracket is unclosed
+ */
+export function readBracketEnd(
+  input: string,
+  openIndex: number
+): number | null {
+  let depth = 1;
+  let index = openIndex + 1;
+  while (index < input.length) {
+    const literal = readLiteralAt(input, index);
+    if (literal.kind !== 'none') {
+      index = literal.end;
+      continue;
+    }
+    const char = input[index];
+    if (char === '[' || char === '{') {
+      depth += 1;
+    } else if (char === ']' || char === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        return index;
+      }
+    }
+    index += 1;
+  }
+  return null;
+}
+
+/**
+ * Whether a bracket body holds a comma outside its literals, which makes
+ * the parser rewrite it as a list rather than a range.
+ *
+ * @param body Text between the brackets
+ * @returns True when a comma is syntax in the body
+ */
+export function hasCodeComma(body: string): boolean {
+  let index = 0;
+  while (index < body.length) {
+    const literal = readLiteralAt(body, index);
+    if (literal.kind !== 'none') {
+      index = literal.end;
+      continue;
+    }
+    if (body[index] === ',') {
+      return true;
+    }
+    index += 1;
+  }
+  return false;
+}
+
+/**
+ * Split a bracket body at its one ` TO ` separator outside literals, the
+ * way the parser's range rewrite does.
+ *
+ * @param body Text between the brackets
+ * @returns The trimmed bounds, or null when the body has no single separator
+ */
+export function splitRangeBounds(
+  body: string
+): { min: string; max: string } | null {
+  const separators: Array<{ start: number; end: number }> = [];
+  let index = 0;
+  while (index < body.length) {
+    const literal = readLiteralAt(body, index);
+    if (literal.kind !== 'none') {
+      index = literal.end;
+      continue;
+    }
+    const separator = /^\s+to\s+/i.exec(body.slice(index));
+    if (separator) {
+      separators.push({ start: index, end: index + separator[0].length });
+      index += separator[0].length;
+      continue;
+    }
+    index += 1;
+  }
+  const separator = separators[0];
+  if (separators.length !== 1 || !separator) {
+    return null;
+  }
+  return {
+    min: body.slice(0, separator.start).trim(),
+    max: body.slice(separator.end).trim()
+  };
+}
+
+/**
+ * The bounds of a `field:[min TO max]` span the parser's rewrite would
+ * format as comparisons: no comma in the body and exactly one separator.
+ *
+ * @param span A bracket span
+ * @returns The trimmed bounds, or null when the span is not such a range
+ */
+export function readRangeBounds(
+  span: IBracketExpressionSpan
+): { min: string; max: string } | null {
+  if (span.kind !== 'bracket' || hasCodeComma(span.body)) {
+    return null;
+  }
+  return splitRangeBounds(span.body);
+}
+
+/**
+ * Call `visit` for every bracket expression in `input` that the parser's
+ * rewrite would consume, skipping literals and the spans themselves.
+ *
+ * @param input Query text
+ * @param visit Receives each span; return true to stop and report it
+ * @returns True when `visit` returned true for a span
+ */
+export function someBracketExpression(
+  input: string,
+  visit: (span: IBracketExpressionSpan) => boolean
+): boolean {
+  let index = 0;
+  while (index < input.length) {
+    const span = readBracketExpression(input, index);
+    if (span) {
+      if (visit(span)) {
+        return true;
+      }
+      index = span.end;
+      continue;
+    }
+    const literal = readLiteralAt(input, index);
+    index = literal.kind === 'none' ? index + 1 : literal.end;
+  }
+  return false;
+}
+
+/**
+ * Whether a range in `input` has an unquoted `null` bound, which the
+ * parser's rewrite leaves for Liqe to reject.
+ *
+ * @param input Query text
+ * @returns True when such a range is written
+ */
+export function hasNullRangeEndpoint(input: string): boolean {
+  return someBracketExpression(input, span => {
+    const bounds = readRangeBounds(span);
+    return (
+      bounds !== null &&
+      (isRejectedNullRangeBound(bounds.min) ||
+        isRejectedNullRangeBound(bounds.max))
+    );
+  });
+}
+
+/**
+ * Whether a range in `input` has an unquoted `true` or `false` bound, which
+ * the parser's rewrite leaves for Liqe to reject.
+ *
+ * @param input Query text
+ * @returns True when such a range is written
+ */
+export function hasBooleanRangeEndpoint(input: string): boolean {
+  return someBracketExpression(input, span => {
+    const bounds = readRangeBounds(span);
+    return (
+      bounds !== null &&
+      (isBooleanRangeEndpoint(bounds.min) || isBooleanRangeEndpoint(bounds.max))
+    );
+  });
+}
+
+/**
+ * The parser's membership operator, read just after the field's colon.
+ */
+const MEMBERSHIP_OPENER = /^(?:not\s+in|in)\s*(?=\[)/i;
+
+/**
+ * Whether the character before `index` could continue a name, in which case
+ * no field begins at `index`.
+ */
+function followsNameCharacter(input: string, index: number): boolean {
+  return index > 0 && /[\w$.]/.test(input[index - 1] ?? '');
+}
+
+function readBracketFieldToken(
+  input: string,
+  index: number
+): { text: string; end: number } | null {
+  const literal = readLiteralAt(input, index);
+  if (literal.kind === 'string' && literal.closed) {
+    return { text: input.slice(index, literal.end), end: literal.end };
+  }
+  const match = /^[A-Za-z_$][\w$.]*/.exec(input.slice(index));
+  if (!match) {
+    return null;
+  }
+  return { text: match[0], end: index + match[0].length };
+}
+
 function readStringLiteral(
   input: string,
   start: number,
@@ -216,6 +688,56 @@ function readStringLiteral(
 }
 
 function readRegexLiteral(input: string, start: number): ILiteralSpan {
+  const liqeEnd = liqeRegexSpans(input)?.get(start);
+  if (liqeEnd !== undefined) {
+    return { kind: 'regex', end: liqeEnd, closed: true };
+  }
+  return scanRegexLiteral(input, start);
+}
+
+/**
+ * The regex spans of Liqe's unique parse of `input`, keyed by start index,
+ * or null when Liqe rejects the text or reads it two ways. Only a text that
+ * holds a slash is parsed.
+ */
+function liqeRegexSpans(input: string): Map<number, number> | null {
+  if (!input.includes('/')) {
+    return null;
+  }
+  const reading = readLiqe(input);
+  if (!reading.ast) {
+    return null;
+  }
+  if (!reading.regexSpans) {
+    reading.regexSpans = new Map();
+    collectRegexSpans(reading.ast, reading.regexSpans);
+  }
+  return reading.regexSpans;
+}
+
+function collectRegexSpans(node: unknown, spans: Map<number, number>): void {
+  if (!node || typeof node !== 'object') {
+    return;
+  }
+  const token = node as {
+    type?: string;
+    location?: { start: number; end: number };
+    expression?: unknown;
+    left?: unknown;
+    right?: unknown;
+    operand?: unknown;
+  };
+  if (token.type === 'RegexExpression' && token.location) {
+    spans.set(token.location.start, token.location.end);
+    return;
+  }
+  collectRegexSpans(token.expression, spans);
+  collectRegexSpans(token.left, spans);
+  collectRegexSpans(token.right, spans);
+  collectRegexSpans(token.operand, spans);
+}
+
+function scanRegexLiteral(input: string, start: number): ILiteralSpan {
   let index = start + 1;
   let isInClass = false;
   while (index < input.length) {

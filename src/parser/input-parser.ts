@@ -8,7 +8,17 @@
  * - Real-time validation feedback
  */
 
-import { measureQueryDelimiters, readLiteralAt } from './query-scanner';
+import {
+  hasBooleanRangeEndpoint,
+  hasNullRangeEndpoint,
+  IQueryTextMap,
+  isLiqeWhitespace,
+  mapQueryText,
+  measureQueryDelimiters,
+  readLiqe,
+  readLiteralAt,
+  uppercaseBooleanOperators
+} from './query-scanner';
 
 /**
  * Represents the context of where the cursor is within a query term
@@ -107,17 +117,22 @@ export interface IQueryInputParserOptions {
  * Regular expression patterns for parsing
  */
 const PATTERNS = {
-  // Matches logical operators (AND, OR, NOT) with word boundaries
-  LOGICAL_OPERATOR: /\b(AND|OR|NOT)\b/gi,
+  // Matches an operator word (AND, OR, NOT) that the parser treats as one:
+  // followed by the end of the text, whitespace or a parenthesis, so a word
+  // glued to `.` or `:` stays inside a field name such as `not.priority`.
+  LOGICAL_OPERATOR: /^(AND|OR|NOT)(?=$|[\s()])/i,
 
   // Matches comparison operators: :, :>, :>=, :<, :<=, :!=, :=
   COMPARISON_OPERATOR: /^(:>=|:<=|:!=|:>|:<|:=|:)/,
 
-  // Matches a quoted string (single or double quotes)
-  QUOTED_STRING: /^(["'])(?:\\.|[^\\])*?\1/,
-
   // Matches word characters and some special chars (for keys/values)
   WORD_CHARS: /^[a-zA-Z0-9_.-]+/,
+
+  // Matches an unquoted value: it ends at ASCII whitespace or a parenthesis.
+  // Liqe's whitespace is tab, line feed, vertical tab, form feed and space;
+  // a Unicode space such as U+00A0 or U+2003 is a value character to it, so
+  // the search box keeps it inside the value too.
+  UNQUOTED_VALUE: /^[^\t\n\v\f\r ()]+/,
 
   // Matches whitespace
   WHITESPACE: /^\s+/,
@@ -129,6 +144,20 @@ const PATTERNS = {
   // Matches negation prefix
   NEGATION: /^-/
 };
+
+/**
+ * Read the string or regex literal at the start of `text` as the term's
+ * value. An unclosed quote or slash pattern runs to the end of the text,
+ * so `name:"John Doe` is one term rather than `"John` and `Doe`. The regex
+ * text is kept as a string and is not compiled or executed.
+ */
+function readTermLiteral(text: string): string | null {
+  const literal = readLiteralAt(text, 0);
+  if (literal.kind === 'none') {
+    return null;
+  }
+  return text.slice(0, literal.end);
+}
 
 /**
  * Parse a single term (key:value, key:>value, or just value)
@@ -171,23 +200,14 @@ function parseTerm(
       currentPos += potentialKey.length + operator.length;
       remaining = afterKey.substring(operator.length);
 
-      // Try to match the value
-      // First check for quoted string
-      const quotedMatch = remaining.match(PATTERNS.QUOTED_STRING);
-      if (quotedMatch) {
-        value = quotedMatch[0];
-        currentPos += value.length;
-      } else if (remaining.startsWith('/')) {
-        const literal = readLiteralAt(remaining, 0);
-        if (literal.kind === 'regex' && literal.end > 0) {
-          value = remaining.slice(0, literal.end);
-          currentPos += literal.end;
-        } else {
-          value = null;
-        }
+      // Try to match the value: a string or regex literal first, else an
+      // unquoted value that runs to ASCII whitespace or a parenthesis.
+      const literalValue = readTermLiteral(remaining);
+      if (literalValue !== null) {
+        value = literalValue;
+        currentPos += literalValue.length;
       } else {
-        // Match unquoted value (until whitespace or logical operator)
-        const valueMatch = remaining.match(/^[^\s()]+/);
+        const valueMatch = remaining.match(PATTERNS.UNQUOTED_VALUE);
         if (valueMatch) {
           value = valueMatch[0];
           currentPos += value.length;
@@ -206,13 +226,13 @@ function parseTerm(
       currentPos += potentialKey.length;
     }
   } else {
-    // Check for quoted string as bare value
-    const quotedMatch = remaining.match(PATTERNS.QUOTED_STRING);
-    if (quotedMatch) {
+    // A quoted string or a regex with no field is a bare value
+    const literalValue = readTermLiteral(remaining);
+    if (literalValue !== null) {
       key = null;
       operator = null;
-      value = (hasNegation ? '-' : '') + quotedMatch[0];
-      currentPos += quotedMatch[0].length;
+      value = (hasNegation ? '-' : '') + literalValue;
+      currentPos += literalValue.length;
     } else {
       // No recognizable token
       return null;
@@ -264,7 +284,7 @@ function tokenize(input: string): {
     }
 
     // Check for logical operators
-    const logicalMatch = remaining.match(/^(AND|OR|NOT)\b/i);
+    const logicalMatch = remaining.match(PATTERNS.LOGICAL_OPERATOR);
     if (logicalMatch) {
       logicalOperators.push({
         operator: logicalMatch[0].toUpperCase(),
@@ -500,9 +520,32 @@ export function findTrailingLogicalOperator(
 
 /**
  * Check if the input appears to be a complete, valid query expression.
- * This is a lightweight check - it doesn't guarantee the query will parse successfully.
+ * This is a lightweight check - it doesn't guarantee the query will parse
+ * successfully, but it agrees with `QueryParser.parse` on the shapes below:
+ * it is never true where the parser throws for one of them, and never false
+ * where the parser accepts.
  *
- * Quotes, regex literals, and parentheses inside those literals are not syntax.
+ * Quotes, regex literals, and parentheses inside those literals are not
+ * syntax. A regex spans what Liqe reads as one literal, so
+ * `name:/foo/) AND status:/bar/` is complete and the ambiguous
+ * `name:/foo/ AND status:/bar/` is not.
+ *
+ * Incomplete input:
+ * - a field with an operator and no value, an unclosed quote or regex, or
+ *   unbalanced parentheses, including a close before its open;
+ * - a trailing `AND`, `OR` or `NOT`; an `AND` or `OR` with no clause on one
+ *   side or with another operator word beside it; a `NOT` with nothing to
+ *   negate, or stacked on another `NOT`; an empty parenthesis group;
+ * - a literal with no field, whether a bare word or a quoted phrase (there
+ *   is no full-text field);
+ * - a colon with no field name, with whitespace before it, after a name that
+ *   starts with `.` or a digit, or after a name glued to the text before it
+ *   (`status :a`, `:a`, `.column:open`, `status:open\u2003AND\u2003x:1`);
+ * - a Unicode space (U+00A0, U+1680, U+2000–U+200A, U+2028, U+2029, U+202F,
+ *   U+205F, U+3000, U+FEFF) outside quotes and outside every term; inside
+ *   an unquoted value it is a value character, as it is to Liqe;
+ * - a `[min TO max]` range whose unquoted bound is `null`, `true` or
+ *   `false`, which the parser leaves to Liqe to reject.
  *
  * @param input The query input string
  * @returns true if the input appears complete, false if it looks incomplete
@@ -512,10 +555,8 @@ export function isInputComplete(input: string): boolean {
     return false;
   }
   const result = parseQueryInput(input);
-  for (const term of result.terms) {
-    if (term.key !== null && term.operator !== null && term.value === null) {
-      return false;
-    }
+  if (result.terms.some(isValuelessTerm)) {
+    return false;
   }
   if (findTrailingLogicalOperator(input)) {
     return false;
@@ -527,7 +568,314 @@ export function isInputComplete(input: string): boolean {
   if (delimiters.openParentheses !== delimiters.closeParentheses) {
     return false;
   }
-  return true;
+  const map = mapQueryText(input);
+  return !COMPLETENESS_CHECKS.some(check => check(input, map, result.terms));
+}
+
+/**
+ * One reason the search box reports input incomplete. Each check mirrors a
+ * rejection of `QueryParser.parse`.
+ */
+type CompletenessCheck = (
+  input: string,
+  map: IQueryTextMap,
+  terms: IQueryInputTerm[]
+) => boolean;
+
+const COMPLETENESS_CHECKS: CompletenessCheck[] = [
+  hasDanglingSyntax,
+  hasInvalidFieldColon,
+  hasImplicitFieldTerm,
+  hasUncoveredUnicodeSpace,
+  (input): boolean => hasNullRangeEndpoint(input),
+  (input): boolean => hasBooleanRangeEndpoint(input)
+];
+
+/**
+ * Every Unicode space JavaScript's `\s` matches that Liqe does not treat as
+ * whitespace. Inside an unquoted value each is a value character.
+ */
+const UNICODE_SPACE =
+  /[\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]/;
+
+/**
+ * Liqe's field name: `[$A-Z_a-z][\w$.]*`.
+ */
+const FIELD_NAME_START = /^[A-Za-z_$]/;
+const FIELD_NAME_CHARACTER = /[\w$.]/;
+
+function isValuelessTerm(term: IQueryInputTerm): boolean {
+  return term.key !== null && term.operator !== null && term.value === null;
+}
+
+/**
+ * A piece of query syntax at bracket depth zero: a parenthesis, an operator
+ * word, or a clause (everything else up to whitespace or a parenthesis,
+ * literals and bracket bodies included).
+ */
+interface ISyntaxToken {
+  kind: 'open' | 'close' | 'AND' | 'OR' | 'NOT' | 'clause';
+  start: number;
+  end: number;
+}
+
+/**
+ * Read the operator word at `index` when the parser would treat it as one:
+ * preceded by the start of the text, whitespace or a parenthesis, and
+ * followed by the end of the text, whitespace or a parenthesis.
+ */
+function readLogicalOperator(
+  input: string,
+  index: number
+): 'AND' | 'OR' | 'NOT' | null {
+  const before = input[index - 1];
+  if (before !== undefined && !/[\s()]/.test(before)) {
+    return null;
+  }
+  const match = PATTERNS.LOGICAL_OPERATOR.exec(input.slice(index));
+  if (!match) {
+    return null;
+  }
+  return match[1].toUpperCase() as 'AND' | 'OR' | 'NOT';
+}
+
+function readSyntaxTokens(input: string, map: IQueryTextMap): ISyntaxToken[] {
+  const tokens: ISyntaxToken[] = [];
+  let index = 0;
+  while (index < input.length) {
+    const char = input[index] ?? '';
+    if (map.isCode[index] && map.depth[index] === 0) {
+      if (/\s/.test(char)) {
+        index += 1;
+        continue;
+      }
+      if (char === '(' || char === ')') {
+        const kind = char === '(' ? 'open' : 'close';
+        tokens.push({ kind, start: index, end: index + 1 });
+        index += 1;
+        continue;
+      }
+      const word = readLogicalOperator(input, index);
+      if (word) {
+        tokens.push({ kind: word, start: index, end: index + word.length });
+        index += word.length;
+        continue;
+      }
+    }
+    const end = readClauseEnd(input, map, index);
+    tokens.push({ kind: 'clause', start: index, end });
+    index = end;
+  }
+  return tokens;
+}
+
+function readClauseEnd(
+  input: string,
+  map: IQueryTextMap,
+  start: number
+): number {
+  let index = start;
+  while (index < input.length) {
+    const char = input[index] ?? '';
+    const isSyntax = map.isCode[index] && map.depth[index] === 0;
+    if (isSyntax && (/\s/.test(char) || char === '(' || char === ')')) {
+      break;
+    }
+    index += 1;
+  }
+  return Math.max(index, start + 1);
+}
+
+/**
+ * An `AND` or `OR` needs a clause or group on each side (`NOT` may stand on
+ * the right), a `NOT` needs a clause or group after it and cannot stack on
+ * another `NOT`, a group cannot be empty, and a `)` cannot come before its
+ * `(`. Liqe rejects each of these.
+ */
+function hasDanglingSyntax(input: string, map: IQueryTextMap): boolean {
+  const tokens = readSyntaxTokens(input, map);
+  let depth = 0;
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    const previous = tokens[index - 1];
+    const next = tokens[index + 1];
+    if (token.kind === 'open') {
+      depth += 1;
+      if (next?.kind === 'close') {
+        return true;
+      }
+    } else if (token.kind === 'close') {
+      depth -= 1;
+      if (depth < 0) {
+        return true;
+      }
+    } else if (token.kind === 'AND' || token.kind === 'OR') {
+      if (!previous || !['clause', 'close'].includes(previous.kind)) {
+        return true;
+      }
+      if (!next || !['clause', 'open', 'NOT'].includes(next.kind)) {
+        return true;
+      }
+    } else if (token.kind === 'NOT') {
+      if (!next || !['clause', 'open'].includes(next.kind)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Every colon at bracket depth zero must end a field name: a closed quoted
+ * string, or a bare name of Liqe's field characters that starts with a
+ * letter, `_` or `$`. The name must begin a clause: the start of the text,
+ * Liqe whitespace, `(` or a clause-leading minus precedes it. Whitespace
+ * before the colon, a missing name, `.column`, and a name glued to the text
+ * before it (`openlabel:x`, a value holding a Unicode space) are rejected.
+ */
+function hasInvalidFieldColon(input: string, map: IQueryTextMap): boolean {
+  for (let index = 0; index < input.length; index += 1) {
+    if (!map.isCode[index] || map.depth[index] !== 0 || input[index] !== ':') {
+      continue;
+    }
+    const name = readFieldNameBefore(input, map, index);
+    if (name === null) {
+      return true;
+    }
+    if (!name.quoted && !FIELD_NAME_START.test(input.slice(name.start))) {
+      return true;
+    }
+    if (!separatesBeforeField(input, map, name.start)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function readFieldNameBefore(
+  input: string,
+  map: IQueryTextMap,
+  colonIndex: number
+): { start: number; quoted: boolean } | null {
+  const quoted = map.literals.find(
+    literal =>
+      literal.end === colonIndex && literal.kind === 'string' && literal.closed
+  );
+  if (quoted) {
+    return { start: quoted.start, quoted: true };
+  }
+  let start = colonIndex;
+  while (
+    start > 0 &&
+    map.isCode[start - 1] &&
+    FIELD_NAME_CHARACTER.test(input[start - 1] ?? '')
+  ) {
+    start -= 1;
+  }
+  return start === colonIndex ? null : { start, quoted: false };
+}
+
+/**
+ * Whether a field or value may begin at `start`: the start of the text,
+ * Liqe whitespace, `(` or a clause-leading minus comes before it.
+ */
+function separatesBeforeField(
+  input: string,
+  map: IQueryTextMap,
+  start: number
+): boolean {
+  if (start === 0) {
+    return true;
+  }
+  const before = input[start - 1] ?? '';
+  if (!map.isCode[start - 1]) {
+    return false;
+  }
+  if (isLiqeWhitespace(before) || before === '(') {
+    return true;
+  }
+  return before === '-' && startsMinusNegation(input, map, start - 1);
+}
+
+/**
+ * Whether the minus at `minusIndex` begins a clause: the start of the text,
+ * Liqe whitespace or `(` precedes it. A minus after `:`, `>`, `[` or `,` is
+ * part of a value.
+ */
+function startsMinusNegation(
+  input: string,
+  map: IQueryTextMap,
+  minusIndex: number
+): boolean {
+  if (minusIndex === 0) {
+    return true;
+  }
+  const before = input[minusIndex - 1] ?? '';
+  return (
+    map.isCode[minusIndex - 1] === true &&
+    (isLiqeWhitespace(before) || before === '(')
+  );
+}
+
+/**
+ * Liqe reads a literal with no field as an implicit-field tag, which the
+ * parser rejects: `open`, `open done`, `"hello world"` and `""`. The text is
+ * uppercased the way the parser does before Liqe sees it, so a lowercase
+ * `and` between clauses stays an operator. A text Liqe reads two ways
+ * (`name:/foo/ AND status:/bar/`) is rejected by the parser as well. A Liqe
+ * syntax error decides nothing here; the other checks cover those shapes.
+ */
+function hasImplicitFieldTerm(input: string): boolean {
+  const reading = readLiqe(uppercaseBooleanOperators(input));
+  if (reading.isAmbiguous) {
+    return true;
+  }
+  return reading.ast !== null && hasImplicitField(reading.ast);
+}
+
+function hasImplicitField(node: unknown): boolean {
+  if (!node || typeof node !== 'object') {
+    return false;
+  }
+  const token = node as {
+    type?: string;
+    field?: { type?: string };
+    expression?: unknown;
+    left?: unknown;
+    right?: unknown;
+    operand?: unknown;
+  };
+  if (token.type === 'Tag') {
+    return token.field?.type === 'ImplicitField';
+  }
+  return [token.expression, token.left, token.right, token.operand].some(
+    hasImplicitField
+  );
+}
+
+/**
+ * A Unicode space the tokenizer skipped as whitespace, outside quotes and
+ * outside every term, is a value character to Liqe and never a separator:
+ * `\u00a0status:open` and `status:open AND\u2003label:x` are syntax errors.
+ */
+function hasUncoveredUnicodeSpace(
+  input: string,
+  map: IQueryTextMap,
+  terms: IQueryInputTerm[]
+): boolean {
+  for (let index = 0; index < input.length; index += 1) {
+    if (
+      map.isCode[index] &&
+      map.depth[index] === 0 &&
+      UNICODE_SPACE.test(input[index] ?? '') &&
+      !terms.some(
+        term => term.startPosition <= index && index < term.endPosition
+      )
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**
