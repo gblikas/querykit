@@ -118,6 +118,16 @@ function comparesByStorageClass(column: SQLWrapper | null): boolean {
 }
 
 /**
+ * A quoted decimal, the strings equality compares by storage class.
+ *
+ * @param value - One membership member
+ * @returns True when the member spells a decimal
+ */
+function isQuotedDecimal(value: unknown): value is string {
+  return typeof value === 'string' && quotedDecimalValue(value) !== null;
+}
+
+/**
  * The SQL operator for a comparison that has a two-sided form.
  *
  * @param operator - A QueryKit comparison operator
@@ -456,6 +466,46 @@ export class DrizzleTranslator implements ITranslator<SQL> {
   }
 
   /**
+   * A quoted decimal in a membership list, compared by storage class so the
+   * list agrees with `=`. Other members keep the IN / NULL rewrite. A
+   * PostgreSQL column is not sent here; it binds the text and lets the
+   * database cast it.
+   *
+   * @param column - The column or quoted identifier
+   * @param encoder - The schema column, or null when the field is quoted
+   * @param values - List members, at least one of them a quoted decimal
+   * @param isNegated - True for NOT IN
+   * @returns The membership predicate
+   */
+  private translateNumeralMembership(
+    column: SQLWrapper,
+    encoder: SQLWrapper | null,
+    values: unknown[],
+    isNegated: boolean
+  ): SQL {
+    const decimals = values.filter(isQuotedDecimal);
+    const rest = values.filter(
+      (value: unknown): boolean => !isQuotedDecimal(value)
+    );
+    const operator = isNegated ? '!=' : '==';
+    const parts: SQL[] = [];
+    if (rest.length > 0) {
+      parts.push(this.translateMembership(column, encoder, rest, isNegated));
+    }
+    for (const decimal of decimals) {
+      parts.push(this.buildSqlForOperator(column, encoder, operator, decimal));
+    }
+    if (parts.length === 1) {
+      return parts[0];
+    }
+    const joiner = isNegated ? sql` AND ` : sql` OR `;
+    return sql`(${sql.join(
+      parts.map((part: SQL): SQL => sql`(${part})`),
+      joiner
+    )})`;
+  }
+
+  /**
    * Translate IN / NOT IN so NULL members agree with IS NULL / IS NOT NULL.
    * Empty IN is false and empty NOT IN is true; Drizzle's inArray has
    * treated an empty list differently across versions, so the list is
@@ -476,6 +526,14 @@ export class DrizzleTranslator implements ITranslator<SQL> {
     }
     if (values.length === 0) {
       return isNegated ? sql`TRUE` : sql`FALSE`;
+    }
+    if (comparesByStorageClass(encoder) && values.some(isQuotedDecimal)) {
+      return this.translateNumeralMembership(
+        column,
+        encoder,
+        values,
+        isNegated
+      );
     }
     const nonNullValues = values.filter(
       (value: unknown): boolean => value !== null

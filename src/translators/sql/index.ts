@@ -34,6 +34,16 @@ interface IResolvedField {
 }
 
 /**
+ * A quoted decimal, the strings equality compares by storage class.
+ *
+ * @param value - One membership member
+ * @returns True when the member spells a decimal
+ */
+function isQuotedDecimal(value: unknown): value is string {
+  return typeof value === 'string' && quotedDecimalValue(value) !== null;
+}
+
+/**
  * Options specific to the SQL translator
  */
 export interface ISqlTranslatorOptions extends ITranslatorOptions {
@@ -220,11 +230,7 @@ export class SqlTranslator
         if (!Array.isArray(value)) {
           throw new SqlTranslationError('IN operator requires an array value');
         }
-        if (value.length === 0) {
-          // Empty IN clause should always be false
-          return 'FALSE';
-        }
-        return this.formatInClause(quotedField, value, false);
+        return this.formatMembership(quotedField, value, false);
       }
       case 'NOT IN': {
         if (!Array.isArray(value)) {
@@ -232,11 +238,7 @@ export class SqlTranslator
             'NOT IN operator requires an array value'
           );
         }
-        if (value.length === 0) {
-          // Empty NOT IN clause should always be true
-          return 'TRUE';
-        }
-        return this.formatInClause(quotedField, value, true);
+        return this.formatMembership(quotedField, value, true);
       }
       default:
         throw new SqlTranslationError(`Unsupported operator: ${operator}`);
@@ -332,6 +334,46 @@ export class SqlTranslator
     const numericSql = this.formatValue(numeral);
     const textSql = this.formatValue(value);
     return `(${field} IS NULL AND NULL) OR (typeof(${field}) IN ('integer', 'real') AND ${field} ${sqlOperator} ${numericSql}) OR (typeof(${field}) = 'text' AND ${field} ${sqlOperator} ${textSql})`;
+  }
+
+  /**
+   * Membership that agrees with `=` and `<>`. An empty list is false and an
+   * empty exclusion is true. A quoted decimal is compared by storage class,
+   * the same rule as equality, and the other members stay in one IN list.
+   *
+   * @param field - Quoted identifier
+   * @param values - List members, including null
+   * @param isNot - True for NOT IN
+   * @returns The SQL predicate
+   */
+  private formatMembership(
+    field: string,
+    values: unknown[],
+    isNot: boolean
+  ): string {
+    if (values.length === 0) {
+      return isNot ? 'TRUE' : 'FALSE';
+    }
+    const decimals = values.filter(isQuotedDecimal);
+    if (decimals.length === 0) {
+      return this.formatInClause(field, values, isNot);
+    }
+    const rest = values.filter(
+      (value: unknown): boolean => !isQuotedDecimal(value)
+    );
+    const parts: string[] = [];
+    if (rest.length > 0) {
+      parts.push(this.formatInClause(field, rest, isNot));
+    }
+    const operator = isNot ? '<>' : '=';
+    for (const decimal of decimals) {
+      parts.push(this.formatComparison(field, operator, decimal));
+    }
+    if (parts.length === 1) {
+      return parts[0];
+    }
+    const joiner = isNot ? ' AND ' : ' OR ';
+    return parts.map((part: string): string => `(${part})`).join(joiner);
   }
 
   /**
