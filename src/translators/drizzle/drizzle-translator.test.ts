@@ -122,7 +122,9 @@ describe('DrizzleTranslator', () => {
       const expression = parser.parse('todos.priority:>2');
       const result = translator.translate(expression);
       const compiled = new SQLiteSyncDialect().sqlToQuery(result);
-      expect(compiled.sql).toBe('"todos"."priority" > ?');
+      expect(compiled.sql).toBe(
+        '("todos"."priority" IS NULL AND NULL) OR (typeof("todos"."priority") IN (\'integer\', \'real\') AND "todos"."priority" > ?) OR (typeof("todos"."priority") = \'text\')'
+      );
       expect(compiled.params).toEqual([2]);
     });
   });

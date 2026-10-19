@@ -345,6 +345,15 @@ export class DrizzleTranslator implements ITranslator<SQL> {
     if (affinity !== null) {
       return affinity;
     }
+    const orderedNumber = this.orderedNumberSql(
+      column,
+      encoder,
+      operator,
+      value
+    );
+    if (orderedNumber !== null) {
+      return orderedNumber;
+    }
     switch (operator) {
       case '==':
         return value === null
@@ -390,6 +399,46 @@ export class DrizzleTranslator implements ITranslator<SQL> {
       default:
         throw new DrizzleTranslationError(`Unsupported operator: ${operator}`);
     }
+  }
+
+  /**
+   * An ordered comparison of a bare number by SQLite storage class.
+   *
+   * Every text value is greater than every number, matching in-memory
+   * filtering and a column with no affinity. Integer and real storage
+   * compare numerically, so a typed numeric column keeps its matches. A
+   * PostgreSQL column is left to `bindValue` so the database casts. The
+   * leading `IS NULL AND NULL` term keeps a NULL unknown.
+   *
+   * @param column - The column or quoted identifier to compare
+   * @param encoder - The schema column, or null when the field is quoted
+   * @param operator - The QueryKit comparison operator
+   * @param value - The query value
+   * @returns The comparison, or null when this value stays a plain binding
+   */
+  private orderedNumberSql(
+    column: SQLWrapper,
+    encoder: SQLWrapper | null,
+    operator: string,
+    value: unknown
+  ): SQL | null {
+    const sqlOperator = comparisonSqlOperator(operator);
+    if (
+      sqlOperator === null ||
+      sqlOperator === '=' ||
+      sqlOperator === '<>' ||
+      !comparesByStorageClass(encoder) ||
+      typeof value !== 'number' ||
+      !Number.isFinite(value)
+    ) {
+      return null;
+    }
+    const op = sql.raw(sqlOperator);
+    const numeric = sql`typeof(${column}) IN ('integer', 'real') AND ${column} ${op} ${value}`;
+    if (sqlOperator === '>' || sqlOperator === '>=') {
+      return sql`(${column} IS NULL AND NULL) OR (${numeric}) OR (typeof(${column}) = 'text')`;
+    }
+    return sql`(${column} IS NULL AND NULL) OR (${numeric})`;
   }
 
   /**

@@ -310,15 +310,15 @@ export class SqlTranslator
   }
 
   /**
-   * Inline equality of a bare number, compared by storage class.
+   * A bare number compared by storage class.
    *
-   * A TEXT column applies affinity to an integer literal, so `year = 2024`
-   * matches the string `2024`. A bound parameter is a real, and in-memory
-   * equality keeps the number in its own class, so neither matches that
-   * string. Inline SQL does the same: the number equals only integer and
-   * real storage. The leading `IS NULL AND NULL` term keeps a NULL unknown,
-   * so `NOT` of the comparison still matches nothing. Parameterized SQL
-   * keeps binding the number.
+   * Equality stays numeric: a TEXT column must not turn `2024` into the
+   * text `2024`. Inline SQL does that itself; parameterized equality already
+   * binds a real and agrees. An ordered comparison treats every text value
+   * as greater than every number, which is what in-memory filtering does
+   * and what a column with no affinity does. A TEXT column would otherwise
+   * compare the digits as text. The leading `IS NULL AND NULL` term keeps a
+   * NULL unknown.
    *
    * @param field - Quoted identifier
    * @param sqlOperator - SQL comparison operator
@@ -330,16 +330,64 @@ export class SqlTranslator
     sqlOperator: string,
     value: unknown
   ): string | null {
-    if (
-      this.options.useParameters ||
-      typeof value !== 'number' ||
-      (sqlOperator !== '=' && sqlOperator !== '<>')
-    ) {
+    if (typeof value !== 'number') {
+      return null;
+    }
+    if (sqlOperator === '=' || sqlOperator === '<>') {
+      return this.formatBareNumberEquality(field, sqlOperator, value);
+    }
+    return this.formatOrderedNumber(field, sqlOperator, value);
+  }
+
+  /**
+   * Inline equality of a bare number against integer and real storage.
+   *
+   * @param field - Quoted identifier
+   * @param sqlOperator - `=` or `<>`
+   * @param value - The number
+   * @returns The comparison, or null when parameters already agree
+   */
+  private formatBareNumberEquality(
+    field: string,
+    sqlOperator: string,
+    value: number
+  ): string | null {
+    if (this.options.useParameters) {
       return null;
     }
     const literal = this.formatValue(value);
     const equality = `(${field} IS NULL AND NULL) OR (typeof(${field}) IN ('integer', 'real') AND ${field} = ${literal})`;
     return sqlOperator === '=' ? equality : `NOT (${equality})`;
+  }
+
+  /**
+   * An ordered comparison of a bare number. Text is greater than every
+   * number. Integer and real storage compare numerically.
+   *
+   * @param field - Quoted identifier
+   * @param sqlOperator - `>`, `>=`, `<` or `<=`
+   * @param value - The number
+   * @returns The comparison, or null for an operator this method does not own
+   */
+  private formatOrderedNumber(
+    field: string,
+    sqlOperator: string,
+    value: number
+  ): string | null {
+    if (
+      sqlOperator !== '>' &&
+      sqlOperator !== '>=' &&
+      sqlOperator !== '<' &&
+      sqlOperator !== '<='
+    ) {
+      return null;
+    }
+    const literal = this.formatValue(value);
+    const numeric = `typeof(${field}) IN ('integer', 'real') AND ${field} ${sqlOperator} ${literal}`;
+    if (sqlOperator === '>' || sqlOperator === '>=') {
+      return `(${field} IS NULL AND NULL) OR (${numeric}) OR (typeof(${field}) = 'text')`;
+    }
+    return `(${field} IS NULL AND NULL) OR (${numeric})`;
   }
 
   /**

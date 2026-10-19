@@ -22,7 +22,9 @@ describe('SqlTranslator', () => {
       const expression = parser.parse('priority:>18');
       const result = translator.translate(expression) as string;
 
-      expect(result).toBe('"priority" > 18');
+      expect(result).toBe(
+        '("priority" IS NULL AND NULL) OR (typeof("priority") IN (\'integer\', \'real\') AND "priority" > 18) OR (typeof("priority") = \'text\')'
+      );
     });
 
     it('should translate numeric values directly', () => {
@@ -45,14 +47,18 @@ describe('SqlTranslator', () => {
       const expression = parser.parse('priority:>2');
       const result = translator.translate(expression) as string;
 
-      expect(result).toBe('"priority" > 2');
+      expect(result).toBe(
+        '("priority" IS NULL AND NULL) OR (typeof("priority") IN (\'integer\', \'real\') AND "priority" > 2) OR (typeof("priority") = \'text\')'
+      );
     });
 
     it('should translate a logical AND expression', () => {
       const expression = parser.parse('priority:>2 AND status:"active"');
       const result = translator.translate(expression) as string;
 
-      expect(result).toBe('("priority" > 2) AND ("status" = \'active\')');
+      expect(result).toBe(
+        '(("priority" IS NULL AND NULL) OR (typeof("priority") IN (\'integer\', \'real\') AND "priority" > 2) OR (typeof("priority") = \'text\')) AND ("status" = \'active\')'
+      );
     });
 
     it('should translate a logical OR expression', () => {
@@ -78,7 +84,7 @@ describe('SqlTranslator', () => {
       const result = translator.translate(expression) as string;
 
       expect(result).toBe(
-        '(("priority" > 2) AND ("status" = \'active\')) OR ("role" = \'admin\')'
+        '((("priority" IS NULL AND NULL) OR (typeof("priority") IN (\'integer\', \'real\') AND "priority" > 2) OR (typeof("priority") = \'text\')) AND ("status" = \'active\')) OR ("role" = \'admin\')'
       );
     });
 
@@ -160,7 +166,9 @@ describe('SqlTranslator', () => {
       const expression = parser.parse('users.priority:>2');
       const result = translator.translate(expression) as string;
 
-      expect(result).toBe('"users"."priority" > 2');
+      expect(result).toBe(
+        '("users"."priority" IS NULL AND NULL) OR (typeof("users"."priority") IN (\'integer\', \'real\') AND "users"."priority" > 2) OR (typeof("users"."priority") = \'text\')'
+      );
     });
 
     it('should properly escape string values with quotes', () => {
@@ -174,7 +182,9 @@ describe('SqlTranslator', () => {
       const expression = parser.parse('priority:>2 AND status:"active"');
       const sql = translator.translate(expression);
 
-      expect(sql).toContain('"priority" > 2');
+      expect(sql).toContain(
+        '("priority" IS NULL AND NULL) OR (typeof("priority") IN (\'integer\', \'real\') AND "priority" > 2) OR (typeof("priority") = \'text\')'
+      );
       expect(sql).toContain('"status" = ');
       expect(sql).toContain('AND');
     });
@@ -227,7 +237,9 @@ describe('SqlTranslator', () => {
         expression
       ) as ISqlTranslationResult;
 
-      expect(result.sql).toBe('"priority" > ?');
+      expect(result.sql).toBe(
+        '("priority" IS NULL AND NULL) OR (typeof("priority") IN (\'integer\', \'real\') AND "priority" > ?) OR (typeof("priority") = \'text\')'
+      );
       expect(result.params).toEqual([18]);
     });
 
@@ -240,7 +252,7 @@ describe('SqlTranslator', () => {
       ) as ISqlTranslationResult;
 
       expect(result.sql).toBe(
-        '(("priority" > ?) AND ("status" = ?)) OR ("role" = ?)'
+        '((("priority" IS NULL AND NULL) OR (typeof("priority") IN (\'integer\', \'real\') AND "priority" > ?) OR (typeof("priority") = \'text\')) AND ("status" = ?)) OR ("role" = ?)'
       );
       expect(result.params).toEqual([18, 'active', 'admin']);
     });
@@ -284,7 +296,7 @@ describe('SqlTranslator', () => {
       const result = mappingTranslator.translate(expression) as string;
 
       expect(result).toBe(
-        '("users"."id" > 100) AND ("users"."name" = \'John\')'
+        '(("users"."id" IS NULL AND NULL) OR (typeof("users"."id") IN (\'integer\', \'real\') AND "users"."id" > 100) OR (typeof("users"."id") = \'text\')) AND ("users"."name" = \'John\')'
       );
     });
   });

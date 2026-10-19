@@ -134,7 +134,9 @@ describe('a repeated sort key', () => {
     const inline = new SqlTranslator({ useParameters: false }).translate(
       expression
     ) as string;
-    expect(inline).toBe('"id" > 0');
+    expect(inline).toBe(
+      '("id" IS NULL AND NULL) OR (typeof("id") IN (\'integer\', \'real\') AND "id" > 0) OR (typeof("id") = \'text\')'
+    );
     expect(
       database
         .prepare(
@@ -146,7 +148,10 @@ describe('a repeated sort key', () => {
     const parameterized = new SqlTranslator().translate(
       expression
     ) as IParameterizedSql;
-    expect(parameterized).toEqual({ sql: '"id" > ?', params: [0] });
+    expect(parameterized).toEqual({
+      sql: '("id" IS NULL AND NULL) OR (typeof("id") IN (\'integer\', \'real\') AND "id" > ?) OR (typeof("id") = \'text\')',
+      params: [0]
+    });
     expect(
       database
         .prepare(

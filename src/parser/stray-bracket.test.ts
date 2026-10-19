@@ -62,7 +62,7 @@ describe('stray bracket', () => {
     expect(context.recovery?.autofix).toBeUndefined();
   });
 
-  const RANGE_SQL = `("count" >= 1) AND ("count" <= 5)`;
+  const RANGE_SQL = `(("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" >= 1) OR (typeof("count") = 'text')) AND (("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" <= 5))`;
 
   it.each([
     ['count:>[1 TO 5]', RANGE_SQL, [1, 2]],
@@ -75,10 +75,26 @@ describe('stray bracket', () => {
     ['count:>[+1 TO 5]', RANGE_SQL, [1, 2]],
     ['count:>[1. TO 5]', RANGE_SQL, [1, 2]],
     ['count:>[1e0 TO 5e0]', RANGE_SQL, [1, 2]],
-    ['count:>[.5 TO 5]', `("count" >= 0.5) AND ("count" <= 5)`, [1, 2]],
-    ['count:>{1 TO 3}', `("count" > 1) AND ("count" < 3)`, []],
-    ['-count:>[1 TO 5]', `NOT (("count" >= 1) AND ("count" <= 5))`, []],
-    ['NOT count:>[1 TO 5]', `NOT (("count" >= 1) AND ("count" <= 5))`, []],
+    [
+      'count:>[.5 TO 5]',
+      `(("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" >= 0.5) OR (typeof("count") = 'text')) AND (("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" <= 5))`,
+      [1, 2]
+    ],
+    [
+      'count:>{1 TO 3}',
+      `(("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" > 1) OR (typeof("count") = 'text')) AND (("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" < 3))`,
+      []
+    ],
+    [
+      '-count:>[1 TO 5]',
+      `NOT ((("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" >= 1) OR (typeof("count") = 'text')) AND (("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" <= 5)))`,
+      []
+    ],
+    [
+      'NOT count:>[1 TO 5]',
+      `NOT ((("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" >= 1) OR (typeof("count") = 'text')) AND (("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" <= 5)))`,
+      []
+    ],
     ['status:[a TO b]', `("status" >= 'a') AND ("status" <= 'b')`, [1, 2]],
     ['status:{a TO b}', `("status" > 'a') AND ("status" < 'b')`, []],
     ['status:in [a, b]', `"status" IN ('a', 'b')`, [1, 2]],

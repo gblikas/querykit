@@ -93,7 +93,9 @@ describe('a sort key in another letter case', () => {
         expression
       ) as IParameterizedSql;
       const orderBy = `ORDER BY "${field}" ${direction.toUpperCase()}`;
-      expect(inline).toBe('"id" >= 0');
+      expect(inline).toBe(
+        '("id" IS NULL AND NULL) OR (typeof("id") IN (\'integer\', \'real\') AND "id" >= 0) OR (typeof("id") = \'text\')'
+      );
       expect(
         database
           .prepare(`SELECT id FROM items WHERE ${inline} ${orderBy}`)
