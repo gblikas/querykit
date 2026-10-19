@@ -108,6 +108,18 @@ export interface IParserOptions {
    * Custom field name mappings
    */
   fieldMappings?: Record<string, string>;
+
+  /**
+   * Longest query text, in characters, the parser reads. A longer input is
+   * rejected before any rewrite or Liqe run, whose cost grows superlinearly
+   * with the length of a bare word: `parse` throws `QueryParseError`,
+   * `parseWithContext` returns a failed result with no tokens and no
+   * recovery, and `isInputComplete` reports the input incomplete. A
+   * positive integer, or `Infinity` for no cap.
+   *
+   * @default 10000
+   */
+  maxQueryLength?: number;
 }
 
 /**

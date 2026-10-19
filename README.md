@@ -197,6 +197,10 @@ qk.query('users').where('status:active').orderBy('STATUS', 'desc');
 
 The parser folds a field to lower case, so a camelCase property such as `createdAt` arrives as `createdat`. `createQueryKit` respells that folded name as the one schema property that differs from it only by ASCII case, in the query, in `orderBy`, and in `allowedFields`, `denyFields` and the keys of `denyValues`, before the allowlist compares it, so `CreatedAt:null`, `createdat:null` and `orderBy('createdAt')` all reach `createdAt` on Drizzle and in memory. A name that folds onto two properties differing only by case, such as `createdAt` beside `CreatedAt`, is rejected with `QuerySecurityError: Invalid query parameters` on both adapters, as a filter and as a sort key.
 
+### Query Length
+
+`maxQueryLength` caps the query text, in characters, at 10,000 by default. Liqe's cost grows superlinearly with the length of a bare word (about 2 s of synchronous CPU for 10,000 characters), and the `maxValueLength`, `maxQueryDepth` and `maxClauseCount` caps measure the parsed AST, so this is the one check that runs before the parser reads anything: `parse` throws `QueryParseError`, `parseWithContext` returns a failed result with no tokens and no recovery, and `isInputComplete` reports the input incomplete, each before any rewrite or Liqe run. Raise it with `parserOptions: { maxQueryLength: 20000 }`, pass the same option to `isInputComplete(input, { maxQueryLength })`, or set it to `Infinity` for no cap; a request handler that accepts longer text should still bound it, since the default leaves up to about 2 s of parsing per request.
+
 ## Tolerant Parse Mode
 
 By default, `createQueryKit` throws on any malformed input. For search UIs where queries may be submitted in a transiently incomplete state, enable tolerant mode to leverage `parseWithContext`'s built-in error recovery:

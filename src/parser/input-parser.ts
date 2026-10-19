@@ -40,6 +40,21 @@ import {
   readNumeralToken,
   spellNumeralToken
 } from './stored-integer';
+import { exceedsMaxQueryLength, resolveMaxQueryLength } from './query-length';
+
+/**
+ * Options for `isInputComplete`.
+ */
+export interface IInputCompletenessOptions {
+  /**
+   * Longest input, in characters, the check reads; a longer input is
+   * incomplete before any rewrite or Liqe run. The same cap as
+   * `IParserOptions.maxQueryLength`, with the same default.
+   *
+   * @default 10000
+   */
+  maxQueryLength?: number;
+}
 
 /**
  * Represents the context of where the cursor is within a query term
@@ -583,11 +598,24 @@ export function findTrailingLogicalOperator(
  * rewrites it, `NOT field:`, so an ordered operator after it belongs to
  * the operator: `count:!=>5` is complete.
  *
+ * An input longer than `maxQueryLength` is incomplete before any of this
+ * runs, as `QueryParser.parse` rejects it.
+ *
  * @param input The query input string
+ * @param options The length cap; the parser's default when omitted
  * @returns true if the input appears complete, false if it looks incomplete
+ * @throws {RangeError} When `maxQueryLength` is neither a positive integer
+ * nor `Infinity`
  */
-export function isInputComplete(input: string): boolean {
-  if (!input || input.trim().length === 0) {
+export function isInputComplete(
+  input: string,
+  options: IInputCompletenessOptions = {}
+): boolean {
+  const maxQueryLength = resolveMaxQueryLength(options.maxQueryLength);
+  if (!input || exceedsMaxQueryLength(input, maxQueryLength)) {
+    return false;
+  }
+  if (input.trim().length === 0) {
     return false;
   }
   if (hasRejectedLiqeReading(input)) {

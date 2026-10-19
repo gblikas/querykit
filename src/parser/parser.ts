@@ -57,6 +57,11 @@ import {
   splitListMembers
 } from './query-scanner';
 import {
+  exceedsMaxQueryLength,
+  queryLengthMessage,
+  resolveMaxQueryLength
+} from './query-length';
+import {
   exactSqliteInteger,
   isPlainInteger,
   isUnstorableInteger,
@@ -210,15 +215,24 @@ export class QueryParser implements IQueryParser {
   private options: Required<IParserOptions>;
   private parseState: IParseState | null = null;
 
+  /**
+   * @throws {RangeError} When `maxQueryLength` is neither a positive
+   * integer nor `Infinity`
+   */
   constructor(options: IParserOptions = {}) {
     this.options = {
       caseInsensitiveFields: options.caseInsensitiveFields ?? false,
-      fieldMappings: options.fieldMappings ?? {}
+      fieldMappings: options.fieldMappings ?? {},
+      maxQueryLength: resolveMaxQueryLength(options.maxQueryLength)
     };
   }
 
   /**
-   * Parse a query string into a QueryKit AST
+   * Parse a query string into a QueryKit AST. An input longer than
+   * `maxQueryLength` is rejected before any rewrite or Liqe run.
+   *
+   * @throws {QueryParseError} When the query cannot be read, or is longer
+   * than `maxQueryLength`
    */
   public parse(query: string): QueryExpression {
     const previousState = this.parseState;
@@ -229,6 +243,7 @@ export class QueryParser implements IQueryParser {
       sourceText: ''
     };
     try {
+      this.assertQueryLength(query);
       // Pre-process the query to handle IN operator syntax
       const preprocessedQuery = this.preprocessQuery(query);
       this.parseState.sourceText = preprocessedQuery;
@@ -244,6 +259,19 @@ export class QueryParser implements IQueryParser {
       );
     } finally {
       this.parseState = previousState;
+    }
+  }
+
+  /**
+   * Reject a query longer than `maxQueryLength` before anything reads it.
+   *
+   * @throws {QueryParseError} When the text is longer than the cap
+   */
+  private assertQueryLength(query: string): void {
+    if (exceedsMaxQueryLength(query, this.options.maxQueryLength)) {
+      throw new QueryParseError(
+        queryLengthMessage(query.length, this.options.maxQueryLength)
+      );
     }
   }
 
@@ -817,6 +845,9 @@ export class QueryParser implements IQueryParser {
     query: string,
     options: IParseWithContextOptions = {}
   ): IQueryParseResult {
+    if (exceedsMaxQueryLength(query, this.options.maxQueryLength)) {
+      return this.rejectQueryLength(query);
+    }
     // Get tokens from input parser (always works, even for invalid input)
     const tokenResult = parseQueryTokens(query, options.cursorPosition);
     const tokens = this.convertTokens(tokenResult.tokens);
@@ -911,6 +942,39 @@ export class QueryParser implements IQueryParser {
   }
 
   /**
+   * The result for an input longer than `maxQueryLength`. Nothing was
+   * tokenized or parsed, so the tokens are empty, the structure is empty
+   * and incomplete, and there is no recovery, validation or suggestion; the
+   * error names the cap and points at the first character past it. The
+   * delimiters are still counted, which is one pass over the text with no
+   * rewrite and no Liqe run.
+   */
+  private rejectQueryLength(query: string): IQueryParseResult {
+    const delimiters = measureQueryDelimiters(query);
+    return {
+      success: false,
+      input: query,
+      error: {
+        message: queryLengthMessage(query.length, this.options.maxQueryLength),
+        position: this.options.maxQueryLength
+      },
+      tokens: [],
+      activeTokenIndex: -1,
+      structure: {
+        depth: 0,
+        clauseCount: 0,
+        operatorCount: 0,
+        hasBalancedParentheses:
+          delimiters.openParentheses === delimiters.closeParentheses,
+        hasBalancedQuotes: delimiters.unclosedQuote === null,
+        isComplete: false,
+        referencedFields: [],
+        complexity: 'simple'
+      }
+    };
+  }
+
+  /**
    * Convert tokens from input parser format to IQueryToken format
    */
   private convertTokens(tokens: QueryToken[]): IQueryToken[] {
@@ -972,7 +1036,9 @@ export class QueryParser implements IQueryParser {
     }
     const depth =
       query.trim().length > 0 ? Math.max(1, delimiters.maxParenthesisDepth) : 0;
-    const isComplete = isInputComplete(query);
+    const isComplete = isInputComplete(query, {
+      maxQueryLength: this.options.maxQueryLength
+    });
     const complexity = this.determineComplexity(
       clauseCount,
       operatorCount,
