@@ -4,6 +4,10 @@ import {
   QueryValue
 } from '../parser/types';
 import {
+  matchesLikePattern,
+  toSqlLikePattern
+} from '../translators/like-pattern';
+import {
   foldAsciiCase,
   resolveSchemaFieldCase,
   SchemaTables
@@ -748,6 +752,54 @@ export function aliasSecurityFields(
 }
 
 /**
+ * The text SQLite LIKE would see for a denied value. A string is itself, a
+ * finite number is its decimal text, and a boolean is `1` or `0`. Null has
+ * no text, so a wildcard cannot name it.
+ *
+ * @param value - One entry of a `denyValues` list
+ * @returns The text a wildcard is matched against, or undefined for null
+ */
+function deniedValueLikeText(value: DeniedValue): string | undefined {
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value.toString() : undefined;
+  }
+  if (typeof value === 'boolean') {
+    return value ? '1' : '0';
+  }
+  return undefined;
+}
+
+/**
+ * Whether a QueryKit LIKE pattern matches a denied value the way SQLite LIKE
+ * does: `*` is any sequence, `?` is one character, and ASCII letters match
+ * in either case. A pattern that would keep a row carrying the denied value
+ * is a mention of that value.
+ *
+ * @param pattern - The LIKE operand as the parser stored it
+ * @param deniedValues - The values denied for the comparison's field
+ * @returns True when the pattern matches one of those values
+ *
+ * @example
+ * ```typescript
+ * likePatternMatchesDenied('hid*', ['hidden']); // true
+ * likePatternMatchesDenied('other*', ['hidden']); // false
+ * ```
+ */
+function likePatternMatchesDenied(
+  pattern: string,
+  deniedValues: readonly DeniedValue[]
+): boolean {
+  const sqlPattern = toSqlLikePattern(pattern);
+  return deniedValues.some(deniedValue => {
+    const text = deniedValueLikeText(deniedValue);
+    return text !== undefined && matchesLikePattern(sqlPattern, text);
+  });
+}
+
+/**
  * Index a `denyValues` map by every `deniedNameForms` spelling of each own
  * key (ASCII fold, single `table.` qualifier, bare and qualified), so a field
  * is looked up the way `isDeniedName` matches it. A prototype name such as
@@ -1055,9 +1107,12 @@ export class QuerySecurityValidator {
    * qualifier still applies.
    *
    * Any query that references a denied value in any form — including with
-   * negation operators like `NOT`, `!=`, or `NOT IN` — is rejected. This
-   * prevents users from probing or referencing sensitive values at all,
-   * rather than relying on operator semantics to determine intent.
+   * negation operators like `NOT`, `!=`, or `NOT IN` — is rejected. A LIKE
+   * wildcard is a reference when it matches a denied value the way SQLite
+   * LIKE does (`hid*` and `*hidden*` match `hidden`; `other*` does not),
+   * including under `NOT` and `OR`. This prevents users from probing or
+   * referencing sensitive values at all, rather than relying on operator
+   * semantics to determine intent.
    *
    * To guarantee denied records are never returned (e.g. when the user
    * queries a different field), use `enforceExcludedValues` instead,
@@ -1082,7 +1137,11 @@ export class QuerySecurityValidator {
       // An array is an IN / NOT IN list; every member is checked
       const values = Array.isArray(value) ? value : [value];
       for (const item of values) {
-        if (this.isValueDenied(item, deniedValues)) {
+        const coveredByWildcard =
+          expression.operator === 'LIKE' &&
+          typeof item === 'string' &&
+          likePatternMatchesDenied(item, deniedValues);
+        if (this.isValueDenied(item, deniedValues) || coveredByWildcard) {
           throw new QuerySecurityError(INVALID_QUERY_PARAMETERS);
         }
       }
