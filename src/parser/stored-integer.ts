@@ -54,6 +54,15 @@ const EXPONENT_NUMERAL = /^([+-]?)(\d*)(?:\.(\d*))?[eE]([+-]?\d+)$/;
 const LIQE_DECIMAL = /^-?\d+(?:\.\d+)?$/;
 
 /**
+ * The ASCII whitespace PostgreSQL's and SQLite's numeric input skips at
+ * either end of a text.
+ */
+const SURROUNDING_ASCII_SPACE = /^[ \t\n\v\f\r]+|[ \t\n\v\f\r]+$/g;
+
+/** A leading plus in front of a digit, which both databases accept. */
+const LEADING_PLUS = /^\+(?=\d)/;
+
+/**
  * Characters that may precede a numeral token: the start of the text,
  * whitespace, an opening bracket, a comma, or the end of a comparison
  * operator. A letter, digit, dot, dollar or sign before the token makes it
@@ -347,4 +356,37 @@ function spellRejectedNumeral(token: string): string {
  */
 export function isPlainInteger(token: string): boolean {
   return PLAIN_INTEGER.test(token);
+}
+
+/**
+ * The number a quoted value spells, when a numeric column on PostgreSQL
+ * and on SQLite would both read it as one: the plain decimal Liqe reads,
+ * allowing the leading plus and the surrounding ASCII whitespace both
+ * databases skip. A plain integer keeps its digits exactly, as a bigint
+ * when `Number` would round them. An exponent is not read, since
+ * PostgreSQL rejects `"1e1"` for an integer column where SQLite reads 10;
+ * nor is a leading or trailing dot, a word, or an empty text.
+ *
+ * @param text - A quoted query value
+ * @returns The number or exact bigint it spells, or null when it spells none
+ *
+ * @example
+ * ```typescript
+ * quotedDecimalValue('2'); // 2
+ * quotedDecimalValue(' +2 '); // 2
+ * quotedDecimalValue('9007199254740993'); // 9007199254740993n
+ * quotedDecimalValue('1e1'); // null
+ * ```
+ */
+export function quotedDecimalValue(text: string): number | bigint | null {
+  const spelled = text
+    .replace(SURROUNDING_ASCII_SPACE, '')
+    .replace(LEADING_PLUS, '');
+  if (!LIQE_DECIMAL.test(spelled)) {
+    return null;
+  }
+  if (PLAIN_INTEGER.test(spelled)) {
+    return exactSqliteInteger(spelled) ?? Number(spelled);
+  }
+  return Number(spelled);
 }

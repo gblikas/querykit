@@ -4,7 +4,9 @@
  * SQLite with no affinity orders every number below every text value, so
  * `label:>2` keeps every string including the empty one, `label:<10` keeps
  * none, `count:>"2"` keeps none and `count:<"10"` keeps every number. Memory
- * applies the same class order instead of treating the pair as unordered.
+ * applies the same class order to a bare number against a string instead
+ * of treating the pair as unordered; a quoted numeral against a number
+ * takes the number's affinity there, as a typed column does.
  */
 
 import { createRequire } from 'module';
@@ -96,14 +98,21 @@ describe('a string ordered against a number', () => {
     return { sql: compiled.sql, params: compiled.params };
   }
 
+  // The SQLite table here has no column affinity, so the text `2` ranks
+  // above every count. The in-memory adapter follows a typed column
+  // instead (`docs/pglite-parity-survey.md`, group 4a: PGlite and a typed
+  // SQLite table both read `"2"` against an integer column as 2), so
+  // `count:>"2"` keeps the count above 2 and `count:<"10"` the counts
+  // below 10 there. A bare number against a text value (group 4b) is
+  // unchanged.
   it.each([
-    ['label:>2', 'label', '>', 2, [1, 2, 3, 4]],
-    ['label:<10', 'label', '<', 10, []],
-    ['count:>"2"', 'count', '>', '2', []],
-    ['count:<"10"', 'count', '<', '10', [5, 6, 7]]
+    ['label:>2', 'label', '>', 2, [1, 2, 3, 4], [1, 2, 3, 4]],
+    ['label:<10', 'label', '<', 10, [], []],
+    ['count:>"2"', 'count', '>', '2', [], [7]],
+    ['count:<"10"', 'count', '<', '10', [5, 6, 7], [5, 6]]
   ])(
     '%s puts every string above every number on every engine',
-    (query, field, operator, value, expectedIds) => {
+    (query, field, operator, value, expectedIds, memoryIds) => {
       expect(isInputComplete(query)).toBe(true);
       const expression = parser.parse(query);
       expect(expression).toEqual({
@@ -125,9 +134,7 @@ describe('a string ordered against a number', () => {
       expect(idsOfSql(parameterized)).toEqual(expectedIds);
       expect(idsOfSql(compileDrizzle(expression))).toEqual(expectedIds);
       expect(idsOfSql(schemaDrizzle)).toEqual(expectedIds);
-      expect(filterInMemory(query, rows).map(row => row.id)).toEqual(
-        expectedIds
-      );
+      expect(filterInMemory(query, rows).map(row => row.id)).toEqual(memoryIds);
     }
   );
 });

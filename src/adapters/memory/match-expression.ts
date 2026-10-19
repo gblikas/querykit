@@ -14,6 +14,7 @@ import {
   isStoredNull,
   likeTextOf,
   StoredValue,
+  storedQueryValueOf,
   storedValueOf
 } from './stored-value';
 import { assertFieldsInScope } from './table-scope';
@@ -39,8 +40,9 @@ const REGEX_MESSAGE = 'Unsupported operator: REGEX';
  * (`*` is `%`, `?` is `_`, anchored to the whole value, ASCII letters
  * matching in either case as in SQLite). Values compare the way SQLite
  * compares a column: a boolean is 0 or 1, a bigint and a number compare by
- * value, a Date is its ISO-8601 text, NaN is NULL, and every string is
- * greater than every number.
+ * value, a Date is its ISO-8601 text, NaN is NULL, a quoted numeral against
+ * a number is that number (as a typed column reads it), and every other
+ * string is greater than every number.
  *
  * Before any row is read, the shared security checks run on the query as
  * written (allowlist, value length, depth and clause caps, with the same
@@ -466,7 +468,9 @@ function comparisonTruth(
  * field does not. A null field compared with any other value is unknown.
  * Otherwise the two values are equal when SQLite would store them as the
  * same class and value: `true` equals 1, `10n` equals 10, a Date equals its
- * ISO-8601 text, and a string never equals a number.
+ * ISO-8601 text, a quoted numeral such as `"2"` equals the number 2 (as a
+ * typed column reads it on PostgreSQL and SQLite), and any other string
+ * never equals a number.
  *
  * @param left Field value
  * @param right Query value
@@ -483,7 +487,7 @@ function equalityTruth(left: unknown, right: QueryValue): SqlTruth {
   if (Array.isArray(right)) {
     return false;
   }
-  return isSameStoredValue(stored, storedValueOf(right));
+  return isSameStoredValue(stored, storedQueryValueOf(stored, right));
 }
 
 /**
@@ -503,9 +507,10 @@ function isSameStoredValue(left: StoredValue, right: StoredValue): boolean {
 
 /**
  * Order two values the way SQLite orders a column: numbers (a boolean as 0
- * or 1, a bigint by value) compare numerically, strings and Dates by code
- * point, and every string is greater than every number. A null side is
- * unknown. A field outside those classes is false.
+ * or 1, a bigint by value, a quoted numeral against a number as that
+ * number) compare numerically, strings and Dates by code point, and every
+ * other string is greater than every number. A null side is unknown. A
+ * field outside those classes is false.
  *
  * @param left Field value
  * @param right Query value
@@ -527,7 +532,10 @@ function orderedTruth(
   if (Array.isArray(right) || stored.kind === 'other') {
     return false;
   }
-  return holdsOrder(compareStored(stored, storedValueOf(right)), operator);
+  return holdsOrder(
+    compareStored(stored, storedQueryValueOf(stored, right)),
+    operator
+  );
 }
 
 /**

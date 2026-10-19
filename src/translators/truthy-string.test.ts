@@ -5,7 +5,8 @@
  * `YES`, `1` and `0`. Every engine binds that text, including a boolean-mode
  * Drizzle column, whose encoder would otherwise turn each of them into `1`
  * and match the boolean-true row. Only the exact string `yes` matches the
- * string row.
+ * string row on the typeless table; in memory a quoted numeral against a
+ * stored boolean takes its numeric affinity, as a typed column does.
  */
 
 import { createRequire } from 'module';
@@ -108,40 +109,49 @@ describe('truthy string equality', () => {
       .map(row => row.id as number);
   }
 
+  // The SQLite table here has no column affinity, so `flag = '1'` compares
+  // the integer 1 with the text `1` and matches nothing. The in-memory
+  // adapter follows a typed column instead (`docs/pglite-parity-survey.md`,
+  // group 4a: PGlite and a typed SQLite table both read `"1"` against a
+  // numeric column as 1), so `flag:"1"` keeps the true row and `flag:"0"`
+  // the false row there.
   it.each([
-    ['flag:yes', 'yes', [3]],
-    ['flag:YES', 'YES', []],
-    ['flag:"1"', '1', []],
-    ['flag:"0"', '0', []]
-  ])('%s binds the text on every engine', (query, value, expectedIds) => {
-    expect(isInputComplete(query)).toBe(true);
-    const expression = parser.parse(query);
-    expect(expression).toEqual({
-      type: 'comparison',
-      field: 'flag',
-      operator: '==',
-      value
-    });
-    const inline = new SqlTranslator({ useParameters: false }).translate(
-      expression
-    ) as string;
-    const parameterized = new SqlTranslator().translate(
-      expression
-    ) as IParameterizedSql;
-    const bare = compileDrizzle(expression);
-    const schemaDrizzle = compileDrizzle(expression, { items });
-    expect(inline).toBe(`"flag" = '${value}'`);
-    expect(parameterized).toEqual({ sql: '"flag" = ?', params: [value] });
-    expect(bare).toEqual({ sql: '"flag" = ?', params: [value] });
-    expect(schemaDrizzle).toEqual({
-      sql: '"items"."flag" = ?',
-      params: [value]
-    });
-    expect(idsOfSql({ sql: inline, params: [] })).toEqual(expectedIds);
-    expect(idsOfSql(parameterized)).toEqual(expectedIds);
-    expect(idsOfSql(bare)).toEqual(expectedIds);
-    expect(idsOfSql(schemaDrizzle)).toEqual(expectedIds);
-    expect(idsOfBuilder(expression)).toEqual(expectedIds);
-    expect(filterInMemory(query, rows).map(row => row.id)).toEqual(expectedIds);
-  });
+    ['flag:yes', 'yes', [3], [3]],
+    ['flag:YES', 'YES', [], []],
+    ['flag:"1"', '1', [], [1]],
+    ['flag:"0"', '0', [], [2]]
+  ])(
+    '%s binds the text on every engine',
+    (query, value, expectedIds, memoryIds) => {
+      expect(isInputComplete(query)).toBe(true);
+      const expression = parser.parse(query);
+      expect(expression).toEqual({
+        type: 'comparison',
+        field: 'flag',
+        operator: '==',
+        value
+      });
+      const inline = new SqlTranslator({ useParameters: false }).translate(
+        expression
+      ) as string;
+      const parameterized = new SqlTranslator().translate(
+        expression
+      ) as IParameterizedSql;
+      const bare = compileDrizzle(expression);
+      const schemaDrizzle = compileDrizzle(expression, { items });
+      expect(inline).toBe(`"flag" = '${value}'`);
+      expect(parameterized).toEqual({ sql: '"flag" = ?', params: [value] });
+      expect(bare).toEqual({ sql: '"flag" = ?', params: [value] });
+      expect(schemaDrizzle).toEqual({
+        sql: '"items"."flag" = ?',
+        params: [value]
+      });
+      expect(idsOfSql({ sql: inline, params: [] })).toEqual(expectedIds);
+      expect(idsOfSql(parameterized)).toEqual(expectedIds);
+      expect(idsOfSql(bare)).toEqual(expectedIds);
+      expect(idsOfSql(schemaDrizzle)).toEqual(expectedIds);
+      expect(idsOfBuilder(expression)).toEqual(expectedIds);
+      expect(filterInMemory(query, rows).map(row => row.id)).toEqual(memoryIds);
+    }
+  );
 });

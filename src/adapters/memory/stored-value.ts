@@ -10,7 +10,14 @@
  * code point, SQLite's binary order. SQLite orders the classes NULL, then
  * numbers, then text; anything else (an object, an array, a symbol) sorts
  * after text by its string form and takes part in no comparison.
+ *
+ * A query value compared with a numeric row value takes that value's
+ * affinity when it is a quoted numeral, as a typed column reads it on
+ * PostgreSQL and SQLite: `count:"2"` is the number 2 against a number, a
+ * bigint or a boolean, and stays the text `2` against a string or a Date.
  */
+
+import { quotedDecimalValue } from '../../parser/stored-integer';
 
 /**
  * A value as SQLite would store it.
@@ -65,6 +72,42 @@ export function storedValueOf(value: unknown): StoredValue {
       : { kind: 'text', value: value.toISOString() };
   }
   return { kind: 'other', value };
+}
+
+/**
+ * Classify a query value against the row value it is compared with. A
+ * quoted numeral compared with a numeric row value (a number, a bigint or
+ * a boolean stored as 0 or 1) is read as the number it spells, exactly
+ * past 2^53, with the leading plus and surrounding whitespace both
+ * databases skip, as a PostgreSQL `integer` column and a SQLite `INTEGER`
+ * or `REAL` column read bound text; a quoted word, an exponent, a bare
+ * number against a text value and every other pairing keep their own
+ * class, so `"two"` still never equals a number and `2` never equals the
+ * text `2`.
+ *
+ * @param field - The classified row value
+ * @param value - The query value compared with it
+ * @returns The query value's storage class against that row value
+ *
+ * @example
+ * ```typescript
+ * storedQueryValueOf({ kind: 'numeric', value: 2 }, '2'); // { kind: 'numeric', value: 2 }
+ * storedQueryValueOf({ kind: 'numeric', value: 2 }, 'two'); // { kind: 'text', value: 'two' }
+ * storedQueryValueOf({ kind: 'text', value: '2' }, 2); // { kind: 'numeric', value: 2 }
+ * ```
+ */
+export function storedQueryValueOf(
+  field: StoredValue,
+  value: unknown
+): StoredValue {
+  if (field.kind !== 'numeric' || typeof value !== 'string') {
+    return storedValueOf(value);
+  }
+  const numeral = quotedDecimalValue(value);
+  if (numeral === null) {
+    return storedValueOf(value);
+  }
+  return { kind: 'numeric', value: numeral };
 }
 
 /**

@@ -13,6 +13,9 @@
  *   its own message rather than a hard-coded `TRUE` the engine cannot
  *   compare. The in-memory adapter follows SQLite, where a boolean is its
  *   integer, so `flag:1` and `count:true` match rows there.
+ * - A quoted numeral against an integer column is read as its number on
+ *   both: `count:"2"` matches the row holding 2 and `count:>"1"` compares
+ *   numerically, as a typed SQLite column also does by affinity.
  * - `status:op*` is case-sensitive on PostgreSQL and folds ASCII case in
  *   memory, as SQLite's LIKE does, so the `Open` row differs.
  * - PostgreSQL orders NULL last under ASC and first under DESC; the
@@ -100,6 +103,8 @@ const filterCases: IParityCase[] = [
   { query: 'status:op*', orderBy: byId, pglite: [1, 5], memory: [1, 4, 5] },
   { query: 'status:null', orderBy: byId, pglite: [3], memory: [3] },
   { query: 'count:>1', orderBy: byId, pglite: [2, 4], memory: [2, 4] },
+  { query: 'count:"2"', orderBy: byId, pglite: [2], memory: [2] },
+  { query: 'count:>"1"', orderBy: byId, pglite: [2, 4], memory: [2, 4] },
   {
     query: 'status:in [open, closed]',
     orderBy: byId,

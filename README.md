@@ -51,7 +51,7 @@ const results = await query.execute();
 
 **In-memory**
 
-The same query string can filter a fetched array. QueryKit parses it with the existing parser and keeps a row when it satisfies the same operators the Drizzle translator emits. `status:active` keeps `active`. `priority:2` keeps `2`. `*` and `?` are SQL LIKE, including inside quotes. Under a wildcard, ASCII letters match in either case, as in SQLite, so `status:act*` keeps `Active`; `ö` and `Ö` stay distinct, and equality stays case-sensitive. Order, limit, and offset then run as field order on that result.
+The same query string can filter a fetched array. QueryKit parses it with the existing parser and keeps a row when it satisfies the same operators the Drizzle translator emits. `status:active` keeps `active`. `priority:2` keeps `2`. A quoted numeral against a number is read as that number, as a typed column reads it on PostgreSQL and SQLite, so `priority:"2"` keeps `2` and `priority:>"1"` compares numerically. `*` and `?` are SQL LIKE, including inside quotes. Under a wildcard, ASCII letters match in either case, as in SQLite, so `status:act*` keeps `Active`; `ö` and `Ö` stay distinct, and equality stays case-sensitive. Order, limit, and offset then run as field order on that result.
 
 ```typescript
 import { createQueryKit, filterInMemory, inMemoryAdapter } from '@gblikas/querykit';
