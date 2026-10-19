@@ -5,6 +5,7 @@
  * WHERE clause conditions that can be used in any SQL query.
  */
 
+import { quotedDecimalValue } from '../../parser/stored-integer';
 import {
   IComparisonExpression,
   ILogicalExpression,
@@ -294,8 +295,43 @@ export class SqlTranslator
     if (value === null && (sqlOperator === '=' || sqlOperator === '<>')) {
       return sqlOperator === '=' ? `${field} IS NULL` : `${field} IS NOT NULL`;
     }
+    const affinity = this.formatNumericAffinity(field, sqlOperator, value);
+    if (affinity !== null) {
+      return affinity;
+    }
     const formattedValue = this.formatValue(value);
     return `${field} ${sqlOperator} ${formattedValue}`;
+  }
+
+  /**
+   * A quoted decimal compared by SQLite storage class, the rule the
+   * in-memory adapter uses. A number or real uses the number the text
+   * spells, so `count > "2"` keeps a stored 10. Text stays text, so the
+   * string `2.0` is still greater than `2`. A NULL stays unknown, because
+   * the leading `IS NULL AND NULL` term is NULL and `NOT` of that is NULL.
+   * A column with no affinity then agrees with a typed numeric column and
+   * with memory.
+   *
+   * @param field - Quoted identifier
+   * @param sqlOperator - SQL comparison operator
+   * @param value - Query value
+   * @returns The comparison, or null when the value is not a quoted decimal
+   */
+  private formatNumericAffinity(
+    field: string,
+    sqlOperator: string,
+    value: unknown
+  ): string | null {
+    if (typeof value !== 'string') {
+      return null;
+    }
+    const numeral = quotedDecimalValue(value);
+    if (numeral === null) {
+      return null;
+    }
+    const numericSql = this.formatValue(numeral);
+    const textSql = this.formatValue(value);
+    return `(${field} IS NULL AND NULL) OR (typeof(${field}) IN ('integer', 'real') AND ${field} ${sqlOperator} ${numericSql}) OR (typeof(${field}) = 'text' AND ${field} ${sqlOperator} ${textSql})`;
   }
 
   /**

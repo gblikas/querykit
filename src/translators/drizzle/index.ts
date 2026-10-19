@@ -6,6 +6,7 @@
  */
 
 import { SQL, SQLWrapper, sql } from 'drizzle-orm';
+import { quotedDecimalValue } from '../../parser/stored-integer';
 import {
   IComparisonExpression,
   ILogicalExpression,
@@ -102,6 +103,40 @@ interface IDialectColumn {
 function isSqliteColumn(column: SQLWrapper): boolean {
   const columnType = (column as Partial<IDialectColumn>).columnType;
   return typeof columnType === 'string' && columnType.startsWith('SQLite');
+}
+
+/**
+ * Whether a comparison should follow SQLite storage class. A schema-less
+ * translation matches the SQL translator. A SQLite column does too. A
+ * PostgreSQL column keeps the plain comparison so the database casts it.
+ *
+ * @param column - The schema column, or null when the field is quoted
+ * @returns True when a quoted decimal compares by storage class
+ */
+function comparesByStorageClass(column: SQLWrapper | null): boolean {
+  return column === null || isSqliteColumn(column);
+}
+
+/**
+ * The SQL operator for a comparison that has a two-sided form.
+ *
+ * @param operator - A QueryKit comparison operator
+ * @returns The SQL operator, or null for LIKE and membership
+ */
+function comparisonSqlOperator(operator: string): string | null {
+  switch (operator) {
+    case '==':
+      return '=';
+    case '!=':
+      return '<>';
+    case '>':
+    case '>=':
+    case '<':
+    case '<=':
+      return operator;
+    default:
+      return null;
+  }
 }
 
 /**
@@ -278,10 +313,12 @@ export class DrizzleTranslator implements ITranslator<SQL> {
    * Build the condition for one operator. Every value is bound as itself:
    * a string, a number and a bigint never pass through a column encoder, so
    * a boolean-mode column cannot turn `TRUE`, `yes` or `2` into `1`. A
-   * boolean is bound through a schema column's own mapping unless the
-   * column is a SQLite column that leaves it alone (see `bindsBoolean`),
-   * and a `Date` goes through the encoder only when it rewrites it, else
-   * the boolean is inlined and the `Date` is bound as ISO-8601 text.
+   * quoted decimal on SQLite compares by storage class instead, as a number
+   * against a number and as text against text. A boolean is bound through
+   * a schema column's own mapping unless the column is a SQLite column
+   * that leaves it alone (see `bindsBoolean`), and a `Date` goes through
+   * the encoder only when it rewrites it, else the boolean is inlined and
+   * the `Date` is bound as ISO-8601 text.
    *
    * @param column - The column or quoted identifier to compare
    * @param encoder - The schema column whose encoder may apply, if any
@@ -294,6 +331,10 @@ export class DrizzleTranslator implements ITranslator<SQL> {
     operator: string,
     value: unknown
   ): SQL {
+    const affinity = this.numericAffinitySql(column, encoder, operator, value);
+    if (affinity !== null) {
+      return affinity;
+    }
     switch (operator) {
       case '==':
         return value === null
@@ -339,6 +380,39 @@ export class DrizzleTranslator implements ITranslator<SQL> {
       default:
         throw new DrizzleTranslationError(`Unsupported operator: ${operator}`);
     }
+  }
+
+  /**
+   * A quoted decimal compared by SQLite storage class, matching the
+   * in-memory adapter. A number uses the number the text spells. Text stays
+   * text. A PostgreSQL column is left to `bindValue` so the engine casts.
+   *
+   * @param column - The column or quoted identifier to compare
+   * @param encoder - The schema column, or null when the field is quoted
+   * @param operator - The QueryKit comparison operator
+   * @param value - The query value
+   * @returns The comparison, or null when this value stays a plain binding
+   */
+  private numericAffinitySql(
+    column: SQLWrapper,
+    encoder: SQLWrapper | null,
+    operator: string,
+    value: unknown
+  ): SQL | null {
+    const sqlOperator = comparisonSqlOperator(operator);
+    if (
+      sqlOperator === null ||
+      !comparesByStorageClass(encoder) ||
+      typeof value !== 'string'
+    ) {
+      return null;
+    }
+    const numeral = quotedDecimalValue(value);
+    if (numeral === null) {
+      return null;
+    }
+    const op = sql.raw(sqlOperator);
+    return sql`(${column} IS NULL AND NULL) OR (typeof(${column}) IN ('integer', 'real') AND ${column} ${op} ${numeral}) OR (typeof(${column}) = 'text' AND ${column} ${op} ${value})`;
   }
 
   /**
