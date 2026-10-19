@@ -5,38 +5,30 @@
  * every other cap measures the parsed AST. `maxQueryLength` (default 10,000)
  * is checked at the entry of `parse`, `parseWithContext` and
  * `isInputComplete`, before any rewrite or Liqe run, so a 10,001-character
- * input is rejected in well under 5 ms on each; a 10,000-character input is
+ * input reaches no Liqe parse on any of them; a 10,000-character input is
  * still read. The cap moves with the option, down and up, and `Infinity`
  * switches it off.
  */
 
-import { performance } from 'perf_hooks';
+import { parse as liqeParse } from 'liqe';
 import { isInputComplete } from './input-parser';
 import { QueryParseError, QueryParser } from './parser';
 
+// Liqe's parse is the cost the cap guards against, so it is counted; the
+// wrapper still parses. A wall-clock budget was not reliable under coverage
+// beside other workers.
+jest.mock('liqe', () => {
+  const actual = jest.requireActual<typeof import('liqe')>('liqe');
+  return { ...actual, parse: jest.fn(actual.parse) };
+});
+const liqeParseMock = liqeParse as jest.MockedFunction<typeof liqeParse>;
+
 const DEFAULT_CAP = 10000;
-const REJECTION_BUDGET_MS = 5;
 const overLongBareWord = 'a'.repeat(DEFAULT_CAP + 1);
 // A quoted value Liqe reads in a fraction of the bare word's time, so the
 // raised cap can be shown on a real parse without a 2 s test.
 const overLongQuoted = `status:"${'a'.repeat(DEFAULT_CAP - 8)}"`;
 const expectedMessage = `Query exceeds the maximum length of ${DEFAULT_CAP} characters (${DEFAULT_CAP + 1})`;
-
-/**
- * The fastest of three runs, so a busy CI machine does not fail the budget,
- * with the value of that run. `run` is the bare call: under coverage the
- * matchers cost more than the rejection, so they are applied afterwards.
- */
-function fastest<T>(run: () => T): { elapsedMs: number; value: T } {
-  const runs = [0, 1, 2].map(() => {
-    const startedAt = performance.now();
-    const value = run();
-    return { elapsedMs: performance.now() - startedAt, value };
-  });
-  return runs.reduce((best, next) =>
-    next.elapsedMs < best.elapsedMs ? next : best
-  );
-}
 
 describe('the query length cap', () => {
   const parser = new QueryParser();
@@ -45,30 +37,27 @@ describe('the query length cap', () => {
     expect(overLongQuoted).toHaveLength(DEFAULT_CAP + 1);
     expect(() => parser.parse(overLongBareWord)).toThrow(QueryParseError);
     expect(() => parser.parse(overLongQuoted)).toThrow(expectedMessage);
+    liqeParseMock.mockClear();
     expect(parser.parse(overLongQuoted.slice(0, -2) + '"')).toMatchObject({
       type: 'comparison',
       field: 'status'
     });
+    expect(liqeParseMock).toHaveBeenCalled();
   });
 
   describe('rejects a 10,001-character input before the parser reads it', () => {
-    it('parse throws QueryParseError within the budget', () => {
-      const { elapsedMs, value: thrown } = fastest((): unknown => {
-        try {
-          return parser.parse(overLongBareWord);
-        } catch (e) {
-          return e;
-        }
-      });
-      expect(thrown).toBeInstanceOf(QueryParseError);
-      expect((thrown as Error).message).toContain(expectedMessage);
-      expect(elapsedMs).toBeLessThan(REJECTION_BUDGET_MS);
+    beforeEach(() => {
+      liqeParseMock.mockClear();
     });
 
-    it('parseWithContext returns a failed, incomplete result within the budget', () => {
-      const { elapsedMs, value: result } = fastest(() =>
-        parser.parseWithContext(overLongBareWord)
-      );
+    it('parse throws QueryParseError without a Liqe run', () => {
+      expect(() => parser.parse(overLongBareWord)).toThrow(QueryParseError);
+      expect(() => parser.parse(overLongBareWord)).toThrow(expectedMessage);
+      expect(liqeParseMock).not.toHaveBeenCalled();
+    });
+
+    it('parseWithContext returns a failed, incomplete result without a Liqe run', () => {
+      const result = parser.parseWithContext(overLongBareWord);
       expect(result).toMatchObject({
         success: false,
         error: { message: expectedMessage, position: DEFAULT_CAP },
@@ -78,15 +67,12 @@ describe('the query length cap', () => {
       });
       expect(result.ast).toBeUndefined();
       expect(result.recovery).toBeUndefined();
-      expect(elapsedMs).toBeLessThan(REJECTION_BUDGET_MS);
+      expect(liqeParseMock).not.toHaveBeenCalled();
     });
 
-    it('isInputComplete returns false within the budget', () => {
-      const { elapsedMs, value } = fastest(() =>
-        isInputComplete(overLongBareWord)
-      );
-      expect(value).toBe(false);
-      expect(elapsedMs).toBeLessThan(REJECTION_BUDGET_MS);
+    it('isInputComplete returns false without a Liqe run', () => {
+      expect(isInputComplete(overLongBareWord)).toBe(false);
+      expect(liqeParseMock).not.toHaveBeenCalled();
     });
   });
 
