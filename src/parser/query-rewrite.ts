@@ -5,8 +5,9 @@
  * operator words and only numeric ranges, and has no bracket lists. The
  * parser therefore spells the numerals Liqe cannot read, uppercases `and`,
  * `or` and `not`, rewrites `field:!=` to `NOT field:`, lifts
- * `field:in[...]` out as a placeholder literal, writes `field:[a, b]` as
- * `(field:a OR field:b)` and `field:[a TO b]` as two comparisons.
+ * `field:in[...]` out as a placeholder literal, writes `field in (a, b)` as
+ * that membership form, writes `field:[a, b]` as `(field:a OR field:b)` and
+ * `field:[a TO b]` as two comparisons.
  * `rewriteQueryForLiqe` is pure, and a caller that must know where each
  * bracket expression landed passes `visit`. A regex member is copied as
  * text; nothing here compiles or runs one.
@@ -132,7 +133,8 @@ interface IBracketReplacement {
 }
 
 /**
- * The text the parser hands Liqe for `query`: numerals spelled, operator
+ * The text the parser hands Liqe for `query`: numerals spelled, a
+ * parenthesized `field in (...)` rewritten to bracket membership, operator
  * words uppercased, each clause-leading `field:!=` rewritten, then the
  * bracket expressions.
  *
@@ -156,9 +158,13 @@ export function rewriteQueryForLiqe(
   // forms as plain decimals first, so the bracket rewrite sees numbers and
   // keeps range bounds and list members numeric.
   const spelled = spellNumerals(query);
+  // `field in (a, b)` is the membership list `field:in[a, b]`. This runs
+  // before operator words are uppercased, so a list member `not` stays a
+  // value and `field not in (...)` is still lowercase for the matcher.
+  const parenthesized = rewriteParenthesizedMembership(spelled);
   // Liqe only recognizes uppercase AND, OR, NOT as boolean operators; a
   // lowercase word is a bare search term to it.
-  const uppercased = uppercaseBooleanOperators(spelled);
+  const uppercased = uppercaseBooleanOperators(parenthesized);
   // The input parser and autocomplete both advertise `:!=`, so it is
   // rewritten before the brackets, whose field it would otherwise follow.
   const negated = rewriteInequalityOperators(uppercased);
@@ -231,6 +237,158 @@ function beginsClause(query: string, index: number): boolean {
 
 function separatesClauses(char: string | undefined): boolean {
   return isLiqeWhitespace(char) || char === '(';
+}
+
+/**
+ * A span of rewritten text and the index just past what it consumed.
+ */
+interface IRewrittenSpan {
+  text: string;
+  end: number;
+}
+
+/**
+ * Where a parenthesized membership operator was read.
+ */
+interface IParenMembership {
+  open: number;
+  negated: boolean;
+}
+
+/**
+ * Rewrite `field in (a, b)` and `field not in (a, b)` to the bracket
+ * membership the bracket rewrite lifts: `field:in[a, b]` and
+ * `field:not in[a, b]`. Only a field that may begin a clause is read, and
+ * only outside literals. A nested parenthesis, an unclosed group, or a
+ * member that uses `and`, `or` or `not` as an operator is left as typed.
+ *
+ * @param query Query text, its numerals already spelled
+ * @returns The text with each flat parenthesized membership rewritten
+ */
+function rewriteParenthesizedMembership(query: string): string {
+  let result = '';
+  let index = 0;
+  while (index < query.length) {
+    const rewritten = matchParenthesizedMembership(query, index);
+    if (rewritten) {
+      result += rewritten.text;
+      index = rewritten.end;
+      continue;
+    }
+    const literal = readLiteralAt(query, index);
+    if (literal.kind !== 'none') {
+      result += query.slice(index, literal.end);
+      index = literal.end;
+      continue;
+    }
+    result += query[index] ?? '';
+    index += 1;
+  }
+  return result;
+}
+
+/**
+ * The bracket membership standing at `index`, when a field and `in (` or
+ * `not in (` begin a clause there and the parentheses hold a flat value list.
+ */
+function matchParenthesizedMembership(
+  query: string,
+  index: number
+): IRewrittenSpan | null {
+  if (!beginsClause(query, index)) {
+    return null;
+  }
+  const field = readFieldToken(query, index);
+  if (!field) {
+    return null;
+  }
+  const operator = readParenMembership(query, field.end);
+  if (!operator) {
+    return null;
+  }
+  const body = readFlatParenBody(query, operator.open);
+  if (!body || !isFlatValueList(body.text)) {
+    return null;
+  }
+  const word = operator.negated ? 'not in' : 'in';
+  return { text: `${field.text}:${word}[${body.text}]`, end: body.end };
+}
+
+/**
+ * The `in (` or `not in (` that follows a field, with whitespace required
+ * before the word and optional before the parenthesis.
+ */
+function readParenMembership(
+  query: string,
+  index: number
+): IParenMembership | null {
+  if (!isLiqeWhitespace(query[index])) {
+    return null;
+  }
+  let cursor = index;
+  while (isLiqeWhitespace(query[cursor])) {
+    cursor += 1;
+  }
+  const match = /^(?:(not)\s+)?in(?=[\s(])/i.exec(query.slice(cursor));
+  if (!match) {
+    return null;
+  }
+  cursor += match[0].length;
+  while (isLiqeWhitespace(query[cursor])) {
+    cursor += 1;
+  }
+  if (query[cursor] !== '(') {
+    return null;
+  }
+  return { open: cursor, negated: match[1] !== undefined };
+}
+
+/**
+ * The text inside one parenthesis group that itself contains no parenthesis
+ * outside a literal, and the index just past its closer. Nested or unclosed
+ * groups are not a flat list.
+ */
+function readFlatParenBody(query: string, open: number): IRewrittenSpan | null {
+  let index = open + 1;
+  while (index < query.length) {
+    const literal = readLiteralAt(query, index);
+    if (literal.kind !== 'none') {
+      index = literal.end;
+      continue;
+    }
+    if (query[index] === '(') {
+      return null;
+    }
+    if (query[index] === ')') {
+      return { text: query.slice(open + 1, index), end: index + 1 };
+    }
+    index += 1;
+  }
+  return null;
+}
+
+/**
+ * Whether every member of a comma list is a value. An empty body is an
+ * empty list. A member that uses `and`, `or` or `not` as an operator is not.
+ */
+function isFlatValueList(body: string): boolean {
+  return splitListMembers(body).every(
+    member => !memberIntroducesBoolean(member)
+  );
+}
+
+/**
+ * Whether an unquoted list member contains `and`, `or` or `not` as an
+ * operator word rather than being that word alone.
+ */
+function memberIntroducesBoolean(member: string): boolean {
+  if (isQuotedToken(member) || member.startsWith('/')) {
+    return false;
+  }
+  if (/^(?:and|or|not)$/i.test(member)) {
+    return false;
+  }
+  return /(?:^|[^\w$.])(?:and|or|not)(?=$|[^\w$.])/i.test(member);
 }
 
 /**
