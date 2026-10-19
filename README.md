@@ -22,23 +22,20 @@ Below are various examples of how to use QueryKit.
 
 // schema.ts
 import { serial, text, pgTable } from 'drizzle-orm/pg-core';
-import { type InferSelectModel, type InferInsertModel } from 'drizzle-orm'
 
-const users = pgTable('users', {
+export const users = pgTable('users', {
   id: serial('id').primaryKey(),
   name: text('name').notNull(),
   status: text('status').notNull().default('draft')
 });
 
-type SelectUser = InferSelectModel<typeof users>;
-
 // example.ts
-import { SelectUser } from './schema';
+import { users } from './schema';
 import { createQueryKit, drizzleAdapter } from '@gblikas/querykit';
 
-// Create a QueryKit instance with Drizzle adapter
+// Create a QueryKit instance with the Drizzle adapter; db is your Drizzle database
 const qk = createQueryKit({
-  adapter: drizzleAdapter,
+  adapter: drizzleAdapter({ db, schema: { users } }),
   schema: { users },
 });
 
@@ -94,7 +91,9 @@ await mapped.query('tasks').where('status:done').orderBy('status').execute();
 
 ## Query Syntax
 
-QueryKit parses the string with Liqe. The Drizzle translator and the in-memory adapter then evaluate that AST with the same operators. `status:active` is equality with `active`: it does not match `inactive` or `Active` when the comparison is case-sensitive. `status:"Active"` is the same kind of equality with `Active`. `priority:2` and `priority:=2` are equality with the number `2`, so `12` does not match. `*` and `?` are LIKE, including inside quotes. `*` is any sequence, `?` is one character, and the pattern is anchored to the whole value. Equality is case-sensitive on PostgreSQL and in the in-memory adapter; on SQLite and MySQL it follows the column collation. LIKE is case-sensitive on PostgreSQL and follows the engine on SQLite and MySQL; the in-memory adapter follows SQLite's default LIKE, so ASCII letters match in either case under `*` or `?` while other letters such as `ö` and `Ö` stay distinct. A field name matches a Drizzle property or an in-memory key exactly, or else the one name differing only by ASCII case, so a renamed column is reached by its property. A name that matches no property of the selected table is rejected on both adapters before any row is read, with `DrizzleAdapterError` and `InMemoryAdapterError`, rather than quoted as a raw identifier: with the property `status` on the column `status_col`, `status_col:open`, `created_at:null`, the quoted `"Items.status":open` and `orderBy('created_at')` are rejected where Drizzle used to run the column name and memory read no key. The Drizzle translator without a schema still quotes a name as written, and an in-memory table with no rows has no keys to check. A single `table.column` is matched to the selected table the same way on both adapters: `Items.status` reads the `items` column `status`, while `Other.status`, or `owners.tier` with `owners` another table, is rejected before any row is read; `filterInMemory` has no table and reads the column of any single qualifier. In memory a dotted name reads an own key of the whole name first and never a nested path. A regex parses as operator `REGEX`. `name:/Todo.*/` and `name:/foo/` are accepted by the parser. The Drizzle translator and the in-memory adapter reject that operator with an unsupported-operator error. A slash pattern that contains `*` or `?`, such as `title:/Ship.*/`, is that same `REGEX` operator and raises the error. A slash pattern without those characters, such as `name:/foo/`, is also `REGEX` and raises the same error.
+QueryKit parses the string with Liqe. The Drizzle translator and the in-memory adapter then evaluate that AST with the same operators. `status:active` is equality with `active`: it does not match `inactive` or `Active` when the comparison is case-sensitive. `status:"Active"` is the same kind of equality with `Active`. `priority:2` and `priority:=2` are equality with the number `2`, so `12` does not match. `*` and `?` are LIKE, including inside quotes: `*` is any sequence, `?` is one character, and the pattern is anchored to the whole value. Equality is case-sensitive on PostgreSQL and in the in-memory adapter; on SQLite and MySQL it follows the column collation. LIKE is case-sensitive on PostgreSQL and follows the engine on SQLite and MySQL; the in-memory adapter follows SQLite's default LIKE, so ASCII letters match in either case under `*` or `?` while other letters such as `ö` and `Ö` stay distinct. A slash pattern such as `name:/Todo.*/` or `name:/foo/` parses as operator `REGEX`, with or without `*` or `?` inside it, and the Drizzle translator and the in-memory adapter reject that operator with an unsupported-operator error.
+
+A field name matches a Drizzle property or an in-memory key exactly, or else the one name differing only by ASCII case, so a renamed column is reached by its property. A name that matches no property of the selected table is rejected on both adapters before any row is read, with `DrizzleAdapterError` and `InMemoryAdapterError`, rather than quoted as a raw identifier: with the property `status` on the column `status_col`, `status_col:open`, `created_at:null`, the quoted `"Items.status":open` and `orderBy('created_at')` are all rejected. The Drizzle translator without a schema still quotes a name as written, and an in-memory table with no rows has no keys to check. A single `table.column` is matched to the selected table the same way on both adapters: `Items.status` reads the `items` column `status`, while `Other.status`, or `owners.tier` with `owners` another table, is rejected before any row is read; `filterInMemory` has no table and reads the column of any single qualifier. In memory a dotted name reads an own key of the whole name first and never a nested path.
 
 ```
 # Equality
@@ -147,7 +146,7 @@ Map user-friendly field names to actual schema column names:
 
 ```typescript
 const qk = createQueryKit({
-  adapter: drizzleAdapter,
+  adapter: drizzleAdapter({ db, schema: { users } }),
   schema: { users },
   parserOptions: {
     fieldMappings: {
@@ -172,7 +171,7 @@ Enable case-insensitive field name matching:
 
 ```typescript
 const qk = createQueryKit({
-  adapter: drizzleAdapter,
+  adapter: drizzleAdapter({ db, schema: { users } }),
   schema: { users },
   parserOptions: {
     caseInsensitiveFields: true,
@@ -198,7 +197,7 @@ By default, `createQueryKit` throws on any malformed input. For search UIs where
 
 ```typescript
 const qk = createQueryKit({
-  adapter: drizzleAdapter,
+  adapter: drizzleAdapter({ db, schema: { tasks } }),
   schema: { tasks },
   tolerant: true
 });
@@ -212,9 +211,9 @@ await qk.query('tasks').where('status:"incomplete').execute();
 ```
 
 Recovery types supported by tolerant mode:
-- **Trailing operators** — `status:active AND` → `status:active`
+- **Trailing `AND` or `OR`** — `status:active AND` → `status:active`; a trailing `NOT` is not dropped, since that would run the clause it was about to negate
 - **Unclosed quotes** — `status:"active` → `status:"active"`
-- **Unbalanced parentheses** — `(status:active` → `(status:active)`
+- **Missing closing parentheses** — `(status:active` → `(status:active)`
 
 If autofix also fails, an error is still thrown, ensuring silent data corruption never occurs.
 
@@ -242,7 +241,7 @@ QueryKit provides configurable security guardrails to protect your database from
 import { createQueryKit, drizzleAdapter } from '@gblikas/querykit';
 
 const qk = createQueryKit({
-  adapter: drizzleAdapter,
+  adapter: drizzleAdapter({ db, schema: { users } }),
   schema: { users },
   security: {
     // Field restrictions
@@ -253,15 +252,15 @@ const qk = createQueryKit({
     denyValues: {
       status: ['deleted', 'banned'],      // Block queries for deleted/banned records
       role: ['superadmin', 'system'],     // Prevent querying privileged roles
-      'user.type': ['internal', 'bot']    // Supports dot-notation for nested fields
+      'user.type': ['internal', 'bot']    // A table.column key is matched like a denyFields entry
     },
     
     // Field name restrictions
-    allowDotNotation: true,    // Set to false to block "table.field" or "json.path" queries
+    allowDotNotation: true,    // Set to false to reject any field name with a dot
     
     // Query complexity limits
     maxQueryDepth: 5,          // Maximum nesting level of expressions
-    maxClauseCount: 20,        // Maximum number of clauses (AND/OR operations)
+    maxClauseCount: 20,        // Maximum number of comparisons
     
     // Resource protection
     defaultLimit: 100,         // Default result limit if none specified
@@ -286,11 +285,12 @@ const DEFAULT_SECURITY = {
   allowedFields: [],           // Empty means "use schema fields"
   denyFields: [],              // Empty means no denied fields
   denyValues: {},              // Empty means no denied values for any field
-  allowDotNotation: true,      // Allow "table.field" and "json.path" notation
+  enforceExcludedValues: {},   // Empty means no "AND field NOT IN (values)" is appended
+  allowDotNotation: true,      // Allow "table.field" notation
   
   // Query complexity limits
   maxQueryDepth: 10,           // Maximum nesting level of expressions
-  maxClauseCount: 50,          // Maximum number of clauses (AND/OR operations)
+  maxClauseCount: 50,          // Maximum number of comparisons
   
   // Resource protection
   defaultLimit: 100,           // Default result limit if none specified
@@ -305,9 +305,9 @@ const DEFAULT_SECURITY = {
 }
 ```
 
-A query field and an `orderBy` key are checked against the table the query selected, the one table either adapter reads a field from: with `schema: { items, owners }` and `qk.query('items')`, `tier:gold`, `owners.tier:gold`, `name:null` and `orderBy('tier')` are rejected with `QuerySecurityError: Invalid query parameters` before either adapter runs, where Drizzle used to fail with `no such column` while the in-memory adapter returned no rows, every row or an unsorted result. A `table.` qualifier that differs from the selected table only by ASCII case resolves to it, so `Items.status:open` and `orderBy('ITEMS.createdAt')` read `items` on both adapters; an `allowedFields` entry spells the qualifier as the table key. With `allowedFields` empty, a query field the selected table does not declare is rejected the same way. An `orderBy` key is checked against the schema whether or not `allowedFields` is set: it must name a schema property exactly or as the one property that differs only by ASCII case, bare or as `table.property`, so `orderBy('nope')`, `orderBy('items.nope')` and `orderBy('other.status')` are rejected on Drizzle and in memory alike instead of failing on one and tying every row on the other. A selected table that declares no property, or one the schema does not declare, leaves both checks to the adapter. A non-empty `allowedFields` narrows the schema rather than replacing it: a listed field must name a declared property of the selected table, exactly or as the one name differing only by ASCII case, bare or as `table.property`, or be a dotted path whose first segment is a declared property, so `allowedFields: ['status', 'nope']` no longer lets `nope:1` fail on Drizzle while memory returns no rows, or `nope:null` return every row in memory. The kit forwards a listed path into a declared column such as `metadata.tags`, which neither built-in adapter evaluates as a JSON path: both read it as `table.column` and reject it, Drizzle with `no such column` and the in-memory adapter because `metadata` is not the selected table, and it is no `orderBy` key on either.
+A query field and an `orderBy` key are checked against the table the query selected, the one table either adapter reads a field from, and a rejection is `QuerySecurityError: Invalid query parameters` before either adapter runs: with `schema: { items, owners }` and `qk.query('items')`, `tier:gold`, `owners.tier:gold`, `name:null` and `orderBy('tier')` are rejected. With `allowedFields` empty, a query field the selected table does not declare is rejected the same way, and an `orderBy` key is checked against the schema whether or not `allowedFields` is set: it must name a schema property exactly or as the one property that differs only by ASCII case, bare or as `table.property`, so `orderBy('nope')`, `orderBy('items.nope')` and `orderBy('other.status')` are rejected on Drizzle and in memory alike. A `table.` qualifier that differs from the selected table only by ASCII case resolves to it, so `Items.status:open` and `orderBy('Items.createdAt')` read `items` on both adapters; an `allowedFields` entry spells the qualifier as the table key. A selected table that declares no property, or one the schema does not declare, leaves both checks to the adapter. A non-empty `allowedFields` narrows the schema rather than replacing it: a listed field must name a declared property of the selected table, exactly or as the one name differing only by ASCII case, bare or as `table.property`, or be a dotted path whose first segment is a declared property, so `allowedFields: ['status', 'nope']` still rejects `nope:1` and `nope:null` on both adapters. A listed path into a declared column such as `metadata.tags` is forwarded, but neither built-in adapter evaluates it as a JSON path: both read it as `table.column` and reject it, Drizzle with `no such column` and the in-memory adapter because `metadata` is not the selected table, and it is no `orderBy` key on either.
 
-`allowedFields` and `denyFields` apply to an `orderBy` key as they do to a query field, so a sort by a field the allowlist omits or the denylist names is rejected with the same `QuerySecurityError` before either adapter runs, since ordering by a field would reveal its order. A `denyFields` entry matches regardless of ASCII case and of a single `table.` qualifier on either side, the way both adapters resolve a name to a column: `denyFields: ['secret']` rejects `secret:a`, `SECRET:a`, `items.secret:a`, `Items.secret:a` and `"items.secret":a`, and a list spelled `SECRET` or `items.secret` rejects `secret:a` and `orderBy('secret')` too. A `fieldMappings` alias and its target are one field for every list: with `fieldMappings: { hidden: 'secret' }`, `denyFields: ['hidden']` and `denyFields: ['secret']` both reject `hidden:a`, `secret:a`, `orderBy('hidden')` and `orderBy('secret')`, and `allowedFields: ['status', 'hidden']` and `['status', 'secret']` both permit the four while still rejecting `id:3`. A value listed in `denyValues` under any spelling, alias or alias target of a field is denied for every spelling of that field, so `{ hidden: ['a'] }`, `{ secret: ['a'] }`, `{ SECRET: ['a'] }` and `{ 'items.secret': ['a'] }` each reject `hidden:a`, `secret:a`, `items.secret:a`, `hidden:in [a, b]` and `NOT hidden:a` while `hidden:c` still runs, and an `enforceExcludedValues` key naming the alias is injected under its target, so both adapters drop the same rows.
+`allowedFields` and `denyFields` apply to an `orderBy` key as they do to a query field, since ordering by a field would reveal its order. A `denyFields` entry matches regardless of ASCII case and of a single `table.` qualifier on either side, the way both adapters resolve a name to a column: `denyFields: ['secret']` rejects `secret:a`, `SECRET:a`, `items.secret:a`, `Items.secret:a` and `"items.secret":a`, and a list spelled `SECRET` or `items.secret` rejects `secret:a` and `orderBy('secret')` too. A `fieldMappings` alias and its target are one field for every list: with `fieldMappings: { hidden: 'secret' }`, `denyFields: ['hidden']` and `denyFields: ['secret']` both reject `hidden:a`, `secret:a`, `orderBy('hidden')` and `orderBy('secret')`, and `allowedFields: ['status', 'hidden']` and `['status', 'secret']` both permit the four while still rejecting `id:3`. A value listed in `denyValues` under any spelling, alias or alias target of a field is denied for every spelling of that field, so `{ hidden: ['a'] }`, `{ secret: ['a'] }`, `{ SECRET: ['a'] }` and `{ 'items.secret': ['a'] }` each reject `hidden:a`, `secret:a`, `items.secret:a`, `hidden:in [a, b]` and `NOT hidden:a` while `hidden:c` still runs, and an `enforceExcludedValues` key naming the alias is injected under its target, so both adapters drop the same rows.
 
 Security configurations can be stored in a separate file and imported:
 
@@ -328,7 +328,7 @@ Security configurations can be stored in a separate file and imported:
 import securityConfig from './security-config.json';
 
 const qk = createQueryKit({
-  adapter: drizzleAdapter,
+  adapter: drizzleAdapter({ db, schema: { users } }),
   schema: { users },
   security: securityConfig
 });
@@ -346,17 +346,11 @@ When using QueryKit in production, consider these additional security practices:
 
 ### Controlling Dot Notation in Field Names
 
-QueryKit supports dot notation in field names (e.g., `user.name`, `metadata.tags`) which is useful for:
-
-- **Table-qualified columns**: When joining tables with overlapping column names (`users.id` vs `orders.id`)
-- **JSON/JSONB fields**: Querying nested data in PostgreSQL JSON columns (`metadata.dimensions.width`)
-- **Related data**: Accessing data through ORM relations (`order.customer.name`)
-
-However, you may want to **disable dot notation** for public-facing APIs:
+QueryKit accepts a dotted field name such as `products.name`, which both adapters read as `table.column` with the table part naming the selected table (see Query Syntax). Neither adapter reads a JSON path or an ORM relation through a dot, and a name with two or more dots is one identifier. You may still want to **disable dot notation** for public-facing APIs:
 
 ```typescript
 const qk = createQueryKit({
-  adapter: drizzleAdapter,
+  adapter: drizzleAdapter({ db, schema: { products } }),
   schema: { products },
   security: {
     allowDotNotation: false,  // Reject queries like "user.password" or "config.secret"
@@ -377,22 +371,19 @@ qk.query('products').where('user.password:"secret"');
 | Scenario | Recommendation |
 |----------|---------------|
 | Public search API | Disable - prevents probing internal table structures |
-| Admin dashboard | Enable - admins may need cross-table queries |
+| Admin dashboard | Enable - admins may qualify a column with its table |
 | Simple flat schema | Disable - simplifies security model |
-| JSON/JSONB columns | Enable - needed for nested data access |
 | Multi-tenant app | Disable - prevents `tenant.secret` style access |
 
 **Concrete example - Public e-commerce search:**
 
 ```typescript
-// For a public product search endpoint, disable dot notation
-// to prevent users from attempting queries like:
-// - "orders.creditCard" (accessing other tables)
-// - "internal.costPrice" (accessing internal JSON fields)
-// - "admin.notes" (accessing admin-only data)
+// For a public product search endpoint, disable dot notation so a
+// probe such as "orders.creditCard" or "admin.notes" is rejected for
+// its dot alone, before the field checks run
 
 const publicSearchKit = createQueryKit({
-  adapter: drizzleAdapter,
+  adapter: drizzleAdapter({ db, schema: { products } }),
   schema: { products },
   security: {
     allowDotNotation: false,
@@ -415,18 +406,19 @@ Use `parseQueryInput` and `parseQueryTokens` for lightweight, real-time parsing 
 ```typescript
 import { parseQueryInput, parseQueryTokens } from '@gblikas/querykit';
 
-// Parse input to get terms and cursor context
+// Parse input to get terms and cursor context; the cursor position is the second argument
 const input = 'status:done AND priority:';
-const result = parseQueryInput(input, { cursorPosition: 25 });
+const result = parseQueryInput(input, 25);
 
 // result.terms contains parsed terms:
 // [{ key: 'status', value: 'done', ... }, { key: 'priority', value: null, ... }]
 
-// result.cursorContext tells you where the cursor is: 'key', 'value', or 'operator'
+// result.cursorContext tells you where the cursor is:
+// 'key', 'operator', 'value', 'between' two terms, or 'empty'
 console.log(result.cursorContext); // 'value' (cursor is after 'priority:')
 
 // Get interleaved tokens (terms + operators) for highlighting
-const tokens = parseQueryTokens(input);
+const { tokens } = parseQueryTokens(input);
 // [
 //   { type: 'term', key: 'status', value: 'done', startPosition: 0, endPosition: 11 },
 //   { type: 'operator', operator: 'AND', startPosition: 12, endPosition: 15 },
@@ -474,7 +466,8 @@ console.log(result.suggestions);
 //   currentField: 'status',
 //   values: [
 //     { value: 'doing', score: 80 },
-//     { value: 'done', score: 80 }
+//     { value: 'done', score: 80 },
+//     { value: 'todo', score: 60 }
 //   ]
 // }
 
@@ -487,9 +480,7 @@ console.log(result.security);
 // { passed: true, violations: [], warnings: [] }
 ```
 
-The `denied_field` pre-check matches a referenced field the way `createQueryKit` matches its deny list for a parser with the same options: with `securityOptions: { denyFields: ['secret'] }`, `secret:a`, `SECRET:a`, `items.secret:a`, `Items.secret:a` and `"items.secret":a` are reported `denied_field`, as is `hidden:a` under `fieldMappings: { hidden: 'secret' }`, and a list spelled `SECRET`, `items.secret` or `hidden` reports `secret:a` the same way, while `status:open` is reported clean. The violation names the field as the parser resolved it. The check also runs on the tokenizer's fields when the input does not parse, so `items.secret:` is reported while the user is still typing, where the kit cannot be asked.
-
-The `field_not_allowed` pre-check matches the kit's allowlist the same way: the list is closed under `fieldMappings`, so with `allowedFields: ['status', 'hidden']` and the alias above, `hidden:a` and `secret:a` are reported clean as the kit runs them, while `items.status:open` and `id:3` are reported `field_not_allowed` as the kit rejects them. Under `caseInsensitiveFields` the entry and the field are compared with `A-Z` folded, so `STATUS:open` is clean there and `field_not_allowed` as written. The pre-check has no table schema, so a listed field the kit rejects as one the table does not declare is still reported clean.
+The `denied_field` and `field_not_allowed` pre-checks match a referenced field the way `createQueryKit` matches its lists for a parser with the same options, and each violation names the field as the parser resolved it. With `securityOptions: { denyFields: ['secret'] }`, `secret:a`, `SECRET:a`, `items.secret:a`, `Items.secret:a` and `"items.secret":a` are reported `denied_field`, as is `hidden:a` under `fieldMappings: { hidden: 'secret' }`, and a list spelled `SECRET`, `items.secret` or `hidden` reports `secret:a` the same way, while `status:open` is reported clean. The allowlist is closed under `fieldMappings` too, so with `allowedFields: ['status', 'hidden']` and the alias above, `hidden:a` and `secret:a` are reported clean as the kit runs them, while `items.status:open` and `id:3` are reported `field_not_allowed` as the kit rejects them; under `caseInsensitiveFields` the entry and the field are compared with `A-Z` folded, so `STATUS:open` is clean there and `field_not_allowed` as written. Both checks also run on the tokenizer's fields when the input does not parse, so `items.secret:` is reported while the user is still typing, where the kit cannot be asked. The pre-check has no table schema, so a listed field the kit rejects as one the table does not declare is still reported clean.
 
 ### Error Recovery
 
@@ -510,8 +501,8 @@ console.log(result.recovery);
 
 Error types detected:
 - `unclosed_quote` - Missing closing quote (with autofix)
-- `unclosed_parenthesis` - Unbalanced parentheses (with autofix)
-- `trailing_operator` - Query ends with AND/OR/NOT (with autofix)
+- `unclosed_parenthesis` - Unbalanced parentheses (autofix adds missing closers; an extra closer has none)
+- `trailing_operator` - Query ends with AND/OR/NOT (autofix drops a trailing AND or OR; a trailing NOT has none)
 - `missing_value` - Field has colon but no value
 - `syntax_error` - Generic syntax issue
 
@@ -523,7 +514,7 @@ Here's a React example using the input parser for highlighting:
 import { parseQueryTokens } from '@gblikas/querykit';
 
 function SearchBar({ value, onChange }) {
-  const tokens = parseQueryTokens(value);
+  const { tokens } = parseQueryTokens(value);
 
   const renderHighlightedQuery = () => {
     if (!value) return null;
@@ -587,7 +578,7 @@ Define virtual fields when creating your QueryKit instance:
 import { createQueryKit, drizzleAdapter } from '@gblikas/querykit';
 
 const qk = createQueryKit({
-  adapter: drizzleAdapter,
+  adapter: drizzleAdapter({ db, schema: { tasks, users } }),
   schema: { tasks, users },
 
   // Define virtual fields
@@ -830,7 +821,7 @@ interface TaskQueryContext extends IQueryContext {
 
 // Create QueryKit with virtual fields
 const qk = createQueryKit<typeof schema, TaskQueryContext>({
-  adapter: drizzleAdapter,
+  adapter: drizzleAdapter({ db, schema: { tasks, users } }),
   schema: { tasks, users },
 
   virtualFields: {
@@ -932,7 +923,7 @@ Virtual fields support not just string values, but also numeric and boolean valu
 ```typescript
 const qk = createQueryKit({
   schema: mySchema,
-  adapter: drizzleAdapter,
+  adapter: drizzleAdapter({ db, schema: mySchema }),
   
   virtualFields: {
     // Numeric values for priority filtering
@@ -1069,11 +1060,11 @@ import { jsonbContains } from '@gblikas/querykit';
 
 // Check if assignedTo contains the current user ID
 jsonbContains('assigned_to', ctx.currentUserId)
-// Generates: assigned_to @> '["user123"]'::jsonb
+// Generates: "assigned_to" @> '["user123"]'::jsonb
 
 // Works with arrays too
 jsonbContains('tags', ['urgent', 'review'])
-// Generates: tags @> '["urgent","review"]'::jsonb
+// Generates: "tags" @> '["urgent","review"]'::jsonb
 ```
 
 ##### `dateWithinDays(field, days)` - Date Range Check
@@ -1085,11 +1076,11 @@ import { dateWithinDays } from '@gblikas/querykit';
 
 // Check if created within last day
 dateWithinDays('created_at', 1)
-// Generates: created_at >= NOW() - INTERVAL '1 days'
+// Generates: "created_at" >= NOW() - INTERVAL '1 days'
 
 // Check if created within last week
 dateWithinDays('created_at', 7)
-// Generates: created_at >= NOW() - INTERVAL '7 days'
+// Generates: "created_at" >= NOW() - INTERVAL '7 days'
 ```
 
 #### Custom Raw SQL
