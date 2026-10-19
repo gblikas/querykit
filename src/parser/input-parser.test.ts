@@ -1,3 +1,4 @@
+import { QuerySecurityError } from '../security/validator';
 import {
   parseQueryInput,
   getTermAtPosition,
@@ -5,6 +6,7 @@ import {
   extractKeyValue,
   parseQueryTokens
 } from './input-parser';
+import { QueryParser } from './parser';
 
 describe('Input Parser', () => {
   describe('parseQueryInput', () => {
@@ -498,6 +500,57 @@ describe('Input Parser', () => {
       expect(isInputComplete('name:/foo/) AND status:/bar/')).toBe(true);
       expect(isInputComplete('name:/foo/ AND status:/bar/')).toBe(false);
       expect(isInputComplete('name:/foo/ AND (status:/bar/)')).toBe(true);
+    });
+
+    describe('is the verdict of parse', () => {
+      afterEach(() => {
+        jest.restoreAllMocks();
+      });
+
+      it('shares one parse per text with parseWithContext', () => {
+        const parse = jest.spyOn(QueryParser.prototype, 'parse');
+        const parser = new QueryParser();
+        expect(parser.parseWithContext('shared:open').success).toBe(true);
+        expect(parse).toHaveBeenCalledTimes(1);
+        expect(isInputComplete('shared:open')).toBe(true);
+        expect(parse).toHaveBeenCalledTimes(1);
+        expect(isInputComplete('shared:open AND')).toBe(false);
+        expect(parse).toHaveBeenCalledTimes(2);
+        const failed = parser.parseWithContext('shared:open AND');
+        expect(failed.success).toBe(false);
+        expect(failed.structure.isComplete).toBe(false);
+        expect(failed.error?.message).toBe(
+          'Failed to parse query: Found no parsings.'
+        );
+        expect(parse).toHaveBeenCalledTimes(2);
+      });
+
+      it('keeps a verdict per length cap', () => {
+        const parse = jest.spyOn(QueryParser.prototype, 'parse');
+        expect(isInputComplete('capped:open')).toBe(true);
+        expect(isInputComplete('capped:open', { maxQueryLength: 20 })).toBe(
+          true
+        );
+        expect(parse).toHaveBeenCalledTimes(2);
+      });
+
+      it('is false when parse throws QuerySecurityError', () => {
+        jest.spyOn(QueryParser.prototype, 'parse').mockImplementation(() => {
+          throw new QuerySecurityError('Invalid query parameters');
+        });
+        expect(isInputComplete('guarded:open')).toBe(false);
+      });
+
+      it('rethrows a throw that is not a parse rejection and keeps nothing', () => {
+        const parse = jest
+          .spyOn(QueryParser.prototype, 'parse')
+          .mockImplementation(() => {
+            throw new TypeError('defect');
+          });
+        expect(() => isInputComplete('broken:open')).toThrow(TypeError);
+        parse.mockRestore();
+        expect(isInputComplete('broken:open')).toBe(true);
+      });
     });
   });
 

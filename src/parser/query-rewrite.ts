@@ -6,12 +6,10 @@
  * parser therefore spells the numerals Liqe cannot read, uppercases `and`,
  * `or` and `not`, rewrites `field:!=` to `NOT field:`, lifts
  * `field:in[...]` out as a placeholder literal, writes `field:[a, b]` as
- * `(field:a OR field:b)` and `field:[a TO b]` as two comparisons. The
- * search box must decide as the parser does, so both read the rewritten
- * text from here rather than from a copy: `rewriteQueryForLiqe` is pure,
- * and a caller that must know where each bracket expression landed passes
- * `visit`. A regex member is copied as text; nothing here compiles or runs
- * one.
+ * `(field:a OR field:b)` and `field:[a TO b]` as two comparisons.
+ * `rewriteQueryForLiqe` is pure, and a caller that must know where each
+ * bracket expression landed passes `visit`. A regex member is copied as
+ * text; nothing here compiles or runs one.
  */
 
 import {
@@ -103,7 +101,7 @@ export function readPlaceholderStart(rewrite: IBracketRewrite): number {
  * at an ungrouped member ends before it. A regex that begins at the one
  * member of a list and runs past the closer into the typed text
  * (`x:[//]/` is `///`) is read from the member and stays. The parser
- * rejects such a reading and the search box reads it as incomplete.
+ * rejects such a reading.
  *
  * @param members The regex members the rewrite located
  * @param regexSpans Start index to end index of each regex Liqe read
@@ -216,10 +214,9 @@ function matchInequality(
 
 /**
  * Whether a field may begin at `index`: the start of the text, Liqe
- * whitespace, `(` or a clause-leading minus precedes it, the boundary the
- * search box requires of a field colon. A `:!=` glued to the value before
- * it (`status:a*y:!=b`) is left as typed for Liqe to reject, instead of
- * writing `NOT ` into that value.
+ * whitespace, `(` or a clause-leading minus precedes it. A `:!=` glued to
+ * the value before it (`status:a*y:!=b`) is left as typed for Liqe to
+ * reject, instead of writing `NOT ` into that value.
  */
 function beginsClause(query: string, index: number): boolean {
   if (index === 0) {

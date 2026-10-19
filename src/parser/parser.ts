@@ -38,9 +38,13 @@ import {
 import {
   findTrailingLogicalOperator,
   parseQueryTokens,
-  isInputComplete,
   QueryToken
 } from './input-parser';
+import {
+  parseVerdictKey,
+  readParseVerdict,
+  recordParseVerdict
+} from './parse-verdict';
 import {
   hasUnreadRegexMember,
   IBracketRewrite,
@@ -74,7 +78,8 @@ import {
   aliasSecurityFields,
   deniedNameSet,
   isAllowedName,
-  isDeniedName
+  isDeniedName,
+  QuerySecurityError
 } from '../security/validator';
 
 /**
@@ -299,9 +304,8 @@ export class QueryParser implements IQueryParser {
    * ` OR ` and `)` written after it (`r:[//, l]/)` reaches Liqe as
    * `(r:// OR r:l)/)`): queries no reading of the typed text yields. A regex
    * that begins at the one member of a list and runs past the closer into
-   * the typed text (`x:[//]/` is `///`) is read from the member and stays,
-   * as the search box reads it. The rule is `hasUnreadRegexMember`, which
-   * the search box applies to the same text.
+   * the typed text (`x:[//]/` is `///`) is read from the member and stays.
+   * The rule is `hasUnreadRegexMember`.
    *
    * @param ast Liqe's reading of the rewritten query
    * @throws {QueryParseError} When no regex begins at a member, or the regex
@@ -330,7 +334,7 @@ export class QueryParser implements IQueryParser {
    * conversion so the member, not the clause it smuggled, is reported. A
    * member Liqe read no literal at was swallowed by a regex Liqe reads from
    * the text before it (`x:[a] n://(y:["a" OR z:"b"]/` is one regex from
-   * `n:` on), which stays as the search box reads it.
+   * `n:` on), which stays.
    *
    * @param ast Liqe's reading of the rewritten query
    * @throws {QueryParseError} When Liqe read a literal at such a member
@@ -368,12 +372,12 @@ export class QueryParser implements IQueryParser {
 
   /**
    * Pre-process a query string to convert non-standard syntax to
-   * Liqe-compatible syntax, the shared `rewriteQueryForLiqe` the search box
-   * reads too: numerals Liqe cannot read are spelled, lowercase operator
-   * words uppercased, `field:!=` rewritten, `field:in[...]` lifted out as a
-   * placeholder and `field:[val1, val2]` written as
-   * `(field:val1 OR field:val2)`. Where each bracket expression lands is
-   * recorded for the AST conversion and the checks after Liqe.
+   * Liqe-compatible syntax, `rewriteQueryForLiqe`: numerals Liqe cannot
+   * read are spelled, lowercase operator words uppercased, `field:!=`
+   * rewritten, `field:in[...]` lifted out as a placeholder and
+   * `field:[val1, val2]` written as `(field:val1 OR field:val2)`. Where
+   * each bracket expression lands is recorded for the AST conversion and
+   * the checks after Liqe.
    *
    * @throws {Error} When a numeral names an integer outside the signed
    * 64-bit range or an exponent that underflows to zero; `parse` wraps it
@@ -413,9 +417,8 @@ export class QueryParser implements IQueryParser {
     if (body.trim().length === 0) {
       return [];
     }
-    // The split is the scanner's `splitListMembers`, which the search box
-    // mirrors, so a comma inside a string or regex literal stays in its
-    // member.
+    // The split is the scanner's `splitListMembers`, so a comma inside a
+    // string or regex literal stays in its member.
     return splitListMembers(body).map(token =>
       this.parseMembershipToken(token)
     );
@@ -852,28 +855,24 @@ export class QueryParser implements IQueryParser {
     const tokenResult = parseQueryTokens(query, options.cursorPosition);
     const tokens = this.convertTokens(tokenResult.tokens);
 
+    // Attempt the full parse once; whether it accepted the text is the
+    // structure's `isComplete`.
+    const attempt = this.attemptParse(query);
+    const ast = attempt.expression;
+    const success = ast !== undefined;
+    const error =
+      attempt.error === undefined
+        ? undefined
+        : {
+            message: attempt.error,
+            // Try to extract position from error message if available
+            position: this.extractErrorPosition(attempt.error),
+            problematicText: this.extractProblematicText(query, attempt.error)
+          };
+
     // Analyze structure
-    const structure = this.analyzeStructure(query, tokens);
+    const structure = this.analyzeStructure(query, tokens, success);
 
-    // Attempt full parse
-    let ast: QueryExpression | undefined;
-    let error:
-      | { message: string; position?: number; problematicText?: string }
-      | undefined;
-    let success = false;
-
-    try {
-      ast = this.parse(query);
-      success = true;
-    } catch (e) {
-      const errorMessage = e instanceof Error ? e.message : String(e);
-      error = {
-        message: errorMessage,
-        // Try to extract position from error message if available
-        position: this.extractErrorPosition(errorMessage),
-        problematicText: this.extractProblematicText(query, errorMessage)
-      };
-    }
     if (ast) {
       structure.clauseCount = this.countComparisonClauses(ast);
       structure.referencedFields = this.collectComparisonFields(ast);
@@ -942,6 +941,36 @@ export class QueryParser implements IQueryParser {
   }
 
   /**
+   * Parse `query` for `parseWithContext`: the expression, or the message of
+   * the error. The verdict is kept with `isInputComplete`'s, under the same
+   * cap, so a search box that calls both on a keystroke pays one parse, and
+   * a text already known to fail is not parsed again. A throw that is
+   * neither a `QueryParseError` nor a `QuerySecurityError` is reported but
+   * not kept, since it is a defect rather than a verdict on the text.
+   */
+  private attemptParse(query: string): {
+    expression?: QueryExpression;
+    error?: string;
+  } {
+    const key = parseVerdictKey(this.options.maxQueryLength, query);
+    const kept = readParseVerdict(key);
+    if (kept && kept.error !== null) {
+      return { error: kept.error };
+    }
+    try {
+      const expression = this.parse(query);
+      recordParseVerdict(key, { error: null });
+      return { expression };
+    } catch (e) {
+      const error = e instanceof Error ? e.message : String(e);
+      if (e instanceof QueryParseError || e instanceof QuerySecurityError) {
+        recordParseVerdict(key, { error });
+      }
+      return { error };
+    }
+  }
+
+  /**
    * The result for an input longer than `maxQueryLength`. Nothing was
    * tokenized or parsed, so the tokens are empty, the structure is empty
    * and incomplete, and there is no recovery, validation or suggestion; the
@@ -1007,11 +1036,13 @@ export class QueryParser implements IQueryParser {
   }
 
   /**
-   * Analyze the structure of a query
+   * Analyze the structure of a query. `isComplete` is whether `parse`
+   * accepted the text, which `parseWithContext` has already decided.
    */
   private analyzeStructure(
     query: string,
-    tokens: IQueryToken[]
+    tokens: IQueryToken[],
+    isComplete: boolean
   ): IQueryStructure {
     const delimiters = measureQueryDelimiters(query);
     const hasBalancedParentheses =
@@ -1036,9 +1067,6 @@ export class QueryParser implements IQueryParser {
     }
     const depth =
       query.trim().length > 0 ? Math.max(1, delimiters.maxParenthesisDepth) : 0;
-    const isComplete = isInputComplete(query, {
-      maxQueryLength: this.options.maxQueryLength
-    });
     const complexity = this.determineComplexity(
       clauseCount,
       operatorCount,

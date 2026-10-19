@@ -271,8 +271,8 @@ export interface IQueryStructure {
   hasBalancedQuotes: boolean;
 
   /**
-   * Whether the query appears structurally complete
-   * (no trailing operators, no unclosed constructs)
+   * Whether `parse` accepts the query: `isInputComplete`'s verdict, which
+   * is the outcome of the parse `parseWithContext` attempted.
    */
   isComplete: boolean;
 
