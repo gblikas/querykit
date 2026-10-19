@@ -8,41 +8,13 @@
  * first and otherwise the column by the same case rule.
  */
 
-import { createRequire } from 'module';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
-import {
-  integer,
-  sqliteTable,
-  SQLiteSyncDialect,
-  text
-} from 'drizzle-orm/sqlite-core';
+import { integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 import { DrizzleAdapter } from '../adapters/drizzle';
 import { filterInMemory, inMemoryAdapter } from '../adapters/memory';
 import { QueryParser } from '../parser';
-import { QueryExpression } from '../parser/types';
-import { DrizzleTranslator } from './drizzle';
+import { openSqliteHarness } from '../test-support';
 import { SqlTranslator } from './sql';
-
-const nodeRequire = createRequire(__filename);
-
-interface ISqliteStatement {
-  all(...params: unknown[]): Array<{ id: number }>;
-}
-
-interface ISqliteDatabase {
-  exec(sqlText: string): void;
-  prepare(sqlText: string): ISqliteStatement;
-  close(): void;
-}
-
-interface ISqliteDatabaseConstructor {
-  new (filename: string): ISqliteDatabase;
-}
-
-interface IParameterizedSql {
-  sql: string;
-  params: unknown[];
-}
 
 const rows = [
   { id: 1, city: 'Chicago' },
@@ -55,22 +27,15 @@ const owner = sqliteTable('owner', {
   city: text('city')
 });
 
-function openDatabase(): ISqliteDatabase {
-  const Database = nodeRequire('better-sqlite3') as ISqliteDatabaseConstructor;
-  const database = new Database(':memory:');
-  database.exec(`
-    CREATE TABLE owner (id INTEGER PRIMARY KEY, city TEXT);
-    INSERT INTO owner VALUES (1, 'Chicago'), (2, 'Austin'), (3, 'Boston');
-  `);
-  return database;
-}
-
 describe('a dotted name in another letter case', () => {
   const parser = new QueryParser();
-  const dialect = new SQLiteSyncDialect();
-  const database = openDatabase();
+  const harness = openSqliteHarness({
+    table: owner,
+    columns: { city: 'TEXT' },
+    rows
+  });
   const logged: string[] = [];
-  const db = drizzle(database as never, {
+  const db = drizzle(harness.database as never, {
     logger: { logQuery: (query: string): number => logged.push(query) }
   });
   const adapter = new DrizzleAdapter({ db, schema: { owner } });
@@ -79,26 +44,6 @@ describe('a dotted name in another letter case', () => {
   beforeEach((): void => {
     logged.length = 0;
   });
-
-  afterAll((): void => {
-    database.close();
-  });
-
-  function idsOfSql(statement: IParameterizedSql): number[] {
-    return database
-      .prepare(`SELECT id FROM owner WHERE ${statement.sql} ORDER BY id`)
-      .all(...statement.params)
-      .map(row => row.id);
-  }
-
-  function compileDrizzle(
-    expression: QueryExpression,
-    schema?: Record<string, Record<string, unknown>>
-  ): IParameterizedSql {
-    const translator = new DrizzleTranslator(schema ? { schema } : {});
-    const compiled = dialect.sqlToQuery(translator.translate(expression));
-    return { sql: compiled.sql, params: compiled.params };
-  }
 
   it.each(['Owner.city:Austin', 'owner.City:Austin'])(
     '%s reads column city on every engine',
@@ -115,35 +60,26 @@ describe('a dotted name in another letter case', () => {
         .split('.')
         .map(part => `"${part}"`)
         .join('.');
-      const inline = new SqlTranslator({ useParameters: false }).translate(
-        expression
-      ) as string;
-      const parameterized = new SqlTranslator().translate(
-        expression
-      ) as IParameterizedSql;
-      expect(inline).toBe(`${quoted} = 'Austin'`);
-      expect(parameterized).toEqual({
+      const run = harness.expectSameIds(query, [2]);
+      expect(run.inlineSql).toBe(`${quoted} = 'Austin'`);
+      expect(run.parameterized).toEqual({
         sql: `${quoted} = ?`,
         params: ['Austin']
       });
-      expect(compileDrizzle(expression)).toEqual({
+      expect(run.drizzle).toEqual({
         sql: `${quoted} = ?`,
         params: ['Austin']
       });
-      expect(compileDrizzle(expression, { owner })).toEqual({
+      expect(run.schemaDrizzle).toEqual({
         sql: '"owner"."city" = ?',
         params: ['Austin']
       });
-      expect(idsOfSql({ sql: inline, params: [] })).toEqual([2]);
-      expect(idsOfSql(parameterized)).toEqual([2]);
-      expect(idsOfSql(compileDrizzle(expression))).toEqual([2]);
       const viaDrizzle = await adapter.execute<{ id: number }>(
         'owner',
         expression
       );
       expect(viaDrizzle.map(row => row.id)).toEqual([2]);
       expect(logged[0]).toContain('where "owner"."city" = ?');
-      expect(filterInMemory(query, rows).map(row => row.id)).toEqual([2]);
       const viaMemory = await memory.execute<{ id: number }>(
         'owner',
         expression
@@ -158,7 +94,7 @@ describe('a dotted name in another letter case', () => {
       expression
     ) as string;
     expect(
-      database
+      harness.database
         .prepare(
           `SELECT id FROM owner WHERE ${inline} ORDER BY "Owner"."city" ASC`
         )

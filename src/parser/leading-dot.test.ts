@@ -8,42 +8,12 @@
  * already; it never reads column `b`.
  */
 
-import { createRequire } from 'module';
-import { drizzle } from 'drizzle-orm/better-sqlite3';
-import {
-  integer,
-  sqliteTable,
-  SQLiteSyncDialect,
-  text
-} from 'drizzle-orm/sqlite-core';
+import { integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 import { filterInMemory } from '../adapters/memory';
-import { DrizzleTranslator } from '../translators/drizzle';
 import { SqlTranslator } from '../translators/sql';
 import { isInputComplete } from './input-parser';
 import { QueryParseError, QueryParser } from './parser';
-import { QueryExpression } from './types';
-
-const nodeRequire = createRequire(__filename);
-
-interface ISqliteStatement {
-  all(...params: unknown[]): Array<{ id: number }>;
-  run(...params: unknown[]): unknown;
-}
-
-interface ISqliteDatabase {
-  exec(sqlText: string): void;
-  prepare(sqlText: string): ISqliteStatement;
-  close(): void;
-}
-
-interface ISqliteDatabaseConstructor {
-  new (filename: string): ISqliteDatabase;
-}
-
-interface IParameterizedSql {
-  sql: string;
-  params: unknown[];
-}
+import { openSqliteHarness } from '../test-support';
 
 type Row = Record<string, string | number>;
 
@@ -73,67 +43,13 @@ function quoteName(name: string): string {
   return `"${name.split('"').join('""')}"`;
 }
 
-function openDatabase(): ISqliteDatabase {
-  const Database = nodeRequire('better-sqlite3') as ISqliteDatabaseConstructor;
-  const database = new Database(':memory:');
-  database.exec(
-    `CREATE TABLE a (id INTEGER PRIMARY KEY, ${columns
-      .map(column => `${quoteName(column)} TEXT`)
-      .join(', ')})`
-  );
-  const insert = database.prepare(
-    `INSERT INTO a (id, ${columns.map(quoteName).join(', ')}) VALUES (${[
-      'id',
-      ...columns
-    ]
-      .map(() => '?')
-      .join(', ')})`
-  );
-  for (const row of rows) {
-    insert.run(row.id, ...columns.map(column => row[column]));
-  }
-  return database;
-}
-
 describe('unquoted field names with an empty side of a dot', () => {
   const parser = new QueryParser();
-  const dialect = new SQLiteSyncDialect();
-  const database = openDatabase();
-  const db = drizzle(database as never);
-
-  afterAll((): void => {
-    database.close();
+  const harness = openSqliteHarness({
+    table: a,
+    columns: Object.fromEntries(columns.map(column => [column, 'TEXT'])),
+    rows
   });
-
-  function idsOfSql(statement: IParameterizedSql): number[] {
-    return database
-      .prepare(`SELECT id FROM a WHERE ${statement.sql} ORDER BY id`)
-      .all(...statement.params)
-      .map(row => row.id);
-  }
-
-  function compileDrizzle(
-    expression: QueryExpression,
-    schema?: Record<string, Record<string, unknown>>
-  ): IParameterizedSql {
-    const translator = new DrizzleTranslator(schema ? { schema } : {});
-    const compiled = dialect.sqlToQuery(translator.translate(expression));
-    return { sql: compiled.sql, params: compiled.params };
-  }
-
-  function idsOfBuilder(expression: QueryExpression): number[] {
-    const condition = new DrizzleTranslator({ schema: { a } }).translate(
-      expression,
-      { tableName: 'a' }
-    );
-    return db
-      .select({ id: a.id })
-      .from(a)
-      .where(condition)
-      .orderBy(a.id)
-      .all()
-      .map(row => row.id as number);
-  }
 
   it('keeps .column:open incomplete and rejected without an autofix', () => {
     const query = '.column:open';
@@ -166,30 +82,20 @@ describe('unquoted field names with an empty side of a dot', () => {
         ...(isLiteral ? { isLiteral: true } : {})
       });
       const quoted = quoteName(field);
-      const inlineSql = new SqlTranslator({ useParameters: false }).translate(
-        expression
-      ) as string;
-      const parameterized = new SqlTranslator().translate(
-        expression
-      ) as IParameterizedSql;
-      expect(inlineSql).toBe(`${quoted} = 'open'`);
-      expect(parameterized).toEqual({ sql: `${quoted} = ?`, params: ['open'] });
-      expect(compileDrizzle(expression)).toEqual({
+      const run = harness.expectSameIds(query, expectedIds);
+      expect(run.inlineSql).toBe(`${quoted} = 'open'`);
+      expect(run.parameterized).toEqual({
         sql: `${quoted} = ?`,
         params: ['open']
       });
-      expect(compileDrizzle(expression, { a })).toEqual({
+      expect(run.drizzle).toEqual({
+        sql: `${quoted} = ?`,
+        params: ['open']
+      });
+      expect(run.schemaDrizzle).toEqual({
         sql: `"a".${quoted} = ?`,
         params: ['open']
       });
-      expect(idsOfSql({ sql: inlineSql, params: [] })).toEqual(expectedIds);
-      expect(idsOfSql(parameterized)).toEqual(expectedIds);
-      expect(idsOfSql(compileDrizzle(expression))).toEqual(expectedIds);
-      expect(idsOfSql(compileDrizzle(expression, { a }))).toEqual(expectedIds);
-      expect(idsOfBuilder(expression)).toEqual(expectedIds);
-      expect(filterInMemory(query, rows).map(row => row.id)).toEqual(
-        expectedIds
-      );
     }
   );
 
@@ -202,17 +108,12 @@ describe('unquoted field names with an empty side of a dot', () => {
       operator: '==',
       value: 'open'
     });
-    const inlineSql = new SqlTranslator({ useParameters: false }).translate(
-      expression
-    ) as string;
-    expect(inlineSql).toBe(`"a"."b" = 'open'`);
-    expect(compileDrizzle(expression, { a })).toEqual({
+    const run = harness.expectSameSqlIds(query, [2]);
+    expect(run.inlineSql).toBe(`"a"."b" = 'open'`);
+    expect(run.schemaDrizzle).toEqual({
       sql: '"a"."b" = ?',
       params: ['open']
     });
-    expect(idsOfSql({ sql: inlineSql, params: [] })).toEqual([2]);
-    expect(idsOfSql(compileDrizzle(expression))).toEqual([2]);
-    expect(idsOfBuilder(expression)).toEqual([2]);
     expect(filterInMemory(query, rows).map(row => row.id)).toEqual([5]);
   });
 

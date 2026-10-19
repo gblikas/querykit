@@ -60,6 +60,37 @@ function storeBooleanAsInteger(value: unknown): unknown {
   return typeof value === 'boolean' ? Number(value) : value;
 }
 
+/** An engine's ids, or the error it threw, in the per-engine report. */
+type EngineReport = number[] | string;
+
+/** How each SQL engine turns a compiled query into ids. */
+type SqlEngineTable = Record<
+  keyof ISqlIdsByEngine,
+  (harness: SqliteHarness<IHarnessRow>, compiled: ICompiledQuery) => number[]
+>;
+
+const SQL_ENGINES: SqlEngineTable = {
+  inline: (harness, compiled) =>
+    harness.idsOfSql({ sql: compiled.inlineSql, params: [] }),
+  parameterized: (harness, compiled) =>
+    harness.idsOfSql(compiled.parameterized),
+  drizzle: (harness, compiled) => harness.idsOfSql(compiled.drizzle),
+  schemaDrizzle: (harness, compiled) =>
+    harness.idsOfSql(compiled.schemaDrizzle),
+  builder: (harness, compiled) => harness.idsOfBuilder(compiled.expression)
+};
+
+/** The engine's ids, or the error it threw as `Name: message`. */
+function attempt(run: () => number[]): EngineReport {
+  try {
+    return run();
+  } catch (error) {
+    return error instanceof Error
+      ? `${error.name}: ${error.message}`
+      : String(error);
+  }
+}
+
 /** `expectedIds` under every key of `actual`, for one diff per engine. */
 function sameIdsAs<T extends object>(actual: T, expectedIds: number[]): T {
   return Object.fromEntries(
@@ -154,9 +185,9 @@ class SqliteHarness<TRow extends IHarnessRow> implements ISqliteHarness<TRow> {
 
   public expectSameIds(query: string, expectedIds: number[]): ICompiledQuery {
     const compiled = this.compile(query);
-    const actual: IIdsByEngine = {
-      ...this.sqlIdsOf(compiled),
-      memory: this.idsInMemory(query)
+    const actual = {
+      ...this.sqlReportOf(compiled),
+      memory: attempt(() => this.idsInMemory(query))
     };
     expect(actual).toEqual(sameIdsAs(actual, expectedIds));
     return compiled;
@@ -167,19 +198,32 @@ class SqliteHarness<TRow extends IHarnessRow> implements ISqliteHarness<TRow> {
     expectedIds: number[]
   ): ICompiledQuery {
     const compiled = this.compile(query);
-    const actual = this.sqlIdsOf(compiled);
+    const actual = this.sqlReportOf(compiled);
     expect(actual).toEqual(sameIdsAs(actual, expectedIds));
     return compiled;
   }
 
+  /** Every SQL engine's ids; an engine that throws ends the run. */
   private sqlIdsOf(compiled: ICompiledQuery): ISqlIdsByEngine {
-    return {
-      inline: this.idsOfSql({ sql: compiled.inlineSql, params: [] }),
-      parameterized: this.idsOfSql(compiled.parameterized),
-      drizzle: this.idsOfSql(compiled.drizzle),
-      schemaDrizzle: this.idsOfSql(compiled.schemaDrizzle),
-      builder: this.idsOfBuilder(compiled.expression)
-    };
+    return this.mapSqlEngines(compiled, run => run());
+  }
+
+  /** Every SQL engine's ids, or the error it threw, for one diff. */
+  private sqlReportOf(
+    compiled: ICompiledQuery
+  ): Record<keyof ISqlIdsByEngine, EngineReport> {
+    return this.mapSqlEngines(compiled, attempt);
+  }
+
+  private mapSqlEngines<T>(
+    compiled: ICompiledQuery,
+    evaluate: (run: () => number[]) => T
+  ): Record<keyof ISqlIdsByEngine, T> {
+    const entries = Object.entries(SQL_ENGINES).map(([engine, run]) => [
+      engine,
+      evaluate(() => run(this, compiled))
+    ]);
+    return Object.fromEntries(entries) as Record<keyof ISqlIdsByEngine, T>;
   }
 }
 
