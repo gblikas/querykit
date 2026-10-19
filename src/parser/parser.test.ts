@@ -1,9 +1,20 @@
+import { parse as liqeParse } from 'liqe';
 import { QueryParser, QueryParseError } from './parser';
 import {
   IComparisonExpression,
   ILogicalExpression,
   QueryExpression
 } from './types';
+
+/**
+ * The value Liqe itself decodes for a quoted literal in `field:<literal>`.
+ */
+function liqeValue(query: string): unknown {
+  const ast = liqeParse(query);
+  return ast.type === 'Tag' && 'value' in ast.expression
+    ? ast.expression.value
+    : undefined;
+}
 
 // Replace the type definition with this approach
 type QueryParserPrivate = {
@@ -185,6 +196,293 @@ describe('QueryParser', () => {
       };
 
       expect(parser.parse(query)).toEqual(expected);
+    });
+
+    it('accepts the private-use character that placeholders are built from', () => {
+      const expected: QueryExpression = {
+        type: 'comparison',
+        field: 'title',
+        operator: '==',
+        value: '\uE000'
+      };
+      expect(parser.parse('title:"\uE000"')).toEqual(expected);
+      expect(parser.parse('title:\uE000')).toEqual(expected);
+      expect(parser.validate('title:\uE000')).toBe(true);
+    });
+
+    it('keeps a membership list apart from a value that decodes to its placeholder', () => {
+      const literals: Array<{ written: string; decoded: string }> = [
+        { written: '\uE000qk0', decoded: '\uE000qk0' },
+        { written: '\uE000\uE000qk0', decoded: '\uE000\uE000qk0' },
+        { written: '\\uE000qk0', decoded: '\uE000qk0' },
+        { written: '\\ue000qk0', decoded: '\uE000qk0' },
+        { written: '\\uE000\\uE000qk0', decoded: '\uE000\uE000qk0' },
+        { written: '\\uE000\uE000qk0', decoded: '\uE000\uE000qk0' },
+        { written: '\\\\uE000qk0', decoded: '\\uE000qk0' }
+      ];
+      for (const { written, decoded } of literals) {
+        for (const quote of ['"', "'"]) {
+          const actual = parser.parse(
+            `status:${quote}${written}${quote} AND tags:in[a]`
+          );
+          expect(actual).toEqual({
+            type: 'logical',
+            operator: 'AND',
+            left: {
+              type: 'comparison',
+              field: 'status',
+              operator: '==',
+              value: decoded
+            },
+            right: {
+              type: 'comparison',
+              field: 'tags',
+              operator: 'IN',
+              value: ['a']
+            }
+          });
+        }
+      }
+    });
+
+    it('decodes quoted membership members with the same escapes as equality', () => {
+      const membership = parser.parse(
+        'name:in["\\u0041", \'\\u0042\', "a\\nb", "quo\\"te"]'
+      );
+      expect(membership).toEqual({
+        type: 'comparison',
+        field: 'name',
+        operator: 'IN',
+        value: ['A', 'B', 'a\nb', 'quo"te']
+      });
+      expect(parser.parse('name:"\\u0041"')).toEqual({
+        type: 'comparison',
+        field: 'name',
+        operator: '==',
+        value: 'A'
+      });
+    });
+
+    it('rejects a quoted membership member Liqe cannot decode', () => {
+      expect(() => parser.parse('name:in["\\q"]')).toThrow(QueryParseError);
+    });
+
+    it('decodes quoted members exactly as Liqe decodes quoted values', () => {
+      const BS = String.fromCharCode(92);
+      const inputTokens = [
+        '"plain"',
+        "'plain'",
+        '""',
+        "''",
+        '"a' + BS + '"b"',
+        "'a" + BS + "'b'",
+        "'a" + BS + '"b\'',
+        '"tab' + BS + 'there"',
+        '"nl' + BS + 'nhere"',
+        '"' + BS + 'b' + BS + 'f' + BS + 'r' + BS + '/' + BS + BS + '"',
+        '"' + BS + 'u0041' + BS + 'u00e9' + BS + 'U0041"'.replace('U', 'u'),
+        "'" + BS + 'uE000' + BS + "ue000'",
+        '"caf\u00e9 \uD83D\uDE00 \uE000"'
+      ];
+      for (const inputToken of inputTokens) {
+        const expectedValue = liqeValue(`name:${inputToken}`);
+        expect(typeof expectedValue).toBe('string');
+        expect(parser.parse(`name:in[${inputToken}]`)).toEqual({
+          type: 'comparison',
+          field: 'name',
+          operator: 'IN',
+          value: [expectedValue]
+        });
+      }
+    });
+
+    it('rejects the quoted members Liqe rejects', () => {
+      const BS = String.fromCharCode(92);
+      const inputTokens = [
+        '"' + BS + 'q"',
+        '"it' + BS + '\'s"',
+        '"a' + BS + '"',
+        '"a' + String.fromCharCode(10) + 'b"',
+        '"a":"b"',
+        '"' + BS + 'u12"',
+        '"' + BS + 'u12G4"'
+      ];
+      for (const inputToken of inputTokens) {
+        expect(() => liqeParse(`name:${inputToken}`)).toThrow();
+        expect(() => parser.parse(`name:in[${inputToken}]`)).toThrow(
+          QueryParseError
+        );
+      }
+    });
+
+    it('keeps placeholders apart from decoys wherever the membership list sits', () => {
+      const listFirst = parser.parse('tags:in[a] AND status:"\\uE000qk0"');
+      expect(listFirst).toEqual({
+        type: 'logical',
+        operator: 'AND',
+        left: {
+          type: 'comparison',
+          field: 'tags',
+          operator: 'IN',
+          value: ['a']
+        },
+        right: {
+          type: 'comparison',
+          field: 'status',
+          operator: '==',
+          value: '\uE000qk0'
+        }
+      });
+      const twoLists = parser.parse(
+        '(a:in[x] OR b:in[y]) AND status:"\\uE000qk1"'
+      );
+      expect(twoLists).toEqual({
+        type: 'logical',
+        operator: 'AND',
+        left: {
+          type: 'logical',
+          operator: 'OR',
+          left: {
+            type: 'comparison',
+            field: 'a',
+            operator: 'IN',
+            value: ['x']
+          },
+          right: {
+            type: 'comparison',
+            field: 'b',
+            operator: 'IN',
+            value: ['y']
+          }
+        },
+        right: {
+          type: 'comparison',
+          field: 'status',
+          operator: '==',
+          value: '\uE000qk1'
+        }
+      });
+      const insideBody = parser.parse(
+        'tags:in["\\uE000"] AND status:"\\uE000"'
+      );
+      expect(insideBody).toEqual({
+        type: 'logical',
+        operator: 'AND',
+        left: {
+          type: 'comparison',
+          field: 'tags',
+          operator: 'IN',
+          value: ['\uE000']
+        },
+        right: {
+          type: 'comparison',
+          field: 'status',
+          operator: '==',
+          value: '\uE000'
+        }
+      });
+    });
+
+    it('finds a membership placeholder after escaped literals shorten decoded text', () => {
+      const afterEscapes = parser.parse(
+        '(a:"\\u0041\\u0042" OR b:"q\\"r") AND tags:in[x, y]'
+      );
+      expect(afterEscapes).toEqual({
+        type: 'logical',
+        operator: 'AND',
+        left: {
+          type: 'logical',
+          operator: 'OR',
+          left: { type: 'comparison', field: 'a', operator: '==', value: 'AB' },
+          right: {
+            type: 'comparison',
+            field: 'b',
+            operator: '==',
+            value: 'q"r'
+          }
+        },
+        right: {
+          type: 'comparison',
+          field: 'tags',
+          operator: 'IN',
+          value: ['x', 'y']
+        }
+      });
+    });
+
+    it('keeps a regex Liqe reads as one literal, membership text included', () => {
+      // Liqe's only parse of this text is one regex, so the membership
+      // list is never lifted and the regex is not executed here.
+      expect(parser.parse('a:/x/ AND NOT NOT b:in[1] OR c:/y/')).toEqual({
+        type: 'comparison',
+        field: 'a',
+        operator: 'REGEX',
+        value: '/x/ AND NOT NOT b:in[1] OR c:/y/'
+      });
+      expect(parser.validate('a:/x/ AND NOT NOT b:in[1] OR c:/y/')).toBe(true);
+    });
+
+    it('rejects a quoted membership member that is not a single literal', () => {
+      expect(() => parser.parse('name:in["a":"b"]')).toThrow(QueryParseError);
+      expect(parser.parse('name:in["a:b"]')).toEqual({
+        type: 'comparison',
+        field: 'name',
+        operator: 'IN',
+        value: ['a:b']
+      });
+    });
+
+    it('restores exponent-form numbers in membership lists', () => {
+      expect(parser.parse('priority:in[1e-7, 2E3, -1.5e+2, 10]')).toEqual({
+        type: 'comparison',
+        field: 'priority',
+        operator: 'IN',
+        value: [1e-7, 2000, -150, 10]
+      });
+    });
+
+    it('treats a slash inside a regex character class as part of the pattern', () => {
+      expect(parser.parse('name:/[/]/ and priority:1')).toEqual({
+        type: 'logical',
+        operator: 'AND',
+        left: {
+          type: 'comparison',
+          field: 'name',
+          operator: 'REGEX',
+          value: '/[/]/'
+        },
+        right: {
+          type: 'comparison',
+          field: 'priority',
+          operator: '==',
+          value: 1
+        }
+      });
+    });
+
+    it('still parses a membership list next to a value that looks like a placeholder', () => {
+      const actual = parser.parse('status:"qk0" AND tags:in[a]');
+      expect(actual).toEqual({
+        type: 'logical',
+        operator: 'AND',
+        left: {
+          type: 'comparison',
+          field: 'status',
+          operator: '==',
+          value: 'qk0'
+        },
+        right: {
+          type: 'comparison',
+          field: 'tags',
+          operator: 'IN',
+          value: ['a']
+        }
+      });
+    });
+
+    it('omits right on a unary NOT', () => {
+      const actual = parser.parse('NOT status:done');
+      expect('right' in actual).toBe(false);
     });
 
     it('should parse NOT expressions', () => {
@@ -1361,6 +1659,43 @@ describe('QueryParser', () => {
           'Unmapped'
         )
       ).toBe('unmapped');
+    });
+  });
+});
+
+describe('QueryParser rewrite edge cases', () => {
+  const parser = new QueryParser();
+
+  it('rewrites :!= after a quoted field name', () => {
+    expect(parser.parse('"status":!=active')).toEqual({
+      type: 'logical',
+      operator: 'NOT',
+      left: {
+        type: 'comparison',
+        field: 'status',
+        operator: '==',
+        value: 'active'
+      }
+    });
+  });
+
+  it('still leaves :!= inside a quoted value alone', () => {
+    expect(parser.parse('note:"a:!=b"')).toEqual({
+      type: 'comparison',
+      field: 'note',
+      operator: '==',
+      value: 'a:!=b'
+    });
+  });
+
+  it('rejects a membership list that closes with a brace', () => {
+    expect(() => parser.parse('tags:in[a}')).toThrow(QueryParseError);
+    expect(() => parser.parse('tags:not in[a, b}')).toThrow(QueryParseError);
+    expect(parser.parse('tags:in[a]')).toEqual({
+      type: 'comparison',
+      field: 'tags',
+      operator: 'IN',
+      value: ['a']
     });
   });
 });

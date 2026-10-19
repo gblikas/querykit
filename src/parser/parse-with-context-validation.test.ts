@@ -445,3 +445,37 @@ describe('QueryParser.parseWithContext - Validation & Security', () => {
     });
   });
 });
+
+describe('parseWithContext depth pre-check agrees with the validator', () => {
+  const depthParser = new QueryParser();
+
+  it('counts logical nesting a bracket list creates without parentheses', () => {
+    const result = depthParser.parseWithContext('status:[a,b,c]', {
+      securityOptions: { maxQueryDepth: 1 }
+    });
+    expect(result.success).toBe(true);
+    expect(result.structure.depth).toBe(1);
+    expect(result.security?.passed).toBe(false);
+    expect(result.security?.violations).toContainEqual(
+      expect.objectContaining({ type: 'depth_exceeded' })
+    );
+  });
+
+  it('passes the same list when the limit allows the nesting', () => {
+    const result = depthParser.parseWithContext('status:[a,b,c]', {
+      securityOptions: { maxQueryDepth: 2 }
+    });
+    expect(result.security?.passed).toBe(true);
+  });
+
+  it('matches QuerySecurityValidator for a parenthesized group', () => {
+    const result = depthParser.parseWithContext('(a:1 OR b:2) AND c:3', {
+      securityOptions: { maxQueryDepth: 1 }
+    });
+    expect(result.security?.passed).toBe(false);
+    const allowed = depthParser.parseWithContext('(a:1 OR b:2) AND c:3', {
+      securityOptions: { maxQueryDepth: 2 }
+    });
+    expect(allowed.security?.passed).toBe(true);
+  });
+});

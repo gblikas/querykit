@@ -75,7 +75,7 @@ const highlightQueryHtml = (input: string): string => {
     .join('');
 };
 
-const INSTALL_SNIPPET = `pnpm i @gblikas/querykit@0.3.0 drizzle-orm`;
+const INSTALL_SNIPPET = `pnpm i @gblikas/querykit drizzle-orm@0.45.4`;
 
 const SCHEMA_SNIPPET = `// schema.ts
 import { serial, text, pgTable } from 'drizzle-orm/pg-core';
@@ -95,7 +95,6 @@ import { createDrizzleQueryKit } from '@gblikas/querykit';
 import { db } from './db';
 import { users } from './schema';
 
-// New 0.3.0: createDrizzleQueryKit combines adapter & security config
 export const qk = createDrizzleQueryKit({
   db,
   schema: { users },
@@ -322,7 +321,7 @@ export default function Home(): JSX.Element {
     void seed();
   }, [db]);
 
-  // Security configuration for QueryKit 0.3.0
+  // Security configuration
   const securityOptions: ISecurityOptions = useMemo(
     () => ({
       maxQueryDepth: 5,
@@ -339,7 +338,7 @@ export default function Home(): JSX.Element {
     []
   );
 
-  // Use the new createDrizzleQueryKit factory (0.3.0 feature)
+  // createDrizzleQueryKit combines the adapter and security config
   const qk = useMemo(
     () =>
       createDrizzleQueryKit({
@@ -426,7 +425,7 @@ export default function Home(): JSX.Element {
         if (searchQuery.trim()) {
           try {
             const parseStart = performance.now();
-            // Use parseWithContext for enhanced query analysis (0.3.0 feature)
+            // Use parseWithContext for query analysis
             const parseResult = parser.parseWithContext(searchQuery, {
               schema: {
                 title: { type: 'string', description: 'Task title' },
@@ -453,7 +452,7 @@ export default function Home(): JSX.Element {
                 typeof translated === 'string' ? translated : translated.sql;
               mockSQL += ` WHERE ${whereSql}`;
 
-              // Use referenced fields from structure (0.3.0 feature)
+              // Use referenced fields from structure
               detectedOperators = [];
               if (parseResult.structure.operatorCount > 0) {
                 // Extract operators from the SQL for display
@@ -1086,7 +1085,7 @@ export default function Home(): JSX.Element {
                         {queryStructure && (
                           <div>
                             <div className="text-xs text-muted-foreground mb-1">
-                              Query complexity (0.3.0)
+                              Query complexity
                             </div>
                             <div className="flex flex-wrap gap-2">
                               <span

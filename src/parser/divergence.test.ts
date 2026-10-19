@@ -8,11 +8,8 @@
  */
 
 import { QueryParser } from './parser';
-import {
-  parseQueryInput,
-  extractKeyValue,
-  isInputComplete
-} from './input-parser';
+import { isInputComplete } from './input-parser';
+import { parseQueryInput, extractKeyValue } from './tokenizer';
 
 describe('Parser Divergence Documentation', () => {
   const mainParser = new QueryParser();

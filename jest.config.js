@@ -20,6 +20,7 @@ module.exports = {
     'src/**/*.ts',
     '!src/**/*.test.ts',
     '!src/**/*.spec.ts',
+    '!src/test-support/**',
     '!src/**/index.ts',
     '!src/types/**/*.ts'
   ]

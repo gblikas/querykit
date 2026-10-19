@@ -1,16 +1,16 @@
 # QueryKit
 
-QueryKit is a modern query toolkit for Lucene-style search, designed to give developers a head-start for dynamic search. QueryKit simplifies how you build and execute fielded searchs across different databases and ORMs. It provides a unified, intuitive SDK for filtering, sorting, and transforming data, and handles the heavy lifting of parsing and translating those queries to your data source. 
+QueryKit compiles a Liqe / GitHub-like filter string into a Drizzle query or an in-memory filter, with field allowlists, clause limits, request-context virtual fields, and a token parser for a search box. Other ORMs, a CLI, and HTTP middleware are not implemented.
 
 ## What Does QueryKit Do?
 
-QueryKit allows developers to define queries in a high-level, readable format and then run those queries anywhere (in the browser, on the server, or via CLI). Instead of writing different query logic for each layer of your stack, you can use QueryKit's consistent API to:
+QueryKit takes one filter string and evaluates it with the Drizzle adapter or with `filterInMemory`.
 
-- **Filter and sort data with a Lucene-like query language** – For example, `status:done AND in:todos`. 
+- **Filter and sort with a Liqe query** – For example, `status:done AND priority:>2`.
 
-- **Translate high-level queries to concrete implementations** – QueryKit takes your schema definition and converts it into the appropriate form for the environment. 
+- **Translate that string to Drizzle, or apply it in memory** – `drizzleAdapter` builds a Drizzle query. `filterInMemory` and `inMemoryAdapter` keep rows that match the same operators.
 
-- **Unify front‑end and back‑end filtering logic** – The same QueryKit query can be run in a front-end app for client-side filtering or on a server for database queries. This ensures consistency in how data is filtered across your application.
+- **Share the string between a database query and a fetched array** – The Query Syntax section is the contract for both.
 
 ## Quick Start
 
@@ -22,24 +22,20 @@ Below are various examples of how to use QueryKit.
 
 // schema.ts
 import { serial, text, pgTable } from 'drizzle-orm/pg-core';
-import { type InferSelectModel, type InferInsertModel } from 'drizzle-orm'
 
-const users = pgTable('users', {
+export const users = pgTable('users', {
   id: serial('id').primaryKey(),
   name: text('name').notNull(),
   status: text('status').notNull().default('draft')
 });
 
-type SelectUser = InferSelectModel<typeof users>;
-
 // example.ts
-import { SelectUser } from './schema';
-import { createQueryKit } from 'querykit';
-import { drizzleAdapter } from 'querykit/adapters/drizzle';
+import { users } from './schema';
+import { createQueryKit, drizzleAdapter } from '@gblikas/querykit';
 
-// Create a QueryKit instance with Drizzle adapter
+// Create a QueryKit instance with the Drizzle adapter; db is your Drizzle database
 const qk = createQueryKit({
-  adapter: drizzleAdapter,
+  adapter: drizzleAdapter({ db, schema: { users } }),
   schema: { users },
 });
 
@@ -53,29 +49,79 @@ const query = qk.query('users')
 const results = await query.execute();
 ```
 
+**In-memory**
+
+The same query string can filter a fetched array. QueryKit parses it with the existing parser and keeps a row when it satisfies the same operators the Drizzle translator emits, with SQLite's semantics where PostgreSQL's differ. `status:active` keeps `active`. `priority:2` keeps `2`. A quoted numeral against a number is read as that number, as a typed column reads it on PostgreSQL and SQLite, so `priority:"2"` keeps `2` and `priority:>"1"` compares numerically. A bare number against a text value never matches and ranks below every string, as on a SQLite column with no declared type, so `label:10` keeps nothing and `label:>5` keeps every string; PostgreSQL binds the number as text and compares it as text, so `label:10` keeps `10` and `label:>5` keeps `9` and `a` but not `10`. A row value has no column type, so `priority:true` keeps the rows whose priority is 1, `done:1` keeps the true rows, `priority:*` keeps every non-null priority and `priority:"two"` keeps nothing, as on SQLite; PostgreSQL rejects `priority:true`, `priority:*` and `priority:"two"` with its own error, and PGlite's parameter serializer rejects `done:1`. `*` and `?` are SQL LIKE, including inside quotes. Under a wildcard, ASCII letters match in either case, as in SQLite, so `status:act*` keeps `Active`, which PostgreSQL's case-sensitive LIKE does not; `ö` and `Ö` stay distinct everywhere, and equality stays case-sensitive. A `Date` compares as its `toISOString()` text, as SQLite stores a date, so `created:"2024-01-01"` matches no `Date` and `created:<="2024-01-01"` excludes the rows at midnight on that day, while a PostgreSQL timestamp column parses the literal as an instant, matches those rows and normalises an offset such as `+01:00`; write the full `2024-01-01T00:00:00.000Z` form to match on both. Order, limit, and offset then run as field order on that result. A sort puts NULL first ascending and last descending, as SQLite and MySQL do; PostgreSQL puts NULL last ascending and first descending.
+
+```typescript
+import { createQueryKit, filterInMemory, inMemoryAdapter } from '@gblikas/querykit';
+
+const tasks = [
+  { title: 'Ship release', status: 'done', priority: 3 },
+  { title: 'Fix bug', status: 'inactive', priority: 1 }
+];
+
+filterInMemory('status:done AND priority:>2', tasks);
+// => [{ title: 'Ship release', status: 'done', priority: 3 }]
+
+const qk = createQueryKit({
+  adapter: inMemoryAdapter({ records: { tasks } }),
+  schema: { tasks: { title: {}, status: {}, priority: {} } }
+});
+
+const preview = await qk.query('tasks').where('status:done AND priority:>2').execute();
+```
+
+When the rows use different keys than the query, give the adapter `fieldMappings`. The schema lists the names a query uses; the adapter renames them to row keys after validation, for comparisons and for `orderBy`.
+
+```typescript
+import { createQueryKit, inMemoryAdapter } from '@gblikas/querykit';
+
+const rows = [{ title: 'Ship release', task_status: 'done', priority: 3 }];
+
+const mapped = createQueryKit({
+  adapter: inMemoryAdapter({
+    records: { tasks: rows },
+    fieldMappings: { status: 'task_status' }
+  }),
+  schema: { tasks: { title: {}, status: {}, priority: {} } }
+});
+
+await mapped.query('tasks').where('status:done').orderBy('status').execute();
+// => [{ title: 'Ship release', task_status: 'done', priority: 3 }]
+```
+
 ## Query Syntax
 
-QueryKit uses Liqe Query Language (LQL), which is a Lucene-like syntax for filtering data:
+QueryKit parses the string with Liqe. The Drizzle translator and the in-memory adapter then evaluate that AST with the same operators. `status:active` is equality with `active`: it does not match `inactive` or `Active` when the comparison is case-sensitive. `status:"Active"` is the same kind of equality with `Active`. `priority:2` and `priority:=2` are equality with the number `2`, so `12` does not match. `*` and `?` are LIKE, including inside quotes: `*` is any sequence, `?` is one character, and the pattern is anchored to the whole value. Equality is case-sensitive on PostgreSQL and in the in-memory adapter; on SQLite and MySQL it follows the column collation. LIKE is case-sensitive on PostgreSQL and follows the engine on SQLite and MySQL; the in-memory adapter follows SQLite's default LIKE, so ASCII letters match in either case under `*` or `?` while other letters such as `ö` and `Ö` stay distinct. A boolean such as `done:true` compared with a Drizzle schema column is bound through that column's own mapping, as `eq(column, true)` binds it, so a PostgreSQL or MySQL `boolean()` column receives a boolean parameter and a text or integer column fails with the database's own error; a SQLite column without boolean mode, and any field with no schema column, gets the literal written as `TRUE` or `FALSE`, which SQLite reads as 1 or 0, since no SQLite driver binds a boolean. A slash pattern such as `name:/Todo.*/` or `name:/foo/` parses as operator `REGEX`, with or without `*` or `?` inside it, and the Drizzle translator and the in-memory adapter reject that operator with an unsupported-operator error.
+
+A field name matches a Drizzle property or an in-memory key exactly, or else the one name differing only by ASCII case, so a renamed column is reached by its property. A name that matches no property of the selected table is rejected on both adapters before any row is read, with `DrizzleAdapterError` and `InMemoryAdapterError`, rather than quoted as a raw identifier: with the property `status` on the column `status_col`, `status_col:open`, `created_at:null`, the quoted `"Items.status":open` and `orderBy('created_at')` are all rejected. The Drizzle translator without a schema still quotes a name as written, and an in-memory table with no rows has no keys to check. A single `table.column` is matched to the selected table the same way on both adapters: `Items.status` reads the `items` column `status`, while `Other.status`, or `owners.tier` with `owners` another table, is rejected before any row is read; `filterInMemory` has no table and reads the column of any single qualifier. In memory a dotted name reads an own key of the whole name first and never a nested path.
 
 ```
-# Basic field queries
-status:active         # Field equals value (case insensitive)
-status:"Active"       # Field equals value (case sensitive)
+# Equality
+status:active         # equals active; does not match inactive or Active
+status:"Active"       # equals Active
 
 # Comparison operators
+priority:2                # equals 2; does not match 12
+priority:=2               # same equality as priority:2
 priority:>2               # Greater than
 priority:>=2              # Greater than or equal
 priority:<2               # Less than
 priority:<=2              # Less than or equal
-priority:=2               # Exact equals
 
-# Ranges
-dueDate:[2023-01-01 TO 2023-01-31]      # Inclusive range
-dueDate:{2023-01-01 TO 2023-01-31}      # Exclusive range
+# Numeric ranges
+priority:[2 TO 3]         # Inclusive range
+priority:{2 TO 3}         # Exclusive range
 
-# Pattern matching
-name:/Todo.*/         # Regular expression
-title:intro*          # Wildcard matching
+# LIKE
+title:intro*          # intro followed by anything
+title:Sh?p            # one character between Sh and p
+title:"Ship*"         # quotes keep the same LIKE
+
+# Regex parses as operator REGEX and is rejected by translators and in-memory
+name:/Todo.*/         # unsupported operator REGEX
+name:/foo/            # unsupported operator REGEX
 
 # Boolean operators (case insensitive)
 status:active AND priority:>2     # AND operator
@@ -101,8 +147,10 @@ status:active priority:>2
 Map user-friendly field names to actual schema column names:
 
 ```typescript
+import { createQueryKit, drizzleAdapter } from '@gblikas/querykit';
+
 const qk = createQueryKit({
-  adapter: drizzleAdapter,
+  adapter: drizzleAdapter({ db, schema: { users } }),
   schema: { users },
   parserOptions: {
     fieldMappings: {
@@ -126,8 +174,10 @@ const results = await qk
 Enable case-insensitive field name matching:
 
 ```typescript
+import { createQueryKit, drizzleAdapter } from '@gblikas/querykit';
+
 const qk = createQueryKit({
-  adapter: drizzleAdapter,
+  adapter: drizzleAdapter({ db, schema: { users } }),
   schema: { users },
   parserOptions: {
     caseInsensitiveFields: true,
@@ -139,15 +189,27 @@ const qk = createQueryKit({
 qk.query('users').where('Status:active');
 qk.query('users').where('STATUS:active');
 qk.query('users').where('status:active');
+
+// A sort key is folded and mapped the same way, so this orders by
+// task_status on Drizzle and in memory alike
+qk.query('users').where('status:active').orderBy('STATUS', 'desc');
 ```
+
+The parser folds a field to lower case, so a camelCase property such as `createdAt` arrives as `createdat`. `createQueryKit` respells that folded name as the one schema property that differs from it only by ASCII case, in the query, in `orderBy`, and in `allowedFields`, `denyFields` and the keys of `denyValues`, before the allowlist compares it, so `CreatedAt:null`, `createdat:null` and `orderBy('createdAt')` all reach `createdAt` on Drizzle and in memory. A name that folds onto two properties differing only by case, such as `createdAt` beside `CreatedAt`, is rejected with `QuerySecurityError: Invalid query parameters` on both adapters, as a filter and as a sort key.
+
+### Query Length
+
+`maxQueryLength` caps the query text, in characters, at 10,000 by default. Liqe's cost grows superlinearly with the length of a bare word (about 2 s of synchronous CPU for 10,000 characters), and the `maxValueLength`, `maxQueryDepth` and `maxClauseCount` caps measure the parsed AST, so this is the one check that runs before the parser reads anything: `parse` throws `QueryParseError`, `parseWithContext` returns a failed result with no tokens and no recovery, and `isInputComplete` reports the input incomplete, each before any rewrite or Liqe run. Raise it with `parserOptions: { maxQueryLength: 20000 }`, pass the same option to `isInputComplete(input, { maxQueryLength })`, or set it to `Infinity` for no cap; a request handler that accepts longer text should still bound it, since the default leaves up to about 2 s of parsing per request.
 
 ## Tolerant Parse Mode
 
 By default, `createQueryKit` throws on any malformed input. For search UIs where queries may be submitted in a transiently incomplete state, enable tolerant mode to leverage `parseWithContext`'s built-in error recovery:
 
 ```typescript
+import { createQueryKit, drizzleAdapter } from '@gblikas/querykit';
+
 const qk = createQueryKit({
-  adapter: drizzleAdapter,
+  adapter: drizzleAdapter({ db, schema: { tasks } }),
   schema: { tasks },
   tolerant: true
 });
@@ -161,27 +223,25 @@ await qk.query('tasks').where('status:"incomplete').execute();
 ```
 
 Recovery types supported by tolerant mode:
-- **Trailing operators** — `status:active AND` → `status:active`
+- **Trailing `AND` or `OR`** — `status:active AND` → `status:active`; a trailing `NOT` is not dropped, since that would run the clause it was about to negate
 - **Unclosed quotes** — `status:"active` → `status:"active"`
-- **Unbalanced parentheses** — `(status:active` → `(status:active)`
+- **Missing closing parentheses** — `(status:active` → `(status:active)`
 
 If autofix also fails, an error is still thrown, ensuring silent data corruption never occurs.
 
 ## Installation
 
 ```bash
-npm install querykit
+npm install @gblikas/querykit
 ```
 
 ## Dependencies
 
 QueryKit leverages several key dependencies to provide its functionality:
 
-- [**Liqe**](https://github.com/gajus/liqe): A lightweight and performant Lucene-like parser, serializer, and search engine. QueryKit uses Liqe for parsing the query syntax into an abstract syntax tree (AST) that can then be translated to various target languages.
+- [**Liqe**](https://github.com/gajus/liqe): A lightweight Lucene-like parser. QueryKit uses Liqe to parse the query string into an AST. The Drizzle translator and the in-memory adapter evaluate that AST.
 
-- [**Drizzle ORM**](https://github.com/drizzle-team/drizzle-orm): A TypeScript ORM that's used for SQL database interactions. QueryKit's Drizzle adapter translates queries into Drizzle ORM queries.
-
-Additional dependencies will be added as the project evolves.
+- [**Drizzle ORM**](https://github.com/drizzle-team/drizzle-orm): A TypeScript ORM for SQL databases. QueryKit peers `drizzle-orm` `>=0.30.2 <0.46.0`. The Drizzle adapter translates queries into Drizzle queries. Install Drizzle in the app; QueryKit does not bundle its own copy.
 
 ## Security Features
 
@@ -190,11 +250,10 @@ QueryKit provides configurable security guardrails to protect your database from
 > **IMPORTANT DISCLAIMER**: While QueryKit provides guardrails to help protect against common query-related vulnerabilities, it is not a comprehensive security solution. These features are provided as helpful tools, not guarantees. You are still responsible for implementing proper authentication, authorization, and other security measures in your application. QueryKit does not guarantee protection against all forms of database attacks or query exploits.
 
 ```typescript
-import { createQueryKit } from 'querykit';
-import { drizzleAdapter } from 'querykit/adapters/drizzle';
+import { createQueryKit, drizzleAdapter } from '@gblikas/querykit';
 
 const qk = createQueryKit({
-  adapter: drizzleAdapter,
+  adapter: drizzleAdapter({ db, schema: { users } }),
   schema: { users },
   security: {
     // Field restrictions
@@ -205,15 +264,15 @@ const qk = createQueryKit({
     denyValues: {
       status: ['deleted', 'banned'],      // Block queries for deleted/banned records
       role: ['superadmin', 'system'],     // Prevent querying privileged roles
-      'user.type': ['internal', 'bot']    // Supports dot-notation for nested fields
+      'user.type': ['internal', 'bot']    // A table.column key is matched like a denyFields entry
     },
     
     // Field name restrictions
-    allowDotNotation: true,    // Set to false to block "table.field" or "json.path" queries
+    allowDotNotation: true,    // Set to false to reject any field name with a dot
     
     // Query complexity limits
     maxQueryDepth: 5,          // Maximum nesting level of expressions
-    maxClauseCount: 20,        // Maximum number of clauses (AND/OR operations)
+    maxClauseCount: 20,        // Maximum number of comparisons
     
     // Resource protection
     defaultLimit: 100,         // Default result limit if none specified
@@ -224,7 +283,7 @@ const qk = createQueryKit({
     sanitizeWildcards: true,   // Prevent regex DoS with wildcards in LIKE queries
     
     // Performance safeguards
-    queryTimeout: 5000,        // Timeout in milliseconds for query execution
+    queryTimeout: 5000,        // Budget in milliseconds for the adapter call
   }
 });
 ```
@@ -238,11 +297,12 @@ const DEFAULT_SECURITY = {
   allowedFields: [],           // Empty means "use schema fields"
   denyFields: [],              // Empty means no denied fields
   denyValues: {},              // Empty means no denied values for any field
-  allowDotNotation: true,      // Allow "table.field" and "json.path" notation
+  enforceExcludedValues: {},   // Empty means no "AND field NOT IN (values)" is appended
+  allowDotNotation: true,      // Allow "table.field" notation
   
   // Query complexity limits
   maxQueryDepth: 10,           // Maximum nesting level of expressions
-  maxClauseCount: 50,          // Maximum number of clauses (AND/OR operations)
+  maxClauseCount: 50,          // Maximum number of comparisons
   
   // Resource protection
   defaultLimit: 100,           // Default result limit if none specified
@@ -256,6 +316,10 @@ const DEFAULT_SECURITY = {
   queryTimeout: 30000,         // 30 second timeout by default
 }
 ```
+
+A query field and an `orderBy` key are checked against the table the query selected, the one table either adapter reads a field from, and a rejection is `QuerySecurityError: Invalid query parameters` before either adapter runs: with `schema: { items, owners }` and `qk.query('items')`, `tier:gold`, `owners.tier:gold`, `name:null` and `orderBy('tier')` are rejected. With `allowedFields` empty, a query field the selected table does not declare is rejected the same way, and an `orderBy` key is checked against the schema whether or not `allowedFields` is set: it must name a schema property exactly or as the one property that differs only by ASCII case, bare or as `table.property`, so `orderBy('nope')`, `orderBy('items.nope')` and `orderBy('other.status')` are rejected on Drizzle and in memory alike. A `table.` qualifier that differs from the selected table only by ASCII case resolves to it, so `Items.status:open` and `orderBy('Items.createdAt')` read `items` on both adapters; an `allowedFields` entry spells the qualifier as the table key. A selected table that declares no property, or one the schema does not declare, leaves both checks to the adapter. A non-empty `allowedFields` narrows the schema rather than replacing it: a listed field must name a declared property of the selected table, exactly or as the one name differing only by ASCII case, bare or as `table.property`, or be a dotted path whose first segment is a declared property, so `allowedFields: ['status', 'nope']` still rejects `nope:1` and `nope:null` on both adapters. A listed path into a declared column such as `metadata.tags` is forwarded, but neither built-in adapter evaluates it as a JSON path: both read it as `table.column` and reject it, Drizzle with `no such column` and the in-memory adapter because `metadata` is not the selected table, and it is no `orderBy` key on either.
+
+`allowedFields` and `denyFields` apply to an `orderBy` key as they do to a query field, since ordering by a field would reveal its order. A `denyFields` entry matches regardless of ASCII case and of a single `table.` qualifier on either side, the way both adapters resolve a name to a column: `denyFields: ['secret']` rejects `secret:a`, `SECRET:a`, `items.secret:a`, `Items.secret:a` and `"items.secret":a`, and a list spelled `SECRET` or `items.secret` rejects `secret:a` and `orderBy('secret')` too. A `fieldMappings` alias and its target are one field for every list: with `fieldMappings: { hidden: 'secret' }`, `denyFields: ['hidden']` and `denyFields: ['secret']` both reject `hidden:a`, `secret:a`, `orderBy('hidden')` and `orderBy('secret')`, and `allowedFields: ['status', 'hidden']` and `['status', 'secret']` both permit the four while still rejecting `id:3`. A value listed in `denyValues` under any spelling, alias or alias target of a field is denied for every spelling of that field, so `{ hidden: ['a'] }`, `{ secret: ['a'] }`, `{ SECRET: ['a'] }` and `{ 'items.secret': ['a'] }` each reject `hidden:a`, `secret:a`, `items.secret:a`, `hidden:in [a, b]` and `NOT hidden:a` while `hidden:c` still runs, and an `enforceExcludedValues` key naming the alias is injected under its target, so both adapters drop the same rows.
 
 Security configurations can be stored in a separate file and imported:
 
@@ -272,11 +336,12 @@ Security configurations can be stored in a separate file and imported:
   "defaultLimit": 100
 }
 
-// In your app
+// app.ts
 import securityConfig from './security-config.json';
+import { createQueryKit, drizzleAdapter } from '@gblikas/querykit';
 
 const qk = createQueryKit({
-  adapter: drizzleAdapter,
+  adapter: drizzleAdapter({ db, schema: { users } }),
   schema: { users },
   security: securityConfig
 });
@@ -294,17 +359,13 @@ When using QueryKit in production, consider these additional security practices:
 
 ### Controlling Dot Notation in Field Names
 
-QueryKit supports dot notation in field names (e.g., `user.name`, `metadata.tags`) which is useful for:
-
-- **Table-qualified columns**: When joining tables with overlapping column names (`users.id` vs `orders.id`)
-- **JSON/JSONB fields**: Querying nested data in PostgreSQL JSON columns (`metadata.dimensions.width`)
-- **Related data**: Accessing data through ORM relations (`order.customer.name`)
-
-However, you may want to **disable dot notation** for public-facing APIs:
+QueryKit accepts a dotted field name such as `products.name`, which both adapters read as `table.column` with the table part naming the selected table (see Query Syntax). Neither adapter reads a JSON path or an ORM relation through a dot, and a name with two or more dots is one identifier. You may still want to **disable dot notation** for public-facing APIs:
 
 ```typescript
+import { createQueryKit, drizzleAdapter } from '@gblikas/querykit';
+
 const qk = createQueryKit({
-  adapter: drizzleAdapter,
+  adapter: drizzleAdapter({ db, schema: { products } }),
   schema: { products },
   security: {
     allowDotNotation: false,  // Reject queries like "user.password" or "config.secret"
@@ -313,11 +374,11 @@ const qk = createQueryKit({
 });
 
 // ✅ Allowed: Simple field names
-qk.query('products').where('name:"Widget" AND price:<100');
+await qk.query('products').where('name:"Widget" AND price:<100').execute();
 
 // ❌ Rejected: Dot notation
-qk.query('products').where('user.password:"secret"');
-// Error: Dot notation is not allowed in field names. Found "user.password" - use a simple field name without dots instead.
+await qk.query('products').where('user.password:"secret"').execute();
+// throws QuerySecurityError: Dot notation is not allowed in field names. Found "user.password" - use a simple field name without dots instead.
 ```
 
 **When to disable dot notation:**
@@ -325,22 +386,20 @@ qk.query('products').where('user.password:"secret"');
 | Scenario | Recommendation |
 |----------|---------------|
 | Public search API | Disable - prevents probing internal table structures |
-| Admin dashboard | Enable - admins may need cross-table queries |
+| Admin dashboard | Enable - admins may qualify a column with its table |
 | Simple flat schema | Disable - simplifies security model |
-| JSON/JSONB columns | Enable - needed for nested data access |
 | Multi-tenant app | Disable - prevents `tenant.secret` style access |
 
 **Concrete example - Public e-commerce search:**
 
 ```typescript
-// For a public product search endpoint, disable dot notation
-// to prevent users from attempting queries like:
-// - "orders.creditCard" (accessing other tables)
-// - "internal.costPrice" (accessing internal JSON fields)
-// - "admin.notes" (accessing admin-only data)
+// For a public product search endpoint, disable dot notation so a
+// probe such as "orders.creditCard" or "admin.notes" is rejected for
+// its dot alone, before the field checks run
+import { createQueryKit, drizzleAdapter } from '@gblikas/querykit';
 
 const publicSearchKit = createQueryKit({
-  adapter: drizzleAdapter,
+  adapter: drizzleAdapter({ db, schema: { products } }),
   schema: { products },
   security: {
     allowDotNotation: false,
@@ -363,22 +422,26 @@ Use `parseQueryInput` and `parseQueryTokens` for lightweight, real-time parsing 
 ```typescript
 import { parseQueryInput, parseQueryTokens } from '@gblikas/querykit';
 
-// Parse input to get terms and cursor context
+// Parse input to get terms and cursor context; the cursor position is the second argument
 const input = 'status:done AND priority:';
-const result = parseQueryInput(input, { cursorPosition: 25 });
+const result = parseQueryInput(input, 25);
 
-// result.terms contains parsed terms:
-// [{ key: 'status', value: 'done', ... }, { key: 'priority', value: null, ... }]
+// The parsed terms
+result.terms;
+// => [{ key: 'status', value: 'done', ... }, { key: 'priority', value: null, ... }]
 
-// result.cursorContext tells you where the cursor is: 'key', 'value', or 'operator'
-console.log(result.cursorContext); // 'value' (cursor is after 'priority:')
+// Where the cursor is: 'key', 'operator', 'value', 'between' two terms, or
+// 'empty'; here it is after 'priority:'
+result.cursorContext;
+// => 'value'
 
-// Get interleaved tokens (terms + operators) for highlighting
-const tokens = parseQueryTokens(input);
-// [
-//   { type: 'term', key: 'status', value: 'done', startPosition: 0, endPosition: 11 },
-//   { type: 'operator', operator: 'AND', startPosition: 12, endPosition: 15 },
-//   { type: 'term', key: 'priority', value: null, startPosition: 16, endPosition: 25 }
+// Interleaved tokens (terms + operators) for highlighting
+const { tokens } = parseQueryTokens(input);
+tokens;
+// => [
+//   { type: 'term', key: 'status', value: 'done', startPosition: 0, endPosition: 11, ... },
+//   { type: 'operator', operator: 'AND', startPosition: 12, endPosition: 15, ... },
+//   { type: 'term', key: 'priority', value: null, startPosition: 16, endPosition: 25, ... }
 // ]
 ```
 
@@ -387,12 +450,12 @@ const tokens = parseQueryTokens(input);
 For comprehensive parsing with schema validation, autocomplete, and error recovery:
 
 ```typescript
-import { QueryParser } from '@gblikas/querykit';
+import { IFieldSchema, QueryParser } from '@gblikas/querykit';
 
 const parser = new QueryParser();
 
 // Define your schema for validation and autocomplete
-const schema = {
+const schema: Record<string, IFieldSchema> = {
   status: {
     type: 'string',
     allowedValues: ['todo', 'doing', 'done'],
@@ -408,42 +471,49 @@ const result = parser.parseWithContext('status:do', {
   securityOptions: { maxClauseCount: 10 }
 });
 
-// Always returns a result object (never throws)
-console.log(result.success);    // true/false - whether parsing succeeded
-console.log(result.tokens);     // Tokenized input (always available)
-console.log(result.structure);  // Query structure analysis
-console.log(result.ast);        // AST (if successful)
-console.log(result.error);      // Error details (if failed)
+// Always returns a result object (never throws). result.success says
+// whether parsing succeeded; result.tokens is always available, and
+// result.structure, result.ast (if successful) and result.error (if
+// failed) describe the input
+result.success;
+// => true
 
 // Autocomplete suggestions based on cursor position
-console.log(result.suggestions);
-// {
+result.suggestions;
+// => {
 //   context: 'value',
 //   currentField: 'status',
 //   values: [
-//     { value: 'doing', score: 80 },
-//     { value: 'done', score: 80 }
-//   ]
+//     { value: 'doing', score: 80, ... },
+//     { value: 'done', score: 80, ... },
+//     { value: 'todo', score: 60, ... }
+//   ],
+//   ...
 // }
 
 // Schema validation results
-console.log(result.fieldValidation);
-// { valid: true, fields: [...], unknownFields: [] }
+result.fieldValidation;
+// => { valid: true, fields: [...], unknownFields: [] }
 
 // Security pre-check
-console.log(result.security);
-// { passed: true, violations: [], warnings: [] }
+result.security;
+// => { passed: true, violations: [], warnings: [] }
 ```
+
+The `denied_field` and `field_not_allowed` pre-checks match a referenced field the way `createQueryKit` matches its lists for a parser with the same options, and each violation names the field as the parser resolved it. With `securityOptions: { denyFields: ['secret'] }`, `secret:a`, `SECRET:a`, `items.secret:a`, `Items.secret:a` and `"items.secret":a` are reported `denied_field`, as is `hidden:a` under `fieldMappings: { hidden: 'secret' }`, and a list spelled `SECRET`, `items.secret` or `hidden` reports `secret:a` the same way, while `status:open` is reported clean. The allowlist is closed under `fieldMappings` too, so with `allowedFields: ['status', 'hidden']` and the alias above, `hidden:a` and `secret:a` are reported clean as the kit runs them, while `items.status:open` and `id:3` are reported `field_not_allowed` as the kit rejects them; under `caseInsensitiveFields` the entry and the field are compared with `A-Z` folded, so `STATUS:open` is clean there and `field_not_allowed` as written. Both checks also run on the tokenizer's fields when the input does not parse, so `items.secret:` is reported while the user is still typing, where the kit cannot be asked. The pre-check has no table schema, so a listed field the kit rejects as one the table does not declare is still reported clean.
 
 ### Error Recovery
 
 When parsing fails, `parseWithContext` provides helpful recovery hints:
 
 ```typescript
+import { QueryParser } from '@gblikas/querykit';
+
+const parser = new QueryParser();
 const result = parser.parseWithContext('status:"incomplete');
 
-console.log(result.recovery);
-// {
+result.recovery;
+// => {
 //   issue: 'unclosed_quote',
 //   message: 'Unclosed double quote detected',
 //   suggestion: 'Add a closing " to complete the quoted value',
@@ -454,8 +524,8 @@ console.log(result.recovery);
 
 Error types detected:
 - `unclosed_quote` - Missing closing quote (with autofix)
-- `unclosed_parenthesis` - Unbalanced parentheses (with autofix)
-- `trailing_operator` - Query ends with AND/OR/NOT (with autofix)
+- `unclosed_parenthesis` - Unbalanced parentheses (autofix adds missing closers; an extra closer has none)
+- `trailing_operator` - Query ends with AND/OR/NOT (autofix drops a trailing AND or OR; a trailing NOT has none)
 - `missing_value` - Field has colon but no value
 - `syntax_error` - Generic syntax issue
 
@@ -467,7 +537,7 @@ Here's a React example using the input parser for highlighting:
 import { parseQueryTokens } from '@gblikas/querykit';
 
 function SearchBar({ value, onChange }) {
-  const tokens = parseQueryTokens(value);
+  const { tokens } = parseQueryTokens(value);
 
   const renderHighlightedQuery = () => {
     if (!value) return null;
@@ -528,11 +598,10 @@ Virtual fields are useful when:
 Define virtual fields when creating your QueryKit instance:
 
 ```typescript
-import { createQueryKit } from '@gblikas/querykit';
-import { drizzleAdapter } from '@gblikas/querykit/adapters/drizzle';
+import { createQueryKit, drizzleAdapter } from '@gblikas/querykit';
 
 const qk = createQueryKit({
-  adapter: drizzleAdapter,
+  adapter: drizzleAdapter({ db, schema: { tasks, users } }),
   schema: { tasks, users },
 
   // Define virtual fields
@@ -551,7 +620,7 @@ const qk = createQueryKit({
 
         return {
           type: 'comparison',
-          field: fieldMap[input.value],
+          field: fieldMap[input.value as keyof typeof fieldMap],
           operator: '==',
           value: ctx.currentUserId
         };
@@ -578,6 +647,7 @@ const myTasks = await qk
 Each virtual field definition supports:
 
 ```typescript
+// fragment: the options of one virtualFields entry
 {
   // Required: allowed values for this virtual field
   // Supports string, number, and boolean values
@@ -620,6 +690,7 @@ Each virtual field definition supports:
 The `fields()` helper provides compile-time validation that all mapped fields exist in your schema:
 
 ```typescript
+// fragment: a virtualFields option
 virtualFields: {
   my: {
     allowedValues: ['assigned', 'created'] as const,
@@ -636,7 +707,7 @@ virtualFields: {
 
       return {
         type: 'comparison',
-        field: fieldMap[input.value],
+        field: fieldMap[input.value as keyof typeof fieldMap],
         operator: '==',
         value: ctx.currentUserId
       };
@@ -650,6 +721,7 @@ virtualFields: {
 The `createContext` function is called once per query execution to provide runtime values:
 
 ```typescript
+// fragment: a createContext option
 createContext: async () => {
   const user = await getCurrentUser();
   const permissions = await getUserPermissions(user.id);
@@ -665,6 +737,7 @@ createContext: async () => {
 Context is type-safe and can include any data your resolvers need:
 
 ```typescript
+// fragment: the context type parameter of createQueryKit
 interface MyQueryContext extends IQueryContext {
   currentUserId: number;
   currentUserTeamIds: number[];
@@ -681,6 +754,7 @@ const qk = createQueryKit<typeof schema, MyQueryContext>({
 Virtual fields can return logical expressions for more complex scenarios:
 
 ```typescript
+// fragment: a virtualFields option, then a query on the kit it configures
 virtualFields: {
   myItems: {
     allowedValues: ['all'] as const,
@@ -713,6 +787,7 @@ await qk.query('tasks').where('myItems:all').execute();
 By default, only equality (`:`) is allowed. Enable other operators with `allowOperators: true`:
 
 ```typescript
+// fragment: a virtualFields option, then queries on the kit it configures
 virtualFields: {
   priority: {
     allowedValues: ['high', 'low'] as const,
@@ -741,15 +816,24 @@ qk.query('tasks').where('priority:>high')  // priority > 7
 QueryKit throws `QueryParseError` for invalid virtual field usage:
 
 ```typescript
+// fragment: qk is the kit from Basic Usage
+
 // Invalid value
-qk.query('tasks').where('my:invalid')
-// Error: Invalid value "invalid" for virtual field "my". 
+await qk.query('tasks').where('my:invalid').execute();
+// throws QueryParseError: Invalid value "invalid" for virtual field "my".
 //        Allowed values: "assigned", "created", "watching"
 
 // Operator not allowed (when allowOperators: false)
-qk.query('tasks').where('my:>assigned')
-// Error: Virtual field "my" does not allow comparison operators. 
+await qk.query('tasks').where('my:>assigned').execute();
+// throws QueryParseError: Virtual field "my" does not allow comparison operators.
 //        Only equality (":") is permitted.
+
+// Sorted on: a virtual field resolves to a filter, not a column, so no
+// engine can order by it. A fieldMappings alias or a spelling folded under
+// caseInsensitiveFields that resolves to the virtual field is rejected too.
+await qk.query('tasks').where('status:open').orderBy('my').execute();
+// throws QueryParseError: Virtual field "my" cannot be used in orderBy.
+//        It resolves to a filter, not a column.
 ```
 
 ### Complete Example
@@ -757,8 +841,7 @@ qk.query('tasks').where('my:>assigned')
 Here's a full example with multiple virtual fields:
 
 ```typescript
-import { createQueryKit, IQueryContext, ComparisonOperator } from '@gblikas/querykit';
-import { drizzleAdapter } from '@gblikas/querykit/adapters/drizzle';
+import { createQueryKit, drizzleAdapter, IQueryContext, ComparisonOperator } from '@gblikas/querykit';
 
 // Define your context type
 interface TaskQueryContext extends IQueryContext {
@@ -768,9 +851,10 @@ interface TaskQueryContext extends IQueryContext {
 }
 
 // Create QueryKit with virtual fields
+const schema = { tasks, users };
 const qk = createQueryKit<typeof schema, TaskQueryContext>({
-  adapter: drizzleAdapter,
-  schema: { tasks, users },
+  adapter: drizzleAdapter({ db, schema }),
+  schema,
 
   virtualFields: {
     // User relationship shortcuts
@@ -790,7 +874,7 @@ const qk = createQueryKit<typeof schema, TaskQueryContext>({
         });
         return {
           type: 'comparison',
-          field: fieldMap[input.value],
+          field: fieldMap[input.value as keyof typeof fieldMap],
           operator: '==',
           value: ctx.currentUserId
         };
@@ -808,7 +892,7 @@ const qk = createQueryKit<typeof schema, TaskQueryContext>({
         });
         return {
           type: 'comparison',
-          field: fieldMap[input.value],
+          field: fieldMap[input.value as keyof typeof fieldMap],
           operator: 'IN',
           value: ctx.currentUserTeamIds
         };
@@ -869,9 +953,11 @@ const results = await qk
 Virtual fields support not just string values, but also numeric and boolean values. This is useful when you want to map query values to numeric priorities, boolean flags, or other non-string types:
 
 ```typescript
+import { createQueryKit, dateWithinDays, drizzleAdapter } from '@gblikas/querykit';
+
 const qk = createQueryKit({
   schema: mySchema,
-  adapter: drizzleAdapter,
+  adapter: drizzleAdapter({ db, schema: mySchema }),
   
   virtualFields: {
     // Numeric values for priority filtering
@@ -940,9 +1026,7 @@ Use raw SQL expressions when you need to:
 #### Basic Example
 
 ```typescript
-import { createQueryKit } from '@gblikas/querykit';
-import { drizzleAdapter } from '@gblikas/querykit/adapters/drizzle';
-import { jsonbContains, dateWithinDays } from '@gblikas/querykit/virtual-fields';
+import { createQueryKit, dateWithinDays, drizzleAdapter, IQueryContext, jsonbContains } from '@gblikas/querykit';
 import { sql } from 'drizzle-orm';
 
 interface MyContext extends IQueryContext {
@@ -1006,15 +1090,15 @@ QueryKit provides helper functions for common raw SQL patterns:
 Checks if a JSONB array field contains the given value:
 
 ```typescript
-import { jsonbContains } from '@gblikas/querykit/virtual-fields';
+import { jsonbContains } from '@gblikas/querykit';
 
 // Check if assignedTo contains the current user ID
-jsonbContains('assigned_to', ctx.currentUserId)
-// Generates: assigned_to @> '["user123"]'::jsonb
+jsonbContains('assigned_to', ctx.currentUserId);
+// SQL: "assigned_to" @> '["user123"]'::jsonb
 
 // Works with arrays too
-jsonbContains('tags', ['urgent', 'review'])
-// Generates: tags @> '["urgent","review"]'::jsonb
+jsonbContains('tags', ['urgent', 'review']);
+// SQL: "tags" @> '["urgent","review"]'::jsonb
 ```
 
 ##### `dateWithinDays(field, days)` - Date Range Check
@@ -1022,15 +1106,15 @@ jsonbContains('tags', ['urgent', 'review'])
 Checks if a timestamp field is within the specified number of days from now:
 
 ```typescript
-import { dateWithinDays } from '@gblikas/querykit/virtual-fields';
+import { dateWithinDays } from '@gblikas/querykit';
 
 // Check if created within last day
-dateWithinDays('created_at', 1)
-// Generates: created_at >= NOW() - INTERVAL '1 days'
+dateWithinDays('created_at', 1);
+// SQL: "created_at" >= NOW() - INTERVAL '1 days'
 
 // Check if created within last week
-dateWithinDays('created_at', 7)
-// Generates: created_at >= NOW() - INTERVAL '7 days'
+dateWithinDays('created_at', 7);
+// SQL: "created_at" >= NOW() - INTERVAL '7 days'
 ```
 
 #### Custom Raw SQL
@@ -1038,6 +1122,7 @@ dateWithinDays('created_at', 7)
 For complete control, create your own raw SQL expressions:
 
 ```typescript
+// fragment: a virtualFields option
 virtualFields: {
   custom: {
     allowedValues: ['special'] as const,
@@ -1064,6 +1149,7 @@ Here's a complete example with a Drizzle schema that uses JSONB:
 ```typescript
 import { pgTable, serial, varchar, timestamp, jsonb } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
+import { createQueryKit, drizzleAdapter, jsonbContains } from '@gblikas/querykit';
 
 export const tasks = pgTable('tasks', {
   id: serial('id').primaryKey(),
@@ -1105,6 +1191,8 @@ await qk.query('tasks')
 Raw SQL expressions work seamlessly with standard field queries:
 
 ```typescript
+// fragment: qk is the kit from the JSONB example
+
 // Mix virtual fields (raw SQL) with standard field queries
 await qk.query('tasks')
   .where('my:assigned AND status:active AND priority:>5')
@@ -1131,24 +1219,15 @@ await qk.query('tasks')
 ### First Adapters
 - [x] Drizzle ORM integration
 - [x] Implement SQL translation layer
-- [ ] In-memory JavaScript filtering
+- [x] In-memory JavaScript filtering
 - [x] Query validation and error handling
 - [x] Support for schema-aware queries
 
 ### Advanced Features
-- [ ] CLI tools for testing and debugging
 - [x] Performance optimizations for SQL generation
 - [x] Support for complex nested expressions
 - [x] Raw SQL expressions for virtual fields (JSONB, computed fields, custom SQL)
-- [ ] Custom function support
-- [ ] Pagination helpers
 - [x] Virtual fields for context-aware query expansion
-
-### Ecosystem Expansion
-- [x] Frontend query builder components (input parser)
-- [ ] Additional ORM adapters
-- [ ] Server middleware for Express/Fastify
-- [ ] TypeScript SDK generation
 
 ## Contributing
 

@@ -47,7 +47,8 @@ When using the input parser or `parseWithContext`:
 - Follow the repository pattern for data access
 - Implement proper error handling with custom error classes
 - Parser components follow Single Responsibility Principle:
-  - `input-parser.ts` - Fast, regex-based tokenization for UI feedback
+  - `tokenizer.ts` - Fast, regex-based tokenization for UI feedback
+  - `input-parser.ts` - `isInputComplete`, the parser's verdict on partial input
   - `parser.ts` - Full Liqe-based parsing with AST generation
   - `parseWithContext` - Orchestrates both for rich context
 

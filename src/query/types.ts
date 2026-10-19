@@ -6,9 +6,17 @@ import { QueryExpression } from '../parser/types';
 export type QueryField<T> = keyof T & string;
 
 /**
- * Represents a value that can be used in a query
+ * Represents a value that can be used in a query. A `bigint` is an integer
+ * inside SQLite's signed 64-bit range that a JavaScript number would round;
+ * the builder writes it with its exact digits.
  */
-export type QueryValue = string | number | boolean | null | Array<string | number | boolean | null>;
+export type QueryValue =
+  | string
+  | number
+  | bigint
+  | boolean
+  | null
+  | Array<string | number | boolean | null>;
 
 /**
  * Represents a comparison operator in a query

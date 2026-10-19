@@ -7,7 +7,7 @@
  */
 
 import { QueryParser } from './parser';
-import { parseQueryTokens, parseQueryInput } from './input-parser';
+import { parseQueryTokens, parseQueryInput } from './tokenizer';
 
 describe('Token Consistency: parseWithContext vs input parser', () => {
   const parser = new QueryParser();

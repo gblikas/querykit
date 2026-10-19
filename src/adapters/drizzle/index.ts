@@ -5,10 +5,19 @@
  */
 
 import { DrizzleTranslator } from '../../translators/drizzle';
+import {
+  isQuotableFieldName,
+  quoteFieldIdentifiers,
+  readFieldIdentifiers
+} from '../../translators/field-identifiers';
+import { findOwnKeyIgnoringCase } from '../../translators/own-key-case';
+import { enforceTranslationSecurity } from '../../translators/translation-security';
+import { ITranslationSecurity } from '../../translators/types';
+import { QuerySecurityError } from '../../security/validator';
 import { IAdapter, IAdapterOptions, IQueryExecutionOptions } from '../types';
 import { QueryExpression } from '../../parser/types';
 import { SQL, SQLWrapper, asc, desc, sql } from 'drizzle-orm';
-import { createQueryKit, QueryKit } from '../../index';
+import { createQueryKit, QueryKit } from '../../query-kit';
 import { IQueryContext } from '../../virtual-fields';
 /**
  * Type for Drizzle ORM database instance
@@ -23,7 +32,7 @@ export interface IDrizzleDatabase {
 export interface IDrizzleQueryBuilder {
   where: (condition: SQL) => IDrizzleQueryBuilder;
   orderBy: (...clauses: SQL[]) => IDrizzleQueryBuilder;
-  limit: (limit: number) => IDrizzleQueryBuilder;
+  limit: (limit: number | SQL) => IDrizzleQueryBuilder;
   offset: (offset: number) => IDrizzleQueryBuilder;
   // This is already a Promise due to Drizzle's thenable implementation
   [Symbol.toStringTag]: string;
@@ -78,13 +87,35 @@ export interface IDrizzleQueryExecutionOptions extends IQueryExecutionOptions {
 }
 
 /**
- * Error thrown when adapter operations fail
+ * Error thrown when adapter operations fail. When the database or Drizzle
+ * rejected the query, the error it threw is kept as `cause`.
  */
 export class DrizzleAdapterError extends Error {
-  constructor(message: string) {
+  public readonly cause?: unknown;
+
+  constructor(message: string, cause?: unknown) {
     super(message);
     this.name = 'DrizzleAdapterError';
+    this.cause = cause;
   }
+}
+
+/**
+ * The message of an error followed by the messages of its causes. Drizzle
+ * reports a failed query as `Failed query: ...` with the database's own
+ * error as the cause, so a user sees the database's words as well.
+ */
+function describeError(error: unknown): string {
+  const messages: string[] = [];
+  let current: unknown = error;
+  while (current !== undefined && messages.length < 4) {
+    messages.push(current instanceof Error ? current.message : String(current));
+    current =
+      current instanceof Error
+        ? (current as { cause?: unknown }).cause
+        : undefined;
+  }
+  return messages.join(': ');
 }
 
 /**
@@ -92,10 +123,13 @@ export class DrizzleAdapterError extends Error {
  */
 export class DrizzleAdapter<
   TSchema extends Record<string, unknown> = Record<string, unknown>
-> implements IAdapter<IDrizzleAdapterOptions<TSchema>> {
+> implements IAdapter<IDrizzleAdapterOptions<TSchema>>
+{
   private db!: unknown;
   private schema!: TSchema;
   private translator!: DrizzleTranslator;
+  private fieldMappings: Record<string, string> = {};
+  private normalizeFieldNames = false;
   private initialized: boolean = false;
 
   /**
@@ -121,6 +155,8 @@ export class DrizzleAdapter<
 
     this.db = options.db;
     this.schema = options.schema;
+    this.fieldMappings = options.fieldMappings ?? {};
+    this.normalizeFieldNames = options.normalizeFieldNames ?? false;
     this.translator = new DrizzleTranslator({
       normalizeFieldNames: options.normalizeFieldNames,
       fieldMappings: options.fieldMappings,
@@ -134,7 +170,16 @@ export class DrizzleAdapter<
   }
 
   /**
-   * Execute a QueryKit expression using Drizzle ORM
+   * Execute a QueryKit expression using Drizzle ORM.
+   *
+   * The shared security checks on the execution options (allowlist, value
+   * length, depth and clause caps) run before `select().from`, so a rejected
+   * query builds nothing and reads nothing; the enforced exclusions are
+   * appended by the translator. A `QuerySecurityError` is thrown as is, not
+   * wrapped as an adapter error.
+   *
+   * @throws {QuerySecurityError} When the query breaks a cap or names a field outside the allowlist
+   * @throws {DrizzleAdapterError} When the table is unknown or the query cannot be built or run
    */
   public async execute<TResult = unknown>(
     tableName: string,
@@ -149,48 +194,39 @@ export class DrizzleAdapter<
       throw new DrizzleAdapterError(`Table ${tableName} not found in schema`);
     }
 
+    const security = this.executionSecurity(options);
+    enforceTranslationSecurity(expression, {
+      ...security,
+      enforceExcludedValues: undefined
+    });
+
     try {
       // Start with a base query
       let query = (this.db as IDrizzleDatabase).select().from(table);
 
       // Add where condition if expression is provided
       if (expression) {
-        const condition = this.translator.translate(expression);
+        const condition = this.translator.translate(expression, {
+          tableName,
+          ...security
+        });
         query = query.where(condition);
       }
 
       // Add ordering if specified
       if (options?.orderBy) {
         const orderClauses: SQL[] = [];
-
-        Object.entries(options.orderBy).forEach(([field, direction]) => {
-          // Try to find the field in the schema
-          const schemaField = this.getSchemaField(tableName, field);
-
-          if (schemaField) {
-            // If field exists in schema, use it directly
-            orderClauses.push(
-              direction === 'asc' ? asc(schemaField) : desc(schemaField)
-            );
-          } else {
-            // Security fix: Validate direction strictly before using sql.raw()
-            // This prevents SQL injection attacks via malicious direction values
-            const safeDirection =
-              direction.toLowerCase() === 'asc' ? 'ASC' : 'DESC';
-            orderClauses.push(
-              sql`${sql.identifier(field)} ${sql.raw(safeDirection)}`
-            );
-          }
-        });
-
+        for (const [field, direction] of Object.entries(options.orderBy)) {
+          orderClauses.push(this.orderClause(tableName, field, direction));
+        }
         if (orderClauses.length > 0) {
           query = query.orderBy(...orderClauses);
         }
       }
 
-      // Add limit if specified
-      if (options?.limit !== undefined) {
-        query = query.limit(options.limit);
+      const limit = this.limitClause(options);
+      if (limit !== undefined) {
+        query = query.limit(limit);
       }
 
       // Add offset if specified
@@ -202,14 +238,57 @@ export class DrizzleAdapter<
       const result = await query;
       return result as TResult[];
     } catch (error) {
+      if (error instanceof QuerySecurityError) {
+        throw error;
+      }
       throw new DrizzleAdapterError(
-        `Failed to execute query: ${error instanceof Error ? error.message : String(error)}`
+        `Failed to execute query: ${describeError(error)}`,
+        error
       );
     }
   }
 
   /**
-   * Check if an expression can be executed by this adapter
+   * The LIMIT of one execution. SQLite rejects an OFFSET with no LIMIT and
+   * reads `LIMIT -1` as no limit, while Drizzle drops a negative number, so
+   * an offset with no limit, or beside a negative limit, is written as the
+   * raw `-1`; a negative limit with no offset is omitted. A non-negative
+   * limit is passed as given.
+   */
+  private limitClause(
+    options?: IDrizzleQueryExecutionOptions
+  ): number | SQL | undefined {
+    const { limit, offset } = options ?? {};
+    if (limit !== undefined && limit >= 0) {
+      return limit;
+    }
+    const hasOffset =
+      limit === undefined ? (offset ?? 0) > 0 : offset !== undefined;
+    return hasOffset ? sql.raw('-1') : undefined;
+  }
+
+  /**
+   * The security settings of one execution, read from its options.
+   */
+  private executionSecurity(
+    options?: IDrizzleQueryExecutionOptions
+  ): ITranslationSecurity {
+    return {
+      allowedFields: options?.allowedFields,
+      maxValueLength: options?.maxValueLength,
+      maxQueryDepth: options?.maxQueryDepth,
+      maxClauseCount: options?.maxClauseCount,
+      enforceExcludedValues: options?.enforceExcludedValues
+    };
+  }
+
+  /**
+   * Check if an expression can be executed by this adapter. The check has
+   * no selected table, so it is stricter than `execute`: a bare field that
+   * only resolves through a table's column keys reports false here.
+   *
+   * @param expression The QueryKit expression to check
+   * @returns true if the expression can be translated without a table, false otherwise
    */
   public canExecute(expression: QueryExpression): boolean {
     try {
@@ -221,28 +300,140 @@ export class DrizzleAdapter<
   }
 
   /**
-   * Get a table from the schema
+   * Get a table from the schema. Only own keys count: a runtime table name
+   * such as `constructor` must not resolve an inherited Object property.
    */
   private getTable(tableName: string): unknown {
-    return (this.schema as Record<string, unknown>)[tableName as string];
+    if (!Object.prototype.hasOwnProperty.call(this.schema, tableName)) {
+      return undefined;
+    }
+    return (this.schema as Record<string, unknown>)[tableName];
   }
 
   /**
-   * Get a field from the schema
+   * Build one ORDER BY clause. The direction is accepted only as ASC or
+   * DESC. A key that resolves to a column of the selected table sorts by
+   * that column; a `table.column` naming another table is quoted as
+   * written, since Drizzle's identifier escaping does not double quotes,
+   * for the engine to reject as a table outside its FROM clause; any other
+   * key the selected table lacks is rejected here, because with a schema
+   * the query names the property and the column name `created_at` must not
+   * be guessed as a raw identifier.
+   *
+   * @throws {DrizzleAdapterError} When the direction is not asc or desc,
+   * the key cannot be quoted, or it names no property of the selected table
+   */
+  private orderClause(
+    tableName: string,
+    field: string,
+    direction: string
+  ): SQL {
+    const sortDirection = this.sortDirection(direction);
+    const resolvedField = this.resolveFieldName(field);
+    const schemaField = this.getSchemaField(tableName, resolvedField);
+    if (schemaField) {
+      return sortDirection === 'ASC' ? asc(schemaField) : desc(schemaField);
+    }
+    const quotedField = this.quoteFieldName(resolvedField);
+    this.assertNamesAnotherTable(tableName, resolvedField);
+    return sql`${quotedField} ${sql.raw(sortDirection)}`;
+  }
+
+  /**
+   * Allow the raw path only for a single `table.column` whose table part
+   * does not resolve to the selected table.
+   *
+   * @throws {DrizzleAdapterError} `Field <field> does not name a property
+   * of table <table>` for any other key the selected table lacks
+   */
+  private assertNamesAnotherTable(tableName: string, fieldName: string): void {
+    const parts = readFieldIdentifiers(fieldName);
+    if (
+      parts.length === 2 &&
+      findOwnKeyIgnoringCase(this.schema, parts[0] ?? '') !== tableName
+    ) {
+      return;
+    }
+    throw new DrizzleAdapterError(
+      `Field ${fieldName} does not name a property of table ${tableName}`
+    );
+  }
+
+  private resolveFieldName(fieldName: string): string {
+    const normalizedField = this.normalizeFieldNames
+      ? fieldName.toLowerCase()
+      : fieldName;
+    if (
+      Object.prototype.hasOwnProperty.call(this.fieldMappings, normalizedField)
+    ) {
+      return this.fieldMappings[normalizedField];
+    }
+    return normalizedField;
+  }
+
+  /**
+   * Accept only `asc` or `desc`, in any letter case. Anything else is a
+   * caller error rather than a request for DESC.
+   */
+  private sortDirection(direction: unknown): 'ASC' | 'DESC' {
+    const normalized =
+      typeof direction === 'string' ? direction.toLowerCase() : '';
+    if (normalized === 'asc') {
+      return 'ASC';
+    }
+    if (normalized === 'desc') {
+      return 'DESC';
+    }
+    throw new DrizzleAdapterError(
+      `Invalid sort direction: ${String(direction)}`
+    );
+  }
+
+  /**
+   * Quote a sort field Drizzle will inline, the way the translator quotes a
+   * filter field: exactly one dot is `table.column`, anything else is one
+   * identifier, and an embedded quote is doubled. Rejects names that can
+   * break out of the surrounding quotes.
+   */
+  private quoteFieldName(fieldName: string): SQL {
+    if (!isQuotableFieldName(fieldName)) {
+      throw new DrizzleAdapterError(`Invalid field name: ${fieldName}`);
+    }
+    return sql.raw(quoteFieldIdentifiers(fieldName));
+  }
+
+  /**
+   * Resolve a sort field to a column of the selected table: the table's own
+   * key, or the column part of a single `table.column` whose table part
+   * resolves to the selected table. Each key resolves exactly or by the one
+   * own key differing only by ASCII case, the rule SQLite applies to an
+   * identifier, so `orderBy('CreatedAt')` and `orderBy('Items.createdAt')`
+   * reach the renamed column through its property. Anything else resolves
+   * nothing, and `orderClause` decides whether it is quoted or rejected.
    */
   private getSchemaField(
     tableName: string,
     fieldName: string
   ): SQLWrapper | null {
-    const schemaAsColumns = this.schema as unknown as Record<
-      string,
-      Record<string, SQLWrapper>
-    >;
-    const table = schemaAsColumns[tableName];
-    if (table && fieldName in table) {
-      return table[fieldName];
+    const table = this.getTable(tableName) as
+      | Record<string, SQLWrapper>
+      | undefined;
+    if (!table) {
+      return null;
     }
-    return null;
+    const ownKey = findOwnKeyIgnoringCase(table, fieldName);
+    if (ownKey !== undefined) {
+      return table[ownKey];
+    }
+    const parts = readFieldIdentifiers(fieldName);
+    if (
+      parts.length !== 2 ||
+      findOwnKeyIgnoringCase(this.schema, parts[0] ?? '') !== tableName
+    ) {
+      return null;
+    }
+    const columnKey = findOwnKeyIgnoringCase(table, parts[1] ?? '');
+    return columnKey === undefined ? null : table[columnKey];
   }
 
   /**

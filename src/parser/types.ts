@@ -14,7 +14,12 @@ export type ComparisonOperator =
   | '<='
   | 'IN'
   | 'NOT IN'
-  | 'LIKE';
+  | 'LIKE'
+  /**
+   * A Liqe regex literal (`name:/pattern/flags`). The value keeps the
+   * delimiters and flags so the pattern is not confused with a LIKE wildcard.
+   */
+  | 'REGEX';
 
 /**
  * Represents a logical operator in a query expression
@@ -22,11 +27,16 @@ export type ComparisonOperator =
 export type LogicalOperator = 'AND' | 'OR' | 'NOT';
 
 /**
- * Represents a value that can be used in a query expression
+ * Represents a value that can be used in a query expression.
+ *
+ * A `bigint` is an integer inside SQLite's signed 64-bit range that a
+ * JavaScript number would round or misspell, kept from the digits the query
+ * was written with (see `exactSqliteInteger`).
  */
 export type QueryValue =
   | string
   | number
+  | bigint
   | boolean
   | null
   | Array<string | number | boolean | null>;
@@ -39,6 +49,15 @@ export interface IComparisonExpression {
   field: string;
   operator: ComparisonOperator;
   value: QueryValue;
+  /**
+   * Set when the field names one column whose name holds a dot, so a
+   * translator keeps it as one identifier instead of splitting it into
+   * `table.column`: a quoted name with exactly one dot other than `"."`
+   * (`"a.b"`, `"table."`, `".column"`), or an unquoted name with one dot and
+   * an empty side (`column.`). Omitted otherwise, including when a
+   * `fieldMappings` entry replaced the written name.
+   */
+  isLiteral?: true;
 }
 
 /**
@@ -89,6 +108,18 @@ export interface IParserOptions {
    * Custom field name mappings
    */
   fieldMappings?: Record<string, string>;
+
+  /**
+   * Longest query text, in characters, the parser reads. A longer input is
+   * rejected before any rewrite or Liqe run, whose cost grows superlinearly
+   * with the length of a bare word: `parse` throws `QueryParseError`,
+   * `parseWithContext` returns a failed result with no tokens and no
+   * recovery, and `isInputComplete` reports the input incomplete. A
+   * positive integer, or `Infinity` for no cap.
+   *
+   * @default 10000
+   */
+  maxQueryLength?: number;
 }
 
 /**
@@ -175,12 +206,20 @@ export interface IFieldSchema {
  */
 export interface ISecurityOptionsForContext {
   /**
-   * List of fields that are allowed to be queried
+   * List of fields that are allowed to be queried. Matched the way
+   * `createQueryKit` matches its allowlist for a parser with the same
+   * options: an entry naming a `fieldMappings` alias or its target permits
+   * both, and under `caseInsensitiveFields` the entry and the field are
+   * compared with `A-Z` folded.
    */
   allowedFields?: string[];
 
   /**
-   * List of fields that are denied from being queried
+   * List of fields that are denied from being queried. Matched the way
+   * `createQueryKit` matches its deny list: an entry denies a field
+   * regardless of ASCII case and of a single `table.` qualifier on either
+   * side, and an entry naming a `fieldMappings` alias or its target denies
+   * both.
    */
   denyFields?: string[];
 
@@ -232,8 +271,8 @@ export interface IQueryStructure {
   hasBalancedQuotes: boolean;
 
   /**
-   * Whether the query appears structurally complete
-   * (no trailing operators, no unclosed constructs)
+   * Whether `parse` accepts the query: `isInputComplete`'s verdict, which
+   * is the outcome of the parse `parseWithContext` attempted.
    */
   isComplete: boolean;
 

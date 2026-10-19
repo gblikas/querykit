@@ -1,10 +1,12 @@
+import { QuerySecurityError } from '../security/validator';
+import { isInputComplete } from './input-parser';
 import {
   parseQueryInput,
   getTermAtPosition,
-  isInputComplete,
   extractKeyValue,
   parseQueryTokens
-} from './input-parser';
+} from './tokenizer';
+import { QueryParser } from './parser';
 
 describe('Input Parser', () => {
   describe('parseQueryInput', () => {
@@ -220,6 +222,84 @@ describe('Input Parser', () => {
           value: '"hello world"'
         });
       });
+
+      it.each([
+        ['name:"John Doe', '"John Doe'],
+        ['name:"John (Doe', '"John (Doe'],
+        ['name:"John AND Doe', '"John AND Doe'],
+        ['name:"', '"'],
+        ["name:'Jane Doe", "'Jane Doe"]
+      ])('keeps the unclosed quote of %p as one value', (input, value) => {
+        const result = parseQueryInput(input);
+        expect(result.terms).toHaveLength(1);
+        expect(result.terms[0]).toMatchObject({
+          key: 'name',
+          operator: ':',
+          value
+        });
+        expect(result.logicalOperators).toHaveLength(0);
+      });
+
+      it('keeps a bare regex as one value and stores its text', () => {
+        const result = parseQueryInput('/foo and bar/');
+        expect(result.terms).toHaveLength(1);
+        expect(result.terms[0]).toMatchObject({
+          key: null,
+          operator: null,
+          value: '/foo and bar/'
+        });
+        expect(result.logicalOperators).toHaveLength(0);
+      });
+
+      it('keeps a field regex with flags as one value', () => {
+        const result = parseQueryInput('name:/foo/i AND status:open');
+        expect(result.terms[0]).toMatchObject({
+          key: 'name',
+          operator: ':',
+          value: '/foo/i'
+        });
+        expect(result.terms).toHaveLength(2);
+        expect(result.logicalOperators).toEqual([
+          { operator: 'AND', position: 12 }
+        ]);
+      });
+    });
+
+    describe('operator words glued to a field', () => {
+      it.each([
+        ['not.priority:1', 'not.priority'],
+        ['Not.priority:1', 'Not.priority'],
+        ['NOT.priority:1', 'NOT.priority'],
+        ['and.status:done', 'and.status'],
+        ['or.group:a', 'or.group'],
+        ['not:1', 'not'],
+        ['and:1', 'and'],
+        ['or:1', 'or']
+      ])('keeps %p as one field', (input, key) => {
+        const result = parseQueryInput(input);
+        expect(result.terms).toHaveLength(1);
+        expect(result.terms[0]).toMatchObject({ key, operator: ':' });
+        expect(result.logicalOperators).toHaveLength(0);
+      });
+
+      it('keeps a spaced NOT as the operator', () => {
+        for (const input of ['NOT priority:1', 'not priority:1']) {
+          const result = parseQueryInput(input);
+          expect(result.logicalOperators).toEqual([
+            { operator: 'NOT', position: 0 }
+          ]);
+          expect(result.terms[0]).toMatchObject({ key: 'priority' });
+        }
+      });
+
+      it('keeps the leading NOT and the dotted field apart', () => {
+        const result = parseQueryInput('NOT not.priority:1');
+        expect(result.logicalOperators).toEqual([
+          { operator: 'NOT', position: 0 }
+        ]);
+        expect(result.terms).toHaveLength(1);
+        expect(result.terms[0]).toMatchObject({ key: 'not.priority' });
+      });
     });
 
     describe('negation', () => {
@@ -362,6 +442,18 @@ describe('Input Parser', () => {
       expect(isInputComplete('status:done')).toBe(true);
     });
 
+    it('treats a slash inside a regex character class as part of the pattern', () => {
+      expect(isInputComplete('name:/[/]/')).toBe(true);
+      expect(isInputComplete('name:/[/]')).toBe(false);
+    });
+
+    it('honours escapes inside a character class and flags after it', () => {
+      const BS = String.fromCharCode(92);
+      expect(isInputComplete('name:/[' + BS + ']/]/')).toBe(true);
+      expect(isInputComplete('name:/[^/]+/i')).toBe(true);
+      expect(isInputComplete('path:/' + BS + '/[^/]*' + BS + '//')).toBe(true);
+    });
+
     it('should return true for multiple complete terms', () => {
       expect(isInputComplete('status:done AND priority:high')).toBe(true);
     });
@@ -390,12 +482,75 @@ describe('Input Parser', () => {
       expect(isInputComplete('status:done)')).toBe(false);
     });
 
-    it('should return true for complete bare value', () => {
-      expect(isInputComplete('hello')).toBe(true);
+    it('treats a bare value with no field as incomplete', () => {
+      expect(isInputComplete('hello')).toBe(false);
+      expect(isInputComplete('open done')).toBe(false);
     });
 
-    it('should return true for complete quoted value', () => {
-      expect(isInputComplete('"hello world"')).toBe(true);
+    it('treats a quoted phrase with no field as incomplete', () => {
+      expect(isInputComplete('"hello world"')).toBe(false);
+      expect(isInputComplete('note:"hello world"')).toBe(true);
+    });
+
+    it('keeps the colon, quote, parenthesis, and regex decisions', () => {
+      expect(isInputComplete('status :a')).toBe(false);
+      expect(isInputComplete(':a')).toBe(false);
+      expect(isInputComplete('"":a')).toBe(true);
+      expect(isInputComplete('and.status:a')).toBe(true);
+      expect(isInputComplete('name:/foo/) AND status:/bar/')).toBe(true);
+      expect(isInputComplete('name:/foo/ AND status:/bar/')).toBe(false);
+      expect(isInputComplete('name:/foo/ AND (status:/bar/)')).toBe(true);
+    });
+
+    describe('is the verdict of parse', () => {
+      afterEach(() => {
+        jest.restoreAllMocks();
+      });
+
+      it('shares one parse per text with parseWithContext', () => {
+        const parse = jest.spyOn(QueryParser.prototype, 'parse');
+        const parser = new QueryParser();
+        expect(parser.parseWithContext('shared:open').success).toBe(true);
+        expect(parse).toHaveBeenCalledTimes(1);
+        expect(isInputComplete('shared:open')).toBe(true);
+        expect(parse).toHaveBeenCalledTimes(1);
+        expect(isInputComplete('shared:open AND')).toBe(false);
+        expect(parse).toHaveBeenCalledTimes(2);
+        const failed = parser.parseWithContext('shared:open AND');
+        expect(failed.success).toBe(false);
+        expect(failed.structure.isComplete).toBe(false);
+        expect(failed.error?.message).toBe(
+          'Failed to parse query: Found no parsings.'
+        );
+        expect(parse).toHaveBeenCalledTimes(2);
+      });
+
+      it('keeps a verdict per length cap', () => {
+        const parse = jest.spyOn(QueryParser.prototype, 'parse');
+        expect(isInputComplete('capped:open')).toBe(true);
+        expect(isInputComplete('capped:open', { maxQueryLength: 20 })).toBe(
+          true
+        );
+        expect(parse).toHaveBeenCalledTimes(2);
+      });
+
+      it('is false when parse throws QuerySecurityError', () => {
+        jest.spyOn(QueryParser.prototype, 'parse').mockImplementation(() => {
+          throw new QuerySecurityError('Invalid query parameters');
+        });
+        expect(isInputComplete('guarded:open')).toBe(false);
+      });
+
+      it('rethrows a throw that is not a parse rejection and keeps nothing', () => {
+        const parse = jest
+          .spyOn(QueryParser.prototype, 'parse')
+          .mockImplementation(() => {
+            throw new TypeError('defect');
+          });
+        expect(() => isInputComplete('broken:open')).toThrow(TypeError);
+        parse.mockRestore();
+        expect(isInputComplete('broken:open')).toBe(true);
+      });
     });
   });
 
@@ -740,10 +895,14 @@ describe('Input Parser', () => {
       expect(result.terms[0].key).toBe('created_at');
     });
 
-    it('should handle field names with hyphens', () => {
+    it('does not read a hyphen as part of a field name', () => {
+      // Liqe's field name is `[$A-Z_a-z][\w$.]*`; `last-updated:yesterday`
+      // is a bare word and a negated field, and the parser rejects it.
       const result = parseQueryInput('last-updated:yesterday');
 
-      expect(result.terms[0].key).toBe('last-updated');
+      expect(result.terms[0]).toMatchObject({ key: null, value: 'last' });
+      expect(result.terms[1]).toMatchObject({ key: '-updated' });
+      expect(isInputComplete('last-updated:yesterday')).toBe(false);
     });
 
     it('should handle numeric values', () => {

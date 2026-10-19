@@ -18,7 +18,8 @@ export interface IRawSqlContext {
    */
   adapter: string;
   /**
-   * The table name being queried
+   * The table the adapter selected. Empty when a translator runs without
+   * an adapter context.
    */
   tableName: string;
   /**
@@ -116,9 +117,8 @@ export interface IResolverHelpers<TSchema extends Record<string, object>> {
  * Schema-constrained comparison expression.
  * Ensures field names are valid schema fields.
  */
-export interface ITypedComparisonExpression<
-  TFields extends string = string
-> extends Omit<IComparisonExpression, 'field'> {
+export interface ITypedComparisonExpression<TFields extends string = string>
+  extends Omit<IComparisonExpression, 'field'> {
   type: 'comparison';
   field: TFields;
   operator: ComparisonOperator;

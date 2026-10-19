@@ -1,7 +1,76 @@
-import { QuerySecurityValidator, QuerySecurityError } from './validator';
+import {
+  QuerySecurityValidator,
+  QuerySecurityError,
+  aliasSecurityFields,
+  applyEnforcedExclusions,
+  assertAllowedFields,
+  assertMaxValueLength,
+  assertQueryComplexity,
+  deniedNameForms,
+  deniedNameSet,
+  isAllowedName,
+  isDeniedName,
+  resolveMaxClauseCount,
+  resolveMaxQueryDepth
+} from './validator';
 import { QueryParser } from '../parser/parser';
-import { QueryExpression, IComparisonExpression } from '../parser/types';
-import { DEFAULT_SECURITY_OPTIONS } from './types';
+import {
+  QueryExpression,
+  IComparisonExpression,
+  ILogicalExpression
+} from '../parser/types';
+import { DEFAULT_SECURITY_OPTIONS, ISecurityOptions } from './types';
+
+/**
+ * Build `label:1 AND label:1 AND ...` as a left-leaning chain of `count`
+ * comparisons. The validator counts one depth level per logical node, so a
+ * chain of `n` comparisons has depth `n - 1`.
+ */
+function buildComparisonChain(count: number): QueryExpression {
+  const comparison = (): IComparisonExpression => ({
+    type: 'comparison',
+    field: 'label',
+    operator: '==',
+    value: 1
+  });
+  let expression: QueryExpression = comparison();
+  for (let i = 1; i < count; i += 1) {
+    expression = {
+      type: 'logical',
+      operator: 'AND',
+      left: expression,
+      right: comparison()
+    };
+  }
+  return expression;
+}
+
+/**
+ * Build a balanced AND tree of `count` comparisons, so the clause count grows
+ * while the depth stays at `ceil(log2(count))`.
+ */
+function buildBalancedTree(count: number): QueryExpression {
+  if (count <= 1) {
+    return { type: 'comparison', field: 'label', operator: '==', value: 1 };
+  }
+  const half = Math.floor(count / 2);
+  return {
+    type: 'logical',
+    operator: 'AND',
+    left: buildBalancedTree(half),
+    right: buildBalancedTree(count - half)
+  };
+}
+
+/** A membership list of `count` distinct numbers. */
+function buildMembership(count: number): IComparisonExpression {
+  return {
+    type: 'comparison',
+    field: 'label',
+    operator: 'IN',
+    value: Array.from({ length: count }, (_, index) => index + 1)
+  };
+}
 
 describe('QuerySecurityValidator', () => {
   let validator: QuerySecurityValidator;
@@ -1020,6 +1089,484 @@ describe('QuerySecurityValidator', () => {
           }
         });
       }).not.toThrow();
+    });
+  });
+
+  describe('inherited property names', () => {
+    it('does not treat inherited deny lists as value denials', () => {
+      const subject = new QuerySecurityValidator({
+        denyValues: { status: ['deleted'] }
+      });
+      const inheritedName: IComparisonExpression = {
+        type: 'comparison',
+        field: 'constructor',
+        operator: '==',
+        value: 'active'
+      };
+      expect(() => subject.validate(inheritedName)).not.toThrow();
+      const denied: IComparisonExpression = {
+        type: 'comparison',
+        field: 'status',
+        operator: '==',
+        value: 'deleted'
+      };
+      expect(() => subject.validate(denied)).toThrow(QuerySecurityError);
+    });
+  });
+
+  // Shared checks the translators and adapters call before they build SQL or
+  // walk rows. The engine-parity tests named by docs/bugs/max-value-length.md,
+  // array-cap.md, depth-clause.md, allowlist.md and excluded-fields.md land
+  // with the engines; these pin the helpers at the validator.
+  describe('assertMaxValueLength', () => {
+    const equality = (length: number): IComparisonExpression => ({
+      type: 'comparison',
+      field: 'label',
+      operator: '==',
+      value: 'a'.repeat(length)
+    });
+    const membership = (length: number): IComparisonExpression => ({
+      type: 'comparison',
+      field: 'label',
+      operator: 'IN',
+      value: ['a'.repeat(length)]
+    });
+
+    it('accepts a 1000-character string by default', () => {
+      expect(() => assertMaxValueLength(equality(1000))).not.toThrow();
+      expect(() => assertMaxValueLength(membership(1000))).not.toThrow();
+    });
+
+    it('rejects a 1001-character string with the validator wording', () => {
+      expect(() => assertMaxValueLength(equality(1001))).toThrow(
+        QuerySecurityError
+      );
+      expect(() => assertMaxValueLength(equality(1001))).toThrow(
+        'Query contains a string value that exceeds maximum length of 1000 characters'
+      );
+    });
+
+    it('rejects a 1001-character membership member with the array wording', () => {
+      expect(() => assertMaxValueLength(membership(1001))).toThrow(
+        'Query contains a string value in array that exceeds maximum length of 1000 characters'
+      );
+    });
+
+    it('accepts a 1001-character string when the cap is raised', () => {
+      expect(() => assertMaxValueLength(equality(1001), 1001)).not.toThrow();
+      expect(() => assertMaxValueLength(membership(1001), 1001)).not.toThrow();
+    });
+
+    it('checks every comparison inside a logical expression', () => {
+      const expression: QueryExpression = {
+        type: 'logical',
+        operator: 'AND',
+        left: equality(1),
+        right: { type: 'logical', operator: 'NOT', left: equality(1001) }
+      };
+      expect(() => assertMaxValueLength(expression)).toThrow(
+        QuerySecurityError
+      );
+    });
+
+    it('ignores a missing node so callers keep their own errors', () => {
+      expect(() => assertMaxValueLength(null)).not.toThrow();
+      expect(() => assertMaxValueLength(undefined)).not.toThrow();
+      const missingLeft = {
+        type: 'logical',
+        operator: 'AND',
+        left: undefined
+      } as unknown as ILogicalExpression;
+      expect(() => assertMaxValueLength(missingLeft)).not.toThrow();
+    });
+
+    it('still rejects through validate with a raised cap', () => {
+      const subject = new QuerySecurityValidator({ maxValueLength: 1001 });
+      expect(() => subject.validate(equality(1001))).not.toThrow();
+      expect(() => subject.validate(equality(1002))).toThrow(
+        /exceeds maximum length of 1001 characters/
+      );
+    });
+  });
+
+  describe('array item cap', () => {
+    it('accepts a 100-item list and rejects a 101-item list', () => {
+      expect(() => assertMaxValueLength(buildMembership(100))).not.toThrow();
+      expect(() => assertMaxValueLength(buildMembership(101))).toThrow(
+        'Array values cannot exceed 100 items'
+      );
+      expect(() => validator.validate(buildMembership(101))).toThrow(
+        'Array values cannot exceed 100 items'
+      );
+    });
+
+    it('rejects a long list before a long string inside it', () => {
+      const list = buildMembership(101);
+      list.value = [...(list.value as number[]), 'a'.repeat(1001)].slice(1);
+      expect(() => assertMaxValueLength(list)).toThrow(
+        'Array values cannot exceed 100 items'
+      );
+    });
+
+    it('keeps the cap when maxValueLength is raised', () => {
+      expect(() => assertMaxValueLength(buildMembership(101), 5000)).toThrow(
+        'Array values cannot exceed 100 items'
+      );
+    });
+  });
+
+  describe('assertQueryComplexity', () => {
+    it('resolves the default caps', () => {
+      expect(resolveMaxQueryDepth(undefined)).toBe(10);
+      expect(resolveMaxQueryDepth(11)).toBe(11);
+      expect(resolveMaxClauseCount(undefined)).toBe(50);
+      expect(resolveMaxClauseCount(51)).toBe(51);
+    });
+
+    it('accepts a chain at the depth cap and rejects one step past it', () => {
+      expect(() =>
+        assertQueryComplexity(buildComparisonChain(11))
+      ).not.toThrow();
+      expect(() => assertQueryComplexity(buildComparisonChain(12))).toThrow(
+        'Query exceeds maximum depth of 10'
+      );
+      expect(() => validator.validate(buildComparisonChain(12))).toThrow(
+        'Query exceeds maximum depth of 10'
+      );
+    });
+
+    it('accepts a tree at the clause cap and rejects one step past it', () => {
+      expect(() => assertQueryComplexity(buildBalancedTree(50))).not.toThrow();
+      expect(() => assertQueryComplexity(buildBalancedTree(51))).toThrow(
+        'Query exceeds maximum clause count of 50 (found 51)'
+      );
+      expect(() => validator.validate(buildBalancedTree(51))).toThrow(
+        'Query exceeds maximum clause count of 50 (found 51)'
+      );
+    });
+
+    it('accepts one step past each default when the cap is raised', () => {
+      expect(() =>
+        assertQueryComplexity(buildComparisonChain(12), 11, 50)
+      ).not.toThrow();
+      expect(() =>
+        assertQueryComplexity(buildBalancedTree(51), 10, 51)
+      ).not.toThrow();
+    });
+
+    it('ignores a missing node', () => {
+      expect(() => assertQueryComplexity(null)).not.toThrow();
+      expect(() => assertQueryComplexity(undefined)).not.toThrow();
+    });
+  });
+
+  describe('assertAllowedFields', () => {
+    it('allows every field when the list is omitted or empty', () => {
+      const query = parser.parse('secret:1');
+      expect(() => assertAllowedFields(query)).not.toThrow();
+      expect(() => assertAllowedFields(query, [])).not.toThrow();
+    });
+
+    it('rejects a field outside a non-empty list before any row is read', () => {
+      expect(() =>
+        assertAllowedFields(parser.parse('status:open'), ['status'])
+      ).not.toThrow();
+      expect(() =>
+        assertAllowedFields(parser.parse('secret:1'), ['status'])
+      ).toThrow(QuerySecurityError);
+      expect(() =>
+        assertAllowedFields(parser.parse('status:open OR secret:1'), ['status'])
+      ).toThrow('Invalid query parameters');
+    });
+
+    it('compares a dotted name as the whole field string', () => {
+      expect(() =>
+        assertAllowedFields(parser.parse('owner.city:Austin'), ['city'])
+      ).toThrow(QuerySecurityError);
+      expect(() =>
+        assertAllowedFields(parser.parse('owner.city:Austin'), ['owner.city'])
+      ).not.toThrow();
+    });
+
+    it('ignores a missing node', () => {
+      expect(() => assertAllowedFields(null, ['status'])).not.toThrow();
+    });
+
+    it('matches the list as written, ignoring neither case nor a qualifier', () => {
+      const allowed = new Set(['status']);
+      expect(isAllowedName('status', allowed)).toBe(true);
+      expect(isAllowedName('STATUS', allowed)).toBe(false);
+      expect(isAllowedName('items.status', allowed)).toBe(false);
+    });
+  });
+
+  describe('applyEnforcedExclusions', () => {
+    const query = (): QueryExpression => parser.parse('status:open');
+
+    it('returns the expression as given for an omitted, empty, or emptied map', () => {
+      const expression = query();
+      expect(applyEnforcedExclusions(expression)).toBe(expression);
+      expect(applyEnforcedExclusions(expression, {})).toBe(expression);
+      expect(applyEnforcedExclusions(expression, { secret: [] })).toBe(
+        expression
+      );
+    });
+
+    it('ANDs a NOT IN comparison for each field with values', () => {
+      const expression = query();
+      expect(applyEnforcedExclusions(expression, { secret: [1] })).toEqual({
+        type: 'logical',
+        operator: 'AND',
+        left: expression,
+        right: {
+          type: 'comparison',
+          field: 'secret',
+          operator: 'NOT IN',
+          value: [1]
+        }
+      });
+      const twice = applyEnforcedExclusions(expression, {
+        secret: [1],
+        visibility: ['internal']
+      }) as ILogicalExpression;
+      expect(twice.operator).toBe('AND');
+      expect((twice.right as IComparisonExpression).field).toBe('visibility');
+      expect(
+        ((twice.left as ILogicalExpression).right as IComparisonExpression)
+          .field
+      ).toBe('secret');
+    });
+
+    it('reads own keys only', () => {
+      const expression = query();
+      const inherited = Object.create({ secret: [1] }) as Record<
+        string,
+        Array<string | number | boolean | null>
+      >;
+      expect(applyEnforcedExclusions(expression, inherited)).toBe(expression);
+    });
+  });
+
+  // docs/bugs/denylist-bypass.md: a deny-list entry matches a field regardless
+  // of ASCII case and of a single `table.` qualifier on either side.
+  describe('denied name forms', () => {
+    it('folds ASCII case and strips a single table qualifier', () => {
+      expect(deniedNameForms('Items.Secret')).toEqual([
+        'items.secret',
+        'secret'
+      ]);
+      expect(deniedNameForms('SECRET')).toEqual(['secret']);
+      expect(deniedNameForms('a.b.secret')).toEqual(['a.b.secret']);
+      expect(deniedNameForms('column.')).toEqual(['column.']);
+      expect(deniedNameForms('.column')).toEqual(['.column']);
+      expect(deniedNameForms('Σ')).toEqual(['Σ']);
+    });
+
+    it('unions the forms of every entry', () => {
+      expect(deniedNameSet(['SECRET', 'items.Token'])).toEqual(
+        new Set(['secret', 'items.token', 'token'])
+      );
+    });
+
+    it('matches a field by any of its forms', () => {
+      const denied = deniedNameSet(['secret']);
+      expect(isDeniedName('secret', denied)).toBe(true);
+      expect(isDeniedName('SECRET', denied)).toBe(true);
+      expect(isDeniedName('items.secret', denied)).toBe(true);
+      expect(isDeniedName('Items.secret', denied)).toBe(true);
+      expect(isDeniedName('status', denied)).toBe(false);
+      expect(isDeniedName('a.b.secret', denied)).toBe(false);
+    });
+
+    it.each([
+      ['secret', 'items.secret:a'],
+      ['secret', 'SECRET:a'],
+      ['secret', 'Items.secret:a'],
+      ['secret', '"items.secret":a'],
+      ['SECRET', 'secret:a'],
+      ['items.secret', 'secret:a'],
+      ['secret', 'status:open AND secret:a']
+    ])('denyFields %p rejects %s', (entry, query) => {
+      const subject = new QuerySecurityValidator({ denyFields: [entry] });
+      expect(() => subject.validate(parser.parse(query))).toThrow(
+        'Invalid query parameters'
+      );
+    });
+
+    it('keeps a permitted field and a two-dot name as written', () => {
+      const subject = new QuerySecurityValidator({ denyFields: ['secret'] });
+      expect(() => subject.validate(parser.parse('status:open'))).not.toThrow();
+      expect(() =>
+        subject.validate(parser.parse('a.b.secret:a'))
+      ).not.toThrow();
+    });
+
+    it('leaves the allowlist matching as written', () => {
+      const subject = new QuerySecurityValidator({ allowedFields: ['status'] });
+      expect(() => subject.validate(parser.parse('STATUS:open'))).toThrow(
+        QuerySecurityError
+      );
+      expect(() => subject.validate(parser.parse('items.status:open'))).toThrow(
+        QuerySecurityError
+      );
+    });
+  });
+
+  // docs/bugs/aliased-deny.md and aliased-deny-values.md: a fieldMappings
+  // alias and its target are one field for the lists, the value map, and the
+  // exclusion map.
+  describe('aliasSecurityFields', () => {
+    const resolve = (
+      options: ISecurityOptions,
+      fieldMappings?: Record<string, string>,
+      foldsCase = false
+    ): Required<ISecurityOptions> =>
+      aliasSecurityFields(
+        { ...DEFAULT_SECURITY_OPTIONS, ...options },
+        fieldMappings,
+        foldsCase
+      );
+    const alias = { hidden: 'secret' };
+
+    it('returns the options as given without a map', () => {
+      const options = { ...DEFAULT_SECURITY_OPTIONS, denyFields: ['hidden'] };
+      expect(aliasSecurityFields(options, undefined, false)).toBe(options);
+      expect(aliasSecurityFields(options, {}, false)).toBe(options);
+    });
+
+    it('joins the target of a listed alias and the alias of a listed target', () => {
+      expect(resolve({ denyFields: ['hidden'] }, alias).denyFields).toEqual([
+        'hidden',
+        'secret'
+      ]);
+      expect(resolve({ denyFields: ['secret'] }, alias).denyFields).toEqual([
+        'secret',
+        'hidden'
+      ]);
+      expect(
+        resolve({ allowedFields: ['status', 'hidden'] }, alias).allowedFields
+      ).toEqual(['status', 'hidden', 'secret']);
+      expect(
+        resolve({ allowedFields: ['status', 'secret'] }, alias).allowedFields
+      ).toEqual(['status', 'secret', 'hidden']);
+    });
+
+    it('matches a deny entry by its denied forms and an allow entry as written', () => {
+      expect(resolve({ denyFields: ['HIDDEN'] }, alias).denyFields).toContain(
+        'secret'
+      );
+      expect(
+        resolve({ denyFields: ['items.hidden'] }, alias).denyFields
+      ).toContain('secret');
+      expect(
+        resolve({ allowedFields: ['status', 'HIDDEN'] }, alias).allowedFields
+      ).toEqual(['status', 'HIDDEN']);
+      expect(
+        resolve({ allowedFields: ['status', 'items.hidden'] }, alias)
+          .allowedFields
+      ).toEqual(['status', 'items.hidden']);
+    });
+
+    it('folds an allow entry under caseInsensitiveFields', () => {
+      expect(
+        resolve({ allowedFields: ['status', 'HIDDEN'] }, alias, true)
+          .allowedFields
+      ).toEqual(['status', 'HIDDEN', 'secret']);
+      expect(
+        resolve(
+          { allowedFields: ['status', 'secret'] },
+          { hidden: 'SECRET' },
+          true
+        ).allowedFields
+      ).toEqual(['status', 'secret', 'hidden']);
+      expect(
+        resolve({ allowedFields: ['status', 'secret'] }, { hidden: 'SECRET' })
+          .allowedFields
+      ).toEqual(['status', 'secret']);
+    });
+
+    it('closes the keys of denyValues and unions values that land on one name', () => {
+      expect(
+        resolve({ denyValues: { hidden: ['a'] } }, alias).denyValues
+      ).toEqual({
+        hidden: ['a'],
+        secret: ['a']
+      });
+      const union = resolve(
+        { denyValues: { hidden: ['a'], secret: ['b'] } },
+        alias
+      ).denyValues;
+      expect(union.hidden).toEqual(expect.arrayContaining(['a', 'b']));
+      expect(union.secret).toEqual(expect.arrayContaining(['a', 'b']));
+      expect(union.hidden).toHaveLength(2);
+      expect(union.secret).toHaveLength(2);
+    });
+
+    it('moves an exclusion keyed by an alias under its target', () => {
+      expect(
+        resolve({ enforceExcludedValues: { hidden: ['a'] } }, alias)
+          .enforceExcludedValues
+      ).toEqual({ secret: ['a'] });
+      expect(
+        resolve({ enforceExcludedValues: { HIDDEN: ['a'] } }, alias)
+          .enforceExcludedValues
+      ).toEqual({ secret: ['a'] });
+      expect(
+        resolve(
+          { enforceExcludedValues: { hidden: ['a'], secret: ['b'] } },
+          alias
+        ).enforceExcludedValues
+      ).toEqual({ secret: ['a', 'b'] });
+      expect(
+        resolve({ enforceExcludedValues: { status: ['x'] } }, alias)
+          .enforceExcludedValues
+      ).toEqual({ status: ['x'] });
+    });
+
+    it('reads own mapping keys only and keeps the other options', () => {
+      const inherited = Object.create({ hidden: 'secret' }) as Record<
+        string,
+        string
+      >;
+      const options = { ...DEFAULT_SECURITY_OPTIONS, denyFields: ['hidden'] };
+      expect(aliasSecurityFields(options, inherited, false).denyFields).toEqual(
+        ['hidden']
+      );
+      const resolved = resolve(
+        { denyFields: ['hidden'], maxQueryDepth: 3 },
+        alias
+      );
+      expect(resolved.maxQueryDepth).toBe(3);
+      expect(resolved.maxClauseCount).toBe(
+        DEFAULT_SECURITY_OPTIONS.maxClauseCount
+      );
+    });
+  });
+
+  describe('denyValues keyed by another spelling of the field', () => {
+    it.each([
+      [{ secret: ['a'] }, 'items.secret:a'],
+      [{ secret: ['a'] }, 'Secret:a'],
+      [{ secret: ['a'] }, 'secret:in[a, b]'],
+      [{ secret: ['a'] }, 'NOT secret:a'],
+      [{ SECRET: ['a'] }, 'secret:a'],
+      [{ 'items.secret': ['a'] }, 'secret:a'],
+      [{ 'items.secret': ['a'] }, 'Items.Secret:a']
+    ])('denyValues %p rejects %s', (denyValues, query) => {
+      const subject = new QuerySecurityValidator({ denyValues });
+      expect(() => subject.validate(parser.parse(query))).toThrow(
+        'Invalid query parameters'
+      );
+    });
+
+    it('keeps an unlisted value and a two-dot name', () => {
+      const subject = new QuerySecurityValidator({
+        denyValues: { secret: ['a'] }
+      });
+      expect(() => subject.validate(parser.parse('secret:c'))).not.toThrow();
+      expect(() =>
+        subject.validate(parser.parse('a.b.secret:a'))
+      ).not.toThrow();
     });
   });
 });
