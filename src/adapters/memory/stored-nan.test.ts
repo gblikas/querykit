@@ -7,42 +7,15 @@
  * as a column name and the translators reject a non-finite number.
  */
 
-import { createRequire } from 'module';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
-import {
-  integer,
-  real,
-  sqliteTable,
-  SQLiteSyncDialect
-} from 'drizzle-orm/sqlite-core';
+import { integer, real, sqliteTable } from 'drizzle-orm/sqlite-core';
 import { DrizzleAdapter } from '../drizzle';
 import { QueryParser } from '../../parser';
 import { QueryExpression } from '../../parser/types';
 import { DrizzleTranslator } from '../../translators/drizzle';
 import { SqlTranslator } from '../../translators/sql';
 import { inMemoryAdapter } from './in-memory-adapter';
-
-const nodeRequire = createRequire(__filename);
-
-interface ISqliteStatement {
-  all(...params: unknown[]): Array<{ id: number }>;
-  run(...params: unknown[]): unknown;
-}
-
-interface ISqliteDatabase {
-  exec(sqlText: string): void;
-  prepare(sqlText: string): ISqliteStatement;
-  close(): void;
-}
-
-interface ISqliteDatabaseConstructor {
-  new (filename: string): ISqliteDatabase;
-}
-
-interface IParameterizedSql {
-  sql: string;
-  params: unknown[];
-}
+import { IParameterizedSql, openSqliteHarness } from '../../test-support';
 
 type Direction = 'asc' | 'desc';
 
@@ -58,55 +31,22 @@ const amounts = sqliteTable('amounts', {
   amount: real('amount')
 });
 
-function openDatabase(): ISqliteDatabase {
-  const Database = nodeRequire('better-sqlite3') as ISqliteDatabaseConstructor;
-  const database = new Database(':memory:');
-  database.exec('CREATE TABLE amounts (id INTEGER PRIMARY KEY, amount REAL)');
-  const insert = database.prepare('INSERT INTO amounts VALUES (?, ?)');
-  for (const row of rows) {
-    insert.run(row.id, row.amount);
-  }
-  return database;
-}
-
 describe('a stored NaN', () => {
   const parser = new QueryParser();
-  const dialect = new SQLiteSyncDialect();
-  const database = openDatabase();
+  const harness = openSqliteHarness({
+    table: amounts,
+    columns: { amount: 'REAL' },
+    rows
+  });
   const adapter = new DrizzleAdapter({
-    db: drizzle(database as never),
+    db: drizzle(harness.database as never),
     schema: { amounts }
   });
   const memory = inMemoryAdapter({ records: { amounts: rows } });
 
-  afterAll((): void => {
-    database.close();
-  });
-
-  function idsOfSql(
-    statement: IParameterizedSql,
-    orderBy = 'id ASC'
-  ): number[] {
-    return database
-      .prepare(
-        `SELECT id FROM amounts WHERE ${statement.sql} ORDER BY ${orderBy}`
-      )
-      .all(...statement.params)
-      .map(row => row.id);
-  }
-
-  function compileDrizzle(
-    expression: QueryExpression,
-    schema?: Record<string, Record<string, unknown>>
-  ): IParameterizedSql {
-    const translator = new DrizzleTranslator(schema ? { schema } : {});
-    const compiled = dialect.sqlToQuery(translator.translate(expression));
-    return { sql: compiled.sql, params: compiled.params };
-  }
-
   it('is stored as NULL', () => {
     expect(
-      database
+      harness.database
         .prepare('SELECT id FROM amounts WHERE amount IS NULL ORDER BY id')
         .all()
         .map(row => row.id)
@@ -115,7 +55,9 @@ describe('a stored NaN', () => {
 
   it('cannot be written into a statement', () => {
     expect(() =>
-      database.prepare('SELECT id FROM amounts WHERE "amount" = NaN').all()
+      harness.database
+        .prepare('SELECT id FROM amounts WHERE "amount" = NaN')
+        .all()
     ).toThrow('no such column: NaN');
     const expression: QueryExpression = {
       type: 'comparison',
@@ -150,9 +92,11 @@ describe('a stored NaN', () => {
     const parameterized = new SqlTranslator().translate(
       expression
     ) as IParameterizedSql;
-    expect(idsOfSql({ sql: inline, params: [] })).toEqual(expectedIds);
-    expect(idsOfSql(parameterized)).toEqual(expectedIds);
-    expect(idsOfSql(compileDrizzle(expression))).toEqual(expectedIds);
+    expect(harness.idsOfSql({ sql: inline, params: [] })).toEqual(expectedIds);
+    expect(harness.idsOfSql(parameterized)).toEqual(expectedIds);
+    expect(harness.idsOfSql(harness.compileDrizzle(expression))).toEqual(
+      expectedIds
+    );
     const viaDrizzle = await adapter.execute<{ id: number }>(
       'amounts',
       expression,
@@ -181,10 +125,10 @@ describe('a stored NaN', () => {
         expression
       ) as IParameterizedSql;
       const orderBy = `"amount" ${direction.toUpperCase()}, id ASC`;
-      expect(idsOfSql({ sql: inline, params: [] }, orderBy)).toEqual(
+      expect(harness.idsOfSql({ sql: inline, params: [] }, orderBy)).toEqual(
         expectedIds
       );
-      expect(idsOfSql(parameterized, orderBy)).toEqual(expectedIds);
+      expect(harness.idsOfSql(parameterized, orderBy)).toEqual(expectedIds);
       const options = { orderBy: { amount: direction, id: 'asc' as const } };
       const viaDrizzle = await adapter.execute<{ id: number }>(
         'amounts',
