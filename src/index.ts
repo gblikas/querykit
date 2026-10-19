@@ -15,10 +15,7 @@ import {
   EnforcedExclusions,
   ISecurityOptions,
   QuerySecurityError,
-  QuerySecurityValidator,
-  aliasSecurityFields,
-  applyEnforcedExclusions,
-  canonicalFieldName
+  QuerySecurityValidator
 } from './security';
 import {
   canonicalizeSecurityFields,
@@ -26,13 +23,18 @@ import {
   SchemaTables,
   selectedTableSchema
 } from './security/schema-field-case';
+import {
+  aliasSecurityFields,
+  applyEnforcedExclusions,
+  canonicalFieldName
+} from './security/validator';
 import { IAdapter, IAdapterOptions, IQueryExecutionOptions } from './adapters';
 import {
   IQueryContext,
   VirtualFieldsConfig,
-  assertNoVirtualSortField,
   resolveVirtualFields
 } from './virtual-fields';
+import { assertNoVirtualSortField } from './virtual-fields/resolver';
 import { QueryExpression } from './parser/types';
 
 export {
