@@ -46,7 +46,13 @@ describe('an exponent outside the signed 64-bit range', () => {
   );
 
   it.each([
-    ['count:1e2', '==', 100, '"count" = 100', []],
+    [
+      'count:1e2',
+      '==',
+      100,
+      '("count" IS NULL AND NULL) OR (typeof("count") IN (\'integer\', \'real\') AND "count" = 100)',
+      []
+    ],
     [
       'count:<=9223372036854775808',
       '<=',

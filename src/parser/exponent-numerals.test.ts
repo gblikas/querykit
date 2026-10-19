@@ -225,7 +225,9 @@ describe('exponent numerals', () => {
     const inline = new SqlTranslator({ useParameters: false }).translate(
       parser.parse('priority:1e-7')
     );
-    expect(inline).toBe('"priority" = 1e-7');
+    expect(inline).toBe(
+      '("priority" IS NULL AND NULL) OR (typeof("priority") IN (\'integer\', \'real\') AND "priority" = 1e-7)'
+    );
     expect(idsOfSql({ sql: inline as string, params: [] })).toEqual([1]);
   });
 

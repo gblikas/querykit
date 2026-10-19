@@ -54,7 +54,11 @@ describe('equality with an integer past the safe range', () => {
         value
       });
       const run = harness.expectSameSqlIds(query, expectedIds);
-      expect(run.inlineSql).toBe(`"count" = ${digits}`);
+      const inlineSql =
+        typeof value === 'bigint'
+          ? `"count" = ${digits}`
+          : `("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" = ${digits})`;
+      expect(run.inlineSql).toBe(inlineSql);
       expect(run.parameterized).toEqual({
         sql: '"count" = ?',
         params: [value]

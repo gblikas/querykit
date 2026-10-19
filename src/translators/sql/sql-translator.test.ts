@@ -29,7 +29,9 @@ describe('SqlTranslator', () => {
       const expression = parser.parse('count:42');
       const result = translator.translate(expression) as string;
 
-      expect(result).toBe('"count" = 42');
+      expect(result).toBe(
+        '("count" IS NULL AND NULL) OR (typeof("count") IN (\'integer\', \'real\') AND "count" = 42)'
+      );
     });
 
     it('should translate boolean values correctly', () => {
@@ -272,7 +274,9 @@ describe('SqlTranslator', () => {
       const expression = parser.parse('user_id:123');
       const result = mappingTranslator.translate(expression) as string;
 
-      expect(result).toBe('"users"."id" = 123');
+      expect(result).toBe(
+        '("users"."id" IS NULL AND NULL) OR (typeof("users"."id") IN (\'integer\', \'real\') AND "users"."id" = 123)'
+      );
     });
 
     it('should apply field mappings in complex expressions', () => {

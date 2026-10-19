@@ -116,7 +116,7 @@ describe('inequality rewrite boundary', () => {
     ],
     [
       'count:1 "status":!=open',
-      `("count" = 1) AND (NOT ("status" = 'open'))`,
+      `(("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" = 1)) AND (NOT ("status" = 'open'))`,
       '("count" = ?) AND (NOT ("status" = ?))',
       [1, 'open'],
       []

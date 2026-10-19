@@ -80,10 +80,15 @@ function openDatabase(): ISqliteDatabase {
 
 const cases: Array<[string, string, number[], number[]]> = [
   ['status:open', `("status" = 'open') AND ("secret" NOT IN (1))`, [1], [1, 3]],
-  ['secret:1', `("secret" = 1) AND ("secret" NOT IN (1))`, [], [2, 3]],
+  [
+    'secret:1',
+    `(("secret" IS NULL AND NULL) OR (typeof("secret") IN ('integer', 'real') AND "secret" = 1)) AND ("secret" NOT IN (1))`,
+    [],
+    [2, 3]
+  ],
   [
     'status:open OR secret:1',
-    `(("status" = 'open') OR ("secret" = 1)) AND ("secret" NOT IN (1))`,
+    `(("status" = 'open') OR (("secret" IS NULL AND NULL) OR (typeof("secret") IN ('integer', 'real') AND "secret" = 1))) AND ("secret" NOT IN (1))`,
     [1],
     [1, 2, 3]
   ]

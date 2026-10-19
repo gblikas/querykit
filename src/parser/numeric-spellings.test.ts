@@ -77,9 +77,24 @@ describe('unquoted numeric spellings', () => {
   }
 
   it.each([
-    ['priority:007', 7, '"priority" = 7', [1]],
-    ['priority:00.50', 0.5, '"priority" = 0.5', [3]],
-    ['priority:-0', 0, '"priority" = 0', [4]]
+    [
+      'priority:007',
+      7,
+      '("priority" IS NULL AND NULL) OR (typeof("priority") IN (\'integer\', \'real\') AND "priority" = 7)',
+      [1]
+    ],
+    [
+      'priority:00.50',
+      0.5,
+      '("priority" IS NULL AND NULL) OR (typeof("priority") IN (\'integer\', \'real\') AND "priority" = 0.5)',
+      [3]
+    ],
+    [
+      'priority:-0',
+      0,
+      '("priority" IS NULL AND NULL) OR (typeof("priority") IN (\'integer\', \'real\') AND "priority" = 0)',
+      [4]
+    ]
   ])(
     'leaves %s to Liqe and matches the stored number',
     (query, value, inlineSql, ids) => {
@@ -100,9 +115,24 @@ describe('unquoted numeric spellings', () => {
   );
 
   it.each([
-    ['priority:+1', 1, '"priority" = 1', [2]],
-    ['priority:1.', 1, '"priority" = 1', [2]],
-    ['priority:.5', 0.5, '"priority" = 0.5', [3]]
+    [
+      'priority:+1',
+      1,
+      '("priority" IS NULL AND NULL) OR (typeof("priority") IN (\'integer\', \'real\') AND "priority" = 1)',
+      [2]
+    ],
+    [
+      'priority:1.',
+      1,
+      '("priority" IS NULL AND NULL) OR (typeof("priority") IN (\'integer\', \'real\') AND "priority" = 1)',
+      [2]
+    ],
+    [
+      'priority:.5',
+      0.5,
+      '("priority" IS NULL AND NULL) OR (typeof("priority") IN (\'integer\', \'real\') AND "priority" = 0.5)',
+      [3]
+    ]
   ])(
     'spells %s as the plain decimal and matches the stored number',
     (query, value, inlineSql, ids) => {

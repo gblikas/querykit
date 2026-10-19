@@ -48,8 +48,18 @@ describe('an exponent that underflows to zero', () => {
   });
 
   it.each([
-    ['count:1e-2', 0.01, '"count" = 0.01', [3]],
-    ['count:0e-400', 0, '"count" = 0', [1]]
+    [
+      'count:1e-2',
+      0.01,
+      '("count" IS NULL AND NULL) OR (typeof("count") IN (\'integer\', \'real\') AND "count" = 0.01)',
+      [3]
+    ],
+    [
+      'count:0e-400',
+      0,
+      '("count" IS NULL AND NULL) OR (typeof("count") IN (\'integer\', \'real\') AND "count" = 0)',
+      [1]
+    ]
   ])(
     '%s stays the number it spells on every engine',
     (query, value, inlineSql, expectedIds) => {

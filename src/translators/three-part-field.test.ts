@@ -118,7 +118,9 @@ describe('three-part field names', () => {
     const parameterized = new SqlTranslator().translate(
       expression
     ) as IParameterizedSql;
-    expect(inlineSql).toBe('"a.b.c" = 1');
+    expect(inlineSql).toBe(
+      '("a.b.c" IS NULL AND NULL) OR (typeof("a.b.c") IN (\'integer\', \'real\') AND "a.b.c" = 1)'
+    );
     expect(parameterized).toEqual({ sql: '"a.b.c" = ?', params: [1] });
     expect(compileDrizzle(expression)).toEqual({
       sql: '"a.b.c" = ?',

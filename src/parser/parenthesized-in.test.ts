@@ -70,7 +70,11 @@ describe('parenthesized in', () => {
   }
 
   it.each([
-    ['id:[2,3]', '("id" = 2) OR ("id" = 3)', [2, 3]],
+    [
+      'id:[2,3]',
+      '(("id" IS NULL AND NULL) OR (typeof("id") IN (\'integer\', \'real\') AND "id" = 2)) OR (("id" IS NULL AND NULL) OR (typeof("id") IN (\'integer\', \'real\') AND "id" = 3))',
+      [2, 3]
+    ],
     [
       'status in (todo, doing, done)',
       "\"status\" IN ('todo', 'doing', 'done')",

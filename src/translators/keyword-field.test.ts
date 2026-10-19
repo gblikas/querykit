@@ -49,7 +49,12 @@ describe('keyword field names', () => {
         value
       });
       const run = harness.expectSameIds(query, expectedIds);
-      expect(run.inlineSql).toBe(`"${field}" = ${inlineValue}`);
+      const quoted = `"${field}"`;
+      const inlineSql =
+        typeof value === 'number'
+          ? `(${quoted} IS NULL AND NULL) OR (typeof(${quoted}) IN ('integer', 'real') AND ${quoted} = ${inlineValue})`
+          : `${quoted} = ${inlineValue}`;
+      expect(run.inlineSql).toBe(inlineSql);
       expect(run.parameterized).toEqual({
         sql: `"${field}" = ?`,
         params: [value]

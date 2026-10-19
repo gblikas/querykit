@@ -62,9 +62,24 @@ describe('odd numerals', () => {
   }
 
   it.each([
-    ['count:08', 8, `"count" = 8`, [1]],
-    ['count:09', 9, `"count" = 9`, [2]],
-    ['count:02', 2, `"count" = 2`, [6]],
+    [
+      'count:08',
+      8,
+      `("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" = 8)`,
+      [1]
+    ],
+    [
+      'count:09',
+      9,
+      `("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" = 9)`,
+      [2]
+    ],
+    [
+      'count:02',
+      2,
+      `("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" = 2)`,
+      [6]
+    ],
     ['count:"0x10"', '0x10', `"count" = '0x10'`, [5]]
   ])('keeps %p complete with value %p', (query, value, sql, ids) => {
     expect(isInputComplete(query)).toBe(true);

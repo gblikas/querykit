@@ -61,7 +61,7 @@ describe('AND/OR precedence', () => {
         },
         right: comparison('priority', 1)
       },
-      `(("status" = 'a') OR ("status" = 'b')) AND ("priority" = 1)`,
+      `(("status" = 'a') OR ("status" = 'b')) AND (("priority" IS NULL AND NULL) OR (typeof("priority") IN ('integer', 'real') AND "priority" = 1))`,
       '(("status" = ?) OR ("status" = ?)) AND ("priority" = ?)',
       [1, 2]
     ],
@@ -78,7 +78,7 @@ describe('AND/OR precedence', () => {
         },
         right: comparison('priority', 1)
       },
-      `(("status" = 'a') AND ("status" = 'b')) OR ("priority" = 1)`,
+      `(("status" = 'a') AND ("status" = 'b')) OR (("priority" IS NULL AND NULL) OR (typeof("priority") IN ('integer', 'real') AND "priority" = 1))`,
       '(("status" = ?) AND ("status" = ?)) OR ("priority" = ?)',
       [1, 2, 5]
     ]

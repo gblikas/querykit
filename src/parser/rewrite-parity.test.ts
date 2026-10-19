@@ -118,7 +118,11 @@ describe('search box parity with the parser rewrites', () => {
     ['label:in[(]', `"label" IN ('(')`, [2]],
     ['count:!=>5', `NOT ("count" > 5)`, [1, 2, 4]],
     ['count:!=>[1 TO 5]', `NOT (("count" >= 1) AND ("count" <= 5))`, [3]],
-    ['count:!==5', `NOT ("count" = 5)`, [1, 3, 4]],
+    [
+      'count:!==5',
+      `NOT (("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" = 5))`,
+      [1, 3, 4]
+    ],
     ['"label":>=or', `"label" >= 'or'`, [1, 3]],
     ["'label':?", `"label" LIKE '_' ESCAPE '!'`, [1, 2, 4]],
     ['"label":!=\ufeffa', `NOT ("label" = '\ufeffa')`, [1, 2, 3, 4]],
@@ -138,11 +142,19 @@ describe('search box parity with the parser rewrites', () => {
       `NOT (("status" >= 'a') AND ("status" <= 'b'))`,
       [2]
     ],
-    ['(status:a)AND(count:1)', `("status" = 'a') AND ("count" = 1)`, [1]],
-    ['status:a AND(count:1)', `("status" = 'a') AND ("count" = 1)`, [1]],
+    [
+      '(status:a)AND(count:1)',
+      `("status" = 'a') AND (("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" = 1))`,
+      [1]
+    ],
+    [
+      'status:a AND(count:1)',
+      `("status" = 'a') AND (("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" = 1))`,
+      [1]
+    ],
     [
       '(status:a count:1)AND label:x',
-      `(("status" = 'a') AND ("count" = 1)) AND ("label" = 'x')`,
+      `(("status" = 'a') AND (("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" = 1))) AND ("label" = 'x')`,
       [1]
     ]
   ])('keeps %p complete with inline SQL %p', (query, sql, ids) => {

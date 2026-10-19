@@ -301,8 +301,45 @@ export class SqlTranslator
     if (affinity !== null) {
       return affinity;
     }
+    const bareNumber = this.formatBareNumber(field, sqlOperator, value);
+    if (bareNumber !== null) {
+      return bareNumber;
+    }
     const formattedValue = this.formatValue(value);
     return `${field} ${sqlOperator} ${formattedValue}`;
+  }
+
+  /**
+   * Inline equality of a bare number, compared by storage class.
+   *
+   * A TEXT column applies affinity to an integer literal, so `year = 2024`
+   * matches the string `2024`. A bound parameter is a real, and in-memory
+   * equality keeps the number in its own class, so neither matches that
+   * string. Inline SQL does the same: the number equals only integer and
+   * real storage. The leading `IS NULL AND NULL` term keeps a NULL unknown,
+   * so `NOT` of the comparison still matches nothing. Parameterized SQL
+   * keeps binding the number.
+   *
+   * @param field - Quoted identifier
+   * @param sqlOperator - SQL comparison operator
+   * @param value - Query value
+   * @returns The comparison, or null when the value stays a plain literal
+   */
+  private formatBareNumber(
+    field: string,
+    sqlOperator: string,
+    value: unknown
+  ): string | null {
+    if (
+      this.options.useParameters ||
+      typeof value !== 'number' ||
+      (sqlOperator !== '=' && sqlOperator !== '<>')
+    ) {
+      return null;
+    }
+    const literal = this.formatValue(value);
+    const equality = `(${field} IS NULL AND NULL) OR (typeof(${field}) IN ('integer', 'real') AND ${field} = ${literal})`;
+    return sqlOperator === '=' ? equality : `NOT (${equality})`;
   }
 
   /**
