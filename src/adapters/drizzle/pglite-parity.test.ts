@@ -4,22 +4,38 @@
  * Every other parity test in the suite runs SQLite. This one runs the same
  * rows through PGlite and states, cell by cell, what PostgreSQL returns and
  * what the in-memory adapter returns, so the two are never assumed to
- * agree where they do not:
+ * agree where they do not. The in-memory adapter follows SQLite, and the
+ * disagreements are the five groups of the PGlite parity survey:
  *
- * - A boolean literal is bound through the schema column's own mapping,
- *   as `eq(column, true)` binds it: `flag:true` reaches a `boolean()`
- *   column as a boolean parameter, and against a `text()` or `integer()`
- *   column PostgreSQL (or PGlite's parameter serializer) rejects it with
- *   its own message rather than a hard-coded `TRUE` the engine cannot
- *   compare. The in-memory adapter follows SQLite, where a boolean is its
- *   integer, so `flag:1` and `count:true` match rows there.
- * - A quoted numeral against an integer column is read as its number on
- *   both: `count:"2"` matches the row holding 2 and `count:>"1"` compares
- *   numerically, as a typed SQLite column also does by affinity.
- * - `status:op*` is case-sensitive on PostgreSQL and folds ASCII case in
- *   memory, as SQLite's LIKE does, so the `Open` row differs.
- * - PostgreSQL orders NULL last under ASC and first under DESC; the
- *   in-memory adapter orders NULL first under ASC, as SQLite does.
+ * - Case under a wildcard: `status:op*` is case-sensitive on PostgreSQL
+ *   and folds ASCII case in memory, as SQLite's LIKE does, so the `Open`
+ *   row differs.
+ * - NULL in a sort: PostgreSQL orders NULL last under ASC and first under
+ *   DESC; the in-memory adapter orders NULL first under ASC, as SQLite
+ *   does.
+ * - Type strictness: a boolean literal is bound through the schema
+ *   column's own mapping, as `eq(column, true)` binds it, so `flag:true`
+ *   reaches a `boolean()` column as a boolean parameter and against a
+ *   `text()` or `integer()` column PostgreSQL (or PGlite's parameter
+ *   serializer) rejects it with its own message rather than a hard-coded
+ *   `TRUE` the engine cannot compare; a wildcard against an integer or
+ *   timestamp column and a word against an integer column are rejected
+ *   the same way. A row value has no column type in memory, where a
+ *   boolean is its integer as in SQLite, so `flag:1` and `count:true`
+ *   match rows, `count:*` keeps every non-null count and `count:"two"`
+ *   keeps nothing.
+ * - A bare number against a text column: PostgreSQL binds it as text and
+ *   compares it as text, so `label:10` matches `10` and `label:>5` keeps
+ *   `9` and `a`; in memory a number never equals a string and ranks below
+ *   every string, so `label:10` keeps nothing and `label:>5` every string.
+ * - A timestamp literal: PostgreSQL parses `created:"2024-01-01"` as
+ *   midnight, so it matches that instant and `<=` it includes it; in memory
+ *   a `Date` is its ISO-8601 text, so only the exact spelling matches.
+ *
+ * One agreement the survey had flagged on a typeless table is pinned too:
+ * a quoted numeral against an integer column is read as its number on
+ * both, so `count:"2"` matches the row holding 2 and `count:>"1"`
+ * compares numerically, as a typed SQLite column also does by affinity.
  */
 
 // The `WebAssembly` namespace PGlite's options name lives in the DOM lib.
@@ -34,7 +50,8 @@ import {
   integer,
   PgDialect,
   pgTable,
-  text
+  text,
+  timestamp
 } from 'drizzle-orm/pg-core';
 import { InMemoryAdapter } from '../memory';
 import { QueryParser } from '../../parser';
@@ -49,15 +66,24 @@ interface IItemRow {
   status: string | null;
 }
 
+interface IReadingRow {
+  id: number;
+  count: number | null;
+  label: string | null;
+  created: Date | null;
+}
+
 /**
  * One query with the ids PostgreSQL returns, or the message it rejects the
  * query with, and the ids the in-memory adapter returns for the same rows.
+ * The table is `items` unless named.
  */
 interface IParityCase {
   query: string;
   orderBy: Record<string, 'asc' | 'desc'>;
   pglite: number[] | RegExp;
   memory: number[];
+  table?: 'readings';
 }
 
 const items = pgTable('items', {
@@ -68,12 +94,42 @@ const items = pgTable('items', {
   status: text('status')
 });
 
+/** Numeric text and timestamps, for the number-against-text and date cells. */
+const readings = pgTable('readings', {
+  id: integer('id').primaryKey(),
+  count: integer('count'),
+  label: text('label'),
+  created: timestamp('created', { withTimezone: true, mode: 'date' })
+});
+
 const rows: IItemRow[] = [
   { id: 1, flag: true, label: 'true', count: 1, status: 'open' },
   { id: 2, flag: false, label: 'false', count: 2, status: 'closed' },
   { id: 3, flag: null, label: null, count: null, status: null },
   { id: 4, flag: true, label: 'Open', count: 3, status: 'Open' },
   { id: 5, flag: false, label: 'open', count: 0, status: 'opened' }
+];
+
+const readingRows: IReadingRow[] = [
+  {
+    id: 1,
+    count: 1,
+    label: '10',
+    created: new Date('2024-01-01T00:00:00.000Z')
+  },
+  {
+    id: 2,
+    count: 2,
+    label: '9',
+    created: new Date('2024-06-15T12:00:00.000Z')
+  },
+  {
+    id: 3,
+    count: 10,
+    label: 'a',
+    created: new Date('2023-12-31T23:59:59.000Z')
+  },
+  { id: 4, count: null, label: null, created: null }
 ];
 
 const byId: Record<string, 'asc' | 'desc'> = { id: 'asc' };
@@ -110,6 +166,68 @@ const filterCases: IParityCase[] = [
     orderBy: byId,
     pglite: [1, 2],
     memory: [1, 2]
+  }
+];
+
+// Survey groups 3c and 3d (a wildcard or a word against a typed column),
+// 4b (a bare number against a text column) and 5 (a timestamp literal),
+// on the `readings` rows.
+const readingCases: IParityCase[] = [
+  {
+    query: 'count:*',
+    orderBy: byId,
+    pglite: /operator does not exist: integer ~~ text/,
+    memory: [1, 2, 3],
+    table: 'readings'
+  },
+  {
+    query: 'created:"2024-01*"',
+    orderBy: byId,
+    pglite: /operator does not exist: timestamp with time zone ~~ text/,
+    memory: [1],
+    table: 'readings'
+  },
+  {
+    query: 'count:"two"',
+    orderBy: byId,
+    pglite: /invalid input syntax for type integer: "two"/,
+    memory: [],
+    table: 'readings'
+  },
+  {
+    query: 'label:10',
+    orderBy: byId,
+    pglite: [1],
+    memory: [],
+    table: 'readings'
+  },
+  {
+    query: 'label:>5',
+    orderBy: byId,
+    pglite: [2, 3],
+    memory: [1, 2, 3],
+    table: 'readings'
+  },
+  {
+    query: 'created:"2024-01-01"',
+    orderBy: byId,
+    pglite: [1],
+    memory: [],
+    table: 'readings'
+  },
+  {
+    query: 'created:<="2024-01-01"',
+    orderBy: byId,
+    pglite: [1, 3],
+    memory: [3],
+    table: 'readings'
+  },
+  {
+    query: 'created:"2024-01-01T00:00:00.000Z"',
+    orderBy: byId,
+    pglite: [1],
+    memory: [1],
+    table: 'readings'
   }
 ];
 
@@ -219,7 +337,9 @@ const compiledCases: Array<[string, string, unknown[]]> = [
 
 describe('the Drizzle adapter on PGlite beside the in-memory adapter', () => {
   const parser = new QueryParser();
-  const memoryAdapter = new InMemoryAdapter({ records: { items: rows } });
+  const memoryAdapter = new InMemoryAdapter({
+    records: { items: rows, readings: readingRows }
+  });
   let client: PGlite;
   let db: PgliteDatabase;
   let pgliteAdapter: DrizzleAdapter;
@@ -229,9 +349,13 @@ describe('the Drizzle adapter on PGlite beside the in-memory adapter', () => {
     await client.exec(
       'CREATE TABLE items (id integer PRIMARY KEY, flag boolean, label text, count integer, status text)'
     );
+    await client.exec(
+      'CREATE TABLE readings (id integer PRIMARY KEY, count integer, label text, created timestamptz)'
+    );
     db = drizzle(client);
     await db.insert(items).values(rows);
-    pgliteAdapter = new DrizzleAdapter({ db, schema: { items } });
+    await db.insert(readings).values(readingRows);
+    pgliteAdapter = new DrizzleAdapter({ db, schema: { items, readings } });
   });
 
   afterAll(async (): Promise<void> => {
@@ -243,9 +367,11 @@ describe('the Drizzle adapter on PGlite beside the in-memory adapter', () => {
     parityCase: IParityCase
   ): Promise<number[]> {
     const expression = parser.parse(parityCase.query);
-    const result = await adapter.execute<IItemRow>('items', expression, {
-      orderBy: parityCase.orderBy
-    });
+    const result = await adapter.execute<{ id: number }>(
+      parityCase.table ?? 'items',
+      expression,
+      { orderBy: parityCase.orderBy }
+    );
     return result.map(row => row.id);
   }
 
@@ -253,11 +379,13 @@ describe('the Drizzle adapter on PGlite beside the in-memory adapter', () => {
     const keys = Object.entries(parityCase.orderBy)
       .map(([field, direction]) => `${field} ${direction}`)
       .join(', ');
-    return `${parityCase.query} ordered by ${keys}`;
+    const table = parityCase.table ? ` on ${parityCase.table}` : '';
+    return `${parityCase.query}${table} ordered by ${keys}`;
   }
 
   describe.each([
     ['filters', filterCases],
+    ['readings', readingCases],
     ['ordering', orderCases]
   ])('%s', (_group, cases) => {
     const titledCases: Array<[string, IParityCase]> = cases.map(parityCase => [
