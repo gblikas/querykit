@@ -1127,13 +1127,20 @@ export function readRangeBounds(
   return splitRangeBounds(span.body);
 }
 
+const bracketSpans = new WeakMap<
+  readonly boolean[],
+  { text: string; spans: IBracketExpressionSpan[] }
+>();
+
 /**
  * Call `visit` for every bracket expression in `input` that the parser's
  * rewrite would consume, skipping literals and the spans themselves. With
  * `isCode` from a query text map, a span whose opener the map places
  * inside a literal is skipped too: Liqe reads the rewritten text, and a
  * regex it reads there swallows what the rewrite wrote (`x://T:[//]` is
- * one regex).
+ * one regex). The spans last read with a map's `isCode` are kept for the
+ * next call with the same map and text, since the completeness checks
+ * walk the same text many times.
  *
  * @param input Query text
  * @param visit Receives each span; return true to stop and report it
@@ -1145,13 +1152,28 @@ export function someBracketExpression(
   visit: (span: IBracketExpressionSpan) => boolean,
   isCode?: readonly boolean[]
 ): boolean {
+  if (!isCode) {
+    return readBracketExpressions(input).some(visit);
+  }
+  const cached = bracketSpans.get(isCode);
+  const spans =
+    cached && cached.text === input
+      ? cached.spans
+      : readBracketExpressions(input, isCode);
+  bracketSpans.set(isCode, { text: input, spans });
+  return spans.some(visit);
+}
+
+function readBracketExpressions(
+  input: string,
+  isCode?: readonly boolean[]
+): IBracketExpressionSpan[] {
+  const spans: IBracketExpressionSpan[] = [];
   let index = 0;
   while (index < input.length) {
     const span = readBracketExpression(input, index);
     if (span && (!isCode || isCode[span.bodyStart - 1] !== false)) {
-      if (visit(span)) {
-        return true;
-      }
+      spans.push(span);
       index = span.end;
       continue;
     }
@@ -1162,59 +1184,7 @@ export function someBracketExpression(
     const literal = readLiteralAt(input, index);
     index = literal.kind === 'none' ? index + 1 : literal.end;
   }
-  return false;
-}
-
-/**
- * Whether a range in `input` has an unquoted `null` bound, which the
- * parser's rewrite leaves for Liqe to reject.
- *
- * @param input Query text
- * @param isCode Which indexes are syntax in the final reading of `input`
- * @returns True when such a range is written
- */
-export function hasNullRangeEndpoint(
-  input: string,
-  isCode?: readonly boolean[]
-): boolean {
-  return someBracketExpression(
-    input,
-    span => {
-      const bounds = readRangeBounds(span);
-      return (
-        bounds !== null &&
-        (isRejectedNullRangeBound(bounds.min) ||
-          isRejectedNullRangeBound(bounds.max))
-      );
-    },
-    isCode
-  );
-}
-
-/**
- * Whether a range in `input` has an unquoted `true` or `false` bound, which
- * the parser's rewrite leaves for Liqe to reject.
- *
- * @param input Query text
- * @param isCode Which indexes are syntax in the final reading of `input`
- * @returns True when such a range is written
- */
-export function hasBooleanRangeEndpoint(
-  input: string,
-  isCode?: readonly boolean[]
-): boolean {
-  return someBracketExpression(
-    input,
-    span => {
-      const bounds = readRangeBounds(span);
-      return (
-        bounds !== null &&
-        (isBooleanRangeEndpoint(bounds.min) ||
-          isBooleanRangeEndpoint(bounds.max))
-      );
-    },
-    isCode
-  );
+  return spans;
 }
 
 /**
