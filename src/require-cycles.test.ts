@@ -1,11 +1,11 @@
 /**
- * No module of `src/parser` is in a require cycle.
+ * No module of `src` is in a require cycle.
  *
  * Under CommonJS a cycle is inert while every cross-module use sits inside
  * a function body, and breaks the moment a top-level statement reads the
  * other module's export before that module has finished running; nothing
  * else flags the change, since `eslint-plugin-import` is not a dependency.
- * So each module of this directory is loaded alone into a fresh module
+ * So each non-test module under `src` is loaded alone into a fresh module
  * registry, the source modules the registry then holds are its transitive
  * requires, and two modules that each hold the other are a cycle. The
  * graph is the one that runs: a type-only import is erased before a module
@@ -17,15 +17,30 @@
 import { readdirSync } from 'fs';
 import path from 'path';
 
-const PARSER_DIRECTORY = __dirname;
-const SOURCE_DIRECTORY = path.resolve(__dirname, '..');
+const SOURCE_DIRECTORY = __dirname;
 
-/** The modules of `src/parser` that are not tests, as absolute paths. */
-function listParserModules(): string[] {
-  return readdirSync(PARSER_DIRECTORY)
-    .filter(name => name.endsWith('.ts') && !name.endsWith('.test.ts'))
-    .map(name => path.join(PARSER_DIRECTORY, name))
-    .sort();
+/** Whether a file name is a module of the package, not a test or a `.d.ts`. */
+function isModuleName(name: string): boolean {
+  return (
+    name.endsWith('.ts') &&
+    !name.endsWith('.test.ts') &&
+    !name.endsWith('.spec.ts') &&
+    !name.endsWith('.d.ts')
+  );
+}
+
+/** The non-test modules under `directory`, as absolute paths. */
+function listSourceModules(directory: string): string[] {
+  const found: string[] = [];
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const entryPath = path.join(directory, entry.name);
+    if (entry.isDirectory() && entry.name !== '__tests__') {
+      found.push(...listSourceModules(entryPath));
+    } else if (entry.isFile() && isModuleName(entry.name)) {
+      found.push(entryPath);
+    }
+  }
+  return found.sort();
 }
 
 /** Whether `modulePath` is a module of this package's `src`. */
@@ -62,17 +77,17 @@ function nameOf(modulePath: string): string {
   return path.relative(SOURCE_DIRECTORY, modulePath);
 }
 
-describe('the parser modules', () => {
-  const parserModules = listParserModules().map(modulePath => [
+describe('the source modules', () => {
+  const sourceModules = listSourceModules(SOURCE_DIRECTORY).map(modulePath => [
     nameOf(modulePath),
     modulePath
   ]);
 
-  it('are found', () => {
-    expect(parserModules.length).toBeGreaterThan(0);
+  it('are found, the root barrel among them', () => {
+    expect(sourceModules.map(([name]) => name)).toContain('index.ts');
   });
 
-  it.each(parserModules)(
+  it.each(sourceModules)(
     '%s is in no require cycle',
     (_name: string, modulePath: string) => {
       const required = requiresOfModule(modulePath);

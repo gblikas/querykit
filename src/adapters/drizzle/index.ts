@@ -17,7 +17,7 @@ import { QuerySecurityError } from '../../security/validator';
 import { IAdapter, IAdapterOptions, IQueryExecutionOptions } from '../types';
 import { QueryExpression } from '../../parser/types';
 import { SQL, SQLWrapper, asc, desc, sql } from 'drizzle-orm';
-import { createQueryKit, QueryKit } from '../../index';
+import { createQueryKit, QueryKit } from '../../query-kit';
 import { IQueryContext } from '../../virtual-fields';
 /**
  * Type for Drizzle ORM database instance
