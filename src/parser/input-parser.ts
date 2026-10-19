@@ -625,7 +625,8 @@ export function findTrailingLogicalOperator(
  * - a tail glued to a closed quote or regex (`status:"a"b`, `status:/a/ib`)
  *   or to a bracket closer, unless Liqe reads the rewrite's one unquoted
  *   member or numeric bound joined to it (`status:[a]b` is `status:ab`,
- *   `status:[1]x` is not a value, `status:[a, b]x` glues a `)`), a quote or
+ *   `status:[1].5` is `status:1.5`, `status:[1]x` and `status:[1].` are
+ *   neither a value nor Liqe's decimal, `status:[a, b]x` glues a `)`), a quote or
  *   regex glued to the text before it (`NOT"a"`, `status:[a]/b/`), a field
  *   name that starts with a digit, and an unquoted value that is not
  *   Liqe's value or number (`a%b`, `-x`, `a=b`, `1x`, `a"b"`) or is exactly
@@ -2040,6 +2041,10 @@ function spellWrittenValue(written: string): string {
  * Whether Liqe rejects the value it reads when `tail` is glued to the
  * unquoted `written` text: a regex must still be one closed literal with
  * only flags after it, and any other word must be Liqe's value or decimal.
+ * The parser spells numerals before its bracket rewrite, so the joined
+ * text reaches Liqe as written: `status:[1].5` is `status:1.5`, while
+ * `status:[1].` and `status:[1]e5` are not Liqe's decimal. A bracket at
+ * the start is left to the stray-bracket check.
  */
 function isRejectedJoinedValue(written: string, tail: string): boolean {
   const joined = written + tail;
@@ -2047,7 +2052,16 @@ function isRejectedJoinedValue(written: string, tail: string): boolean {
     const literal = readLiteralAt(joined, 0);
     return !(literal.closed && literal.end === joined.length);
   }
-  return /^["']/.test(joined) || isRejectedValueWord(joined);
+  if (/^["']/.test(joined)) {
+    return true;
+  }
+  if (/^[[{]/.test(joined)) {
+    return false;
+  }
+  return (
+    LIQE_KEYWORD_VALUE.test(joined) ||
+    !(LIQE_UNQUOTED_VALUE.test(joined) || LIQE_DECIMAL.test(joined))
+  );
 }
 
 /**
