@@ -10,11 +10,8 @@
 
 import { filterInMemory } from '../adapters/memory';
 import { SqlTranslator } from '../translators/sql';
-import {
-  findTrailingLogicalOperator,
-  isInputComplete,
-  parseQueryInput
-} from './input-parser';
+import { isInputComplete } from './input-parser';
+import { findTrailingLogicalOperator, parseQueryInput } from './tokenizer';
 import { QueryParseError, QueryParser } from './parser';
 
 const rows = [

@@ -9,7 +9,8 @@
 
 import { filterInMemory } from '../adapters/memory';
 import { SqlTranslator } from '../translators/sql';
-import { isInputComplete, parseQueryInput } from './input-parser';
+import { isInputComplete } from './input-parser';
+import { parseQueryInput } from './tokenizer';
 import { QueryParseError, QueryParser } from './parser';
 
 const rows = [

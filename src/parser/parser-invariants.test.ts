@@ -4,7 +4,8 @@
  */
 
 import { QueryParser, QueryParseError } from './parser';
-import { isInputComplete, parseQueryInput } from './input-parser';
+import { isInputComplete } from './input-parser';
+import { parseQueryInput } from './tokenizer';
 import {
   IComparisonExpression,
   ILogicalExpression,

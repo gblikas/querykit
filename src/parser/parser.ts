@@ -39,7 +39,7 @@ import {
   findTrailingLogicalOperator,
   parseQueryTokens,
   QueryToken
-} from './input-parser';
+} from './tokenizer';
 import {
   parseVerdictKey,
   readParseVerdict,

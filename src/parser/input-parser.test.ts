@@ -1,11 +1,11 @@
 import { QuerySecurityError } from '../security/validator';
+import { isInputComplete } from './input-parser';
 import {
   parseQueryInput,
   getTermAtPosition,
-  isInputComplete,
   extractKeyValue,
   parseQueryTokens
-} from './input-parser';
+} from './tokenizer';
 import { QueryParser } from './parser';
 
 describe('Input Parser', () => {
