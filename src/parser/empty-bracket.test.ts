@@ -10,7 +10,6 @@
 
 import { filterInMemory } from '../adapters/memory';
 import { SqlTranslator } from '../translators/sql';
-import { hasRejectedBracketExpression } from './query-scanner';
 import { isInputComplete } from './input-parser';
 import { QueryParseError, QueryParser } from './parser';
 
@@ -65,17 +64,6 @@ describe('empty bracket', () => {
     expect(context.structure.isComplete).toBe(false);
     expect(context.success).toBe(false);
     expect(context.recovery?.autofix).toBeUndefined();
-  });
-
-  it.each([
-    ['status:[null TO 3]', true],
-    ['status:[1 TO true]', true],
-    ['status:[* TO *]', true],
-    ['status:[a TO ]', true],
-    ['status:[a TO b]', false],
-    ['status:in[a, b]', false]
-  ])('hasRejectedBracketExpression(%p) is %p', (query, expected) => {
-    expect(hasRejectedBracketExpression(query)).toBe(expected);
   });
 
   it.each([

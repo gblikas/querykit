@@ -32,7 +32,6 @@ import { DrizzleTranslator } from '../translators/drizzle';
 import { SqlTranslator } from '../translators/sql';
 import { isInputComplete } from './input-parser';
 import { QueryParseError, QueryParser } from './parser';
-import { hasQuotedMemberTail, readBracketExpression } from './query-scanner';
 import { QueryExpression } from './types';
 
 const nodeRequire = createRequire(__filename);
@@ -250,33 +249,6 @@ describe('quoted member tail', () => {
       new SqlTranslator({ useParameters: false }).translate(expression)
     ).toBe(sql);
     expect(engineIds(expression, query)).toEqual([ids, ids, ids, ids, ids]);
-  });
-
-  it.each([
-    ['status:["a" OR status:"c"]', true],
-    ["status:['a' OR status:'c']", true],
-    ['status:["a" "b"]', true],
-    ['status:["a"b"c"]', true],
-    ['status:[x, "a" OR status:"c"]', true],
-    ['status:["a" OR status:"c" TO d]', true],
-    ['status:[x TO "a" OR status:"c"]', true],
-    ['status:["a" OR status:"c" TO *]', true],
-    ['status:["a b"]', false],
-    ['status:["a\\"b"]', false],
-    ['status:["a", "c"]', false],
-    ['status:["a" TO "c"]', false],
-    ['status:["a" b]', false],
-    ['status:["a"b]', false],
-    ['status:[\'a\' OR status:"c"]', false],
-    ['status:["a" OR x TO d]', false],
-    ['status:[a TO b]', false],
-    ['status:in ["a" "b"]', false]
-  ])('reads the quoted member tail of %p as %p', (query, expected) => {
-    const span = readBracketExpression(query, 0);
-    expect(span).not.toBeNull();
-    expect(hasQuotedMemberTail(span as NonNullable<typeof span>)).toBe(
-      expected
-    );
   });
 
   it('keeps the OR a comma list writes, not the one a member smuggles', () => {

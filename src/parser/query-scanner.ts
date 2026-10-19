@@ -55,42 +55,6 @@ interface IQueryTextSegment {
 }
 
 /**
- * One literal found while mapping query text.
- */
-export interface ILiteralAt {
-  start: number;
-  end: number;
-  kind: 'string' | 'regex';
-  closed: boolean;
-}
-
-/**
- * Which characters of a query are syntax, how deeply each sits inside
- * `[`/`{` brackets, and where its literals are. Completeness checks walk
- * this map instead of re-reading literals.
- */
-export interface IQueryTextMap {
-  /**
-   * True at an index that is syntax rather than part of a literal.
-   */
-  isCode: boolean[];
-  /**
-   * Number of `[` or `{` still open before the character at each index, so
-   * an opener itself sits at the depth outside it.
-   */
-  depth: number[];
-  /**
-   * Every literal, in order.
-   */
-  literals: ILiteralAt[];
-  /**
-   * The text whose Liqe reading gave the regex spans: the query itself, or
-   * a text of the same length that stands in for the parser's rewrite.
-   */
-  liqeText: string;
-}
-
-/**
  * How Liqe reads a text: its AST when the text has exactly one parse,
  * whether the failure was `Ambiguous results.`, and the regex spans of the
  * unique parse, filled in on first use.
@@ -106,9 +70,9 @@ const liqeReadings = new Map<string, ILiqeReading>();
 
 /**
  * Parse `input` with Liqe, remembering the outcome. The parser's own
- * preprocessing and the completeness checks read the same few texts many
- * times, once per index, so the cache keeps the Earley parse to one run per
- * text. Nothing in the result is executed; a regex stays its source text.
+ * preprocessing reads the same few texts many times, once per index, so
+ * the cache keeps the Earley parse to one run per text. Nothing in the
+ * result is executed; a regex stays its source text.
  *
  * @param input Text as Liqe would receive it
  * @returns The unique AST, or null with `isAmbiguous` set when Liqe found two parses
@@ -157,8 +121,7 @@ export function isLiqeWhitespace(char: string | undefined): boolean {
  * Uppercase `and`, `or` and `not` where they stand as operator words:
  * bounded by the start or end of the text, whitespace or a parenthesis, and
  * outside every literal. Liqe only recognizes the uppercase words. This is
- * the parser's normalization, shared so the search box reads the text the
- * parser hands to Liqe.
+ * the parser's normalization.
  *
  * @param input Query text
  * @returns The text with operator words uppercased
@@ -184,101 +147,14 @@ export function uppercaseBooleanOperators(input: string): string {
  * @returns The literal span, or `{ kind: 'none', end: start }` when `start` is syntax
  */
 export function readLiteralAt(input: string, start: number): ILiteralSpan {
-  return readLiteralIn(input, start, input);
-}
-
-/**
- * Read the literal at `start` of `input`, taking regex spans from Liqe's
- * reading of `liqeText`, a text of the same length.
- */
-function readLiteralIn(
-  input: string,
-  start: number,
-  liqeText: string
-): ILiteralSpan {
   const quote = input[start];
   if (quote === '"' || quote === "'") {
     return readStringLiteral(input, start, quote);
   }
   if (quote === '/') {
-    return readRegexLiteral(input, start, liqeText);
+    return readRegexLiteral(input, start);
   }
   return { kind: 'none', end: start, closed: true };
-}
-
-const TEXT_MAP_CACHE_LIMIT = 4;
-const textMaps = new Map<string, IQueryTextMap>();
-
-/**
- * Map which characters of `input` are syntax, their bracket depth, and the
- * literals. The last few maps are kept, since every completeness check
- * walks the same text. When `liqeText` is given, a text of the same length
- * that stands in for the parser's rewritten query, its Liqe reading
- * supplies the regex spans, so a regex is read as the parser's Liqe reads
- * it where Liqe cannot read the typed text itself.
- *
- * @param input Query text
- * @param liqeText Same-length text to read regex spans from
- * @returns The map
- */
-export function mapQueryText(
-  input: string,
-  liqeText: string = input
-): IQueryTextMap {
-  const key = `${input}\u0000${liqeText}`;
-  const cached = textMaps.get(key);
-  if (cached) {
-    return cached;
-  }
-  const isCode: boolean[] = new Array<boolean>(input.length).fill(true);
-  const depth: number[] = new Array<number>(input.length).fill(0);
-  const literals: ILiteralAt[] = [];
-  let index = 0;
-  let open = 0;
-  while (index < input.length) {
-    const literal = readLiteralIn(input, index, liqeText);
-    if (literal.kind !== 'none') {
-      literals.push({
-        start: index,
-        end: literal.end,
-        kind: literal.kind,
-        closed: literal.closed
-      });
-      for (let inside = index; inside < literal.end; inside += 1) {
-        isCode[inside] = false;
-        depth[inside] = open;
-      }
-      index = literal.end;
-      continue;
-    }
-    depth[index] = open;
-    open = nextBracketDepth(open, input[index] ?? '');
-    index += 1;
-  }
-  if (textMaps.size >= TEXT_MAP_CACHE_LIMIT) {
-    textMaps.clear();
-  }
-  const map = { isCode, depth, literals, liqeText };
-  textMaps.set(key, map);
-  return map;
-}
-
-/**
- * The bracket depth after reading `char` at `depth`. Only `[` and `{` open
- * and `]` and `}` close; a stray closer never goes below zero.
- *
- * @param depth Depth before the character
- * @param char The character
- * @returns Depth after it
- */
-export function nextBracketDepth(depth: number, char: string): number {
-  if (char === '[' || char === '{') {
-    return depth + 1;
-  }
-  if (char === ']' || char === '}') {
-    return Math.max(0, depth - 1);
-  }
-  return depth;
 }
 
 /**
@@ -545,43 +421,6 @@ export function isRejectedBracketBody(span: IBracketExpressionSpan): boolean {
 }
 
 /**
- * Whether a bracket expression in `input` is one the parser's rewrite does
- * not consume whole: an unclosed opener, a membership list with the wrong
- * closer, or a body `isRejectedBracketBody` names.
- *
- * @param input Query text
- * @param isCode Which indexes are syntax in the final reading of `input`
- * @returns True when such an expression is written
- */
-export function hasRejectedBracketExpression(
-  input: string,
-  isCode?: readonly boolean[]
-): boolean {
-  return someBracketExpression(
-    input,
-    span => span.kind === 'rejected' || isRejectedBracketBody(span),
-    isCode
-  );
-}
-
-/**
- * Whether a span's body is rewritten member by member: a comma list with
- * either opener, or a `[...]` body with no range separator.
- *
- * @param span A bracket span
- * @returns True for a list body
- */
-export function isListBody(span: IBracketExpressionSpan): boolean {
-  if (span.kind !== 'bracket' || span.body.trim().length === 0) {
-    return false;
-  }
-  if (hasCodeComma(span.body)) {
-    return true;
-  }
-  return span.opener === '[' && splitRangeBounds(span.body) === null;
-}
-
-/**
  * Whether a token begins and ends with the same quote, which the rewrite
  * copies as written.
  *
@@ -603,126 +442,10 @@ export function isQuotedToken(token: string): boolean {
 export const QUOTED_MEMBER_CHARACTERS = /\s|[():]/;
 
 /**
- * Whether the rewrite writes a list member back unquoted: it is not a quoted
- * token and holds no whitespace, parenthesis or colon, so Liqe reads it as
- * typed.
- *
- * @param member A list member, trimmed
- * @returns True when the member reaches Liqe unquoted
- */
-export function writesBackUnquoted(member: string): boolean {
-  return !isQuotedToken(member) && !QUOTED_MEMBER_CHARACTERS.test(member);
-}
-
-/**
- * Whether a list in `input` has a member the rewrite writes back unquoted
- * that `isRejectedMember` refuses. Membership lists and ranges are not
- * lists here; their members are quoted or decoded by the parser.
- *
- * @param input Query text
- * @param isRejectedMember Decides one unquoted member
- * @param isCode Which indexes are syntax in the final reading of `input`
- * @returns True when such a member is written
- *
- * @example
- * ```typescript
- * hasRejectedListMember('status:[x, AND]', member => member === 'AND'); // true
- * ```
- */
-export function hasRejectedListMember(
-  input: string,
-  isRejectedMember: (member: string) => boolean,
-  isCode?: readonly boolean[]
-): boolean {
-  return someBracketExpression(
-    input,
-    span =>
-      isListBody(span) &&
-      splitListMembers(span.body).some(
-        member => writesBackUnquoted(member) && isRejectedMember(member)
-      ),
-    isCode
-  );
-}
-
-/**
- * Whether a bracket member or bound is copied as written with a tail glued
- * to its literal: an unquoted list member that begins with a quote or regex
- * but does not end with that literal; a range bound the rewrite treats as
- * quoted that is not one closed literal; or a quoted membership member that
- * is not one closed literal, which the membership decode refuses.
- *
- * @param input Query text
- * @param isCode Which indexes are syntax in the final reading of `input`
- * @returns True when such a member is written
- */
-export function hasCopiedBracketMember(
-  input: string,
-  isCode?: readonly boolean[]
-): boolean {
-  return someBracketExpression(input, isCopiedBracketMember, isCode);
-}
-
-/**
- * Whether one bracket span has a member or bound `hasCopiedBracketMember`
- * describes.
- *
- * @param span A bracket span
- * @returns True when such a member is written in the span
- */
-export function isCopiedBracketMember(span: IBracketExpressionSpan): boolean {
-  if (span.kind === 'membership') {
-    return splitListMembers(span.body).some(hasQuotedTail);
-  }
-  return (
-    hasQuotedMemberTail(span) ||
-    (isListBody(span) &&
-      splitListMembers(span.body).some(
-        member =>
-          writesBackUnquoted(member) &&
-          /^["'/]/.test(member) &&
-          !isOneClosedLiteral(member)
-      ))
-  );
-}
-
-/**
- * Whether a list member or range bound the rewrite copies as written
- * because it begins and ends with the same quote is not one closed literal,
- * so Liqe would read the text after its first literal as more query: a
- * second clause or operator smuggled through the member
- * (`status:["a" OR status:"c"]` reaches Liqe as `status:"a" OR
- * status:"c"`), an implicit-field term (`status:["a" "b"]`), or a glued
- * quote (`status:["a"b"c"]`). The search box marks such a span incomplete;
- * the parser rejects it once Liqe has read the member's first literal
- * (`QueryParser.assertQuotedTailsUnread`), unless a regex Liqe reads from
- * the text before it swallows the member, as this check's caller skips a
- * span inside a literal. A membership member never reaches Liqe; the
- * parser's quoted decode refuses it instead.
- *
- * @param span A bracket span
- * @returns True when such a member or bound is written
- *
- * @example
- * ```typescript
- * hasQuotedMemberTail(readBracketExpression('status:["a" OR status:"c"]', 0)!); // true
- * hasQuotedMemberTail(readBracketExpression('status:["a b"]', 0)!); // false
- * ```
- */
-export function hasQuotedMemberTail(span: IBracketExpressionSpan): boolean {
-  if (isListBody(span)) {
-    return splitListMembers(span.body).some(hasQuotedTail);
-  }
-  const bounds = readRangeBounds(span);
-  return bounds !== null && [bounds.min, bounds.max].some(hasQuotedTail);
-}
-
-/**
  * Whether one list member or range bound is a quoted token the rewrite
  * copies as written that is not one closed literal (`"a" OR status:"c"`,
- * `"a" "b"`, `"a"b"c"`), the member `hasQuotedMemberTail` looks for. The
- * bracket rewrite records where it copies such a member so the parser can
- * tell whether Liqe read its first literal.
+ * `"a" "b"`, `"a"b"c"`). The bracket rewrite records where it copies such
+ * a member so the parser can tell whether Liqe read its first literal.
  *
  * @param token A list member or range bound, trimmed
  * @returns True for a quoted token with text after its first literal
@@ -736,212 +459,6 @@ function isOneClosedLiteral(token: string): boolean {
   return (
     literal.kind !== 'none' && literal.closed && literal.end === token.length
   );
-}
-
-/**
- * The decimals Liqe reads and the spellings the parser turns into one.
- */
-const SPELLED_DECIMAL = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/;
-
-/**
- * A bound the range rewrite writes back as a number instead of quoting.
- */
-const PLAIN_DECIMAL = /^-?\d+(?:\.\d+)?$/;
-
-/**
- * Liqe's ordered operators after the colon, longest first.
- */
-const ORDERED_OPERATOR = /^(?:>=|<=|>|<|=)/;
-
-/**
- * The comparison operator the parser reads at the colon at `colonIndex`:
- * `:`, `:=`, `:>`, `:>=`, `:<`, `:<=` or `:!=`. The parser rewrites
- * `field:!=` to `NOT field:` and hands Liqe whatever follows, so an ordered
- * operator after `:!=` is part of the operator too: `count:!=>5` is
- * `NOT count:>5`.
- *
- * @param input Query text
- * @param colonIndex Index of a colon
- * @returns The operator text, or null when no colon is at `colonIndex`
- *
- * @example
- * ```typescript
- * readComparisonOperator('count:!=>=5', 5); // ':!=>='
- * ```
- */
-export function readComparisonOperator(
-  input: string,
-  colonIndex: number
-): string | null {
-  if (input[colonIndex] !== ':') {
-    return null;
-  }
-  const isNotEquals = input.startsWith('!=', colonIndex + 1);
-  const prefix = isNotEquals ? ':!=' : ':';
-  const ordered = ORDERED_OPERATOR.exec(
-    input.slice(colonIndex + prefix.length)
-  );
-  return prefix + (ordered ? ordered[0] : '');
-}
-
-/**
- * Whether the rewrite turns a consumed bracket span into a parenthesized
- * group: a list of two or more members, or a range with two bounds. The
- * group then stands where the span stood, so Liqe reads a `)` there.
- *
- * @param span A bracket span
- * @returns True when the rewrite emits `(...)` for the span
- *
- * @example
- * ```typescript
- * emitsGroup(readBracketExpression('status:[a, b]', 0)!); // true
- * emitsGroup(readBracketExpression('status:[a]', 0)!); // false
- * ```
- */
-export function emitsGroup(span: IBracketExpressionSpan): boolean {
-  if (span.kind !== 'bracket' || isRejectedBracketBody(span)) {
-    return false;
-  }
-  if (isListBody(span)) {
-    return splitListMembers(span.body).length >= 2;
-  }
-  const bounds = readRangeBounds(span);
-  return bounds !== null && bounds.min !== '*' && bounds.max !== '*';
-}
-
-/**
- * The unquoted text a consumed bracket span writes after its field and
- * operator: the one member of a list the rewrite writes back as typed, or
- * the numeric bound of a one-sided range. Null when the rewrite emits a
- * group, quotes the value, or leaves the span to Liqe.
- *
- * @param span A bracket span
- * @returns The text Liqe reads as the value, or null
- *
- * @example
- * ```typescript
- * readUnquotedRewrite(readBracketExpression('status:[a]', 0)!); // 'a'
- * readUnquotedRewrite(readBracketExpression('count:[1 TO *]', 0)!); // '1'
- * readUnquotedRewrite(readBracketExpression('status:["a"]', 0)!); // null
- * ```
- */
-export function readUnquotedRewrite(
-  span: IBracketExpressionSpan
-): string | null {
-  if (
-    span.kind !== 'bracket' ||
-    isRejectedBracketBody(span) ||
-    emitsGroup(span)
-  ) {
-    return null;
-  }
-  if (isListBody(span)) {
-    const member = splitListMembers(span.body)[0];
-    return member !== undefined && writesBackUnquoted(member) ? member : null;
-  }
-  const bounds = readRangeBounds(span);
-  if (bounds === null) {
-    return null;
-  }
-  const bound = bounds.min === '*' ? bounds.max : bounds.min;
-  return PLAIN_DECIMAL.test(bound) ? bound : null;
-}
-
-/**
- * Whether a `[`, `]`, `{` or `}` in `input` reaches Liqe where Liqe does not
- * read one: outside the bracket expressions the rewrite consumes and
- * outside Liqe's own `field:>[decimal TO decimal]` range, or inside a list
- * member written back unquoted. Brackets in literals, in ranges (whose
- * bounds are quoted) and in membership lists (whose members are decoded)
- * are values.
- *
- * @param input Query text
- * @param isCode Which indexes are syntax in the final reading of `input`
- * @returns True when a bracket is stray
- */
-export function hasStrayBracket(
-  input: string,
-  isCode: readonly boolean[] = mapQueryText(input).isCode
-): boolean {
-  const isConsumed = new Array<boolean>(input.length).fill(false);
-  const holdsBracket = someBracketExpression(
-    input,
-    span => {
-      isConsumed.fill(true, span.start, span.end);
-      return isListBody(span) && listMemberHoldsBracket(span);
-    },
-    isCode
-  );
-  if (holdsBracket) {
-    return true;
-  }
-  let index = 0;
-  while (index < input.length) {
-    const rangeEnd = readLiqeRangeEnd(input, index);
-    if (
-      rangeEnd !== null &&
-      !isConsumed[index] &&
-      isCode[rangeEnd - 1] !== false
-    ) {
-      index = rangeEnd;
-      continue;
-    }
-    if (
-      !isConsumed[index] &&
-      isCode[index] !== false &&
-      /[[\]{}]/.test(input[index] ?? '')
-    ) {
-      return true;
-    }
-    index += 1;
-  }
-  return false;
-}
-
-function listMemberHoldsBracket(span: IBracketExpressionSpan): boolean {
-  return splitListMembers(span.body).some(
-    member =>
-      writesBackUnquoted(member) &&
-      segmentQueryText(member).some(
-        segment => segment.kind === 'code' && /[[\]{}]/.test(segment.text)
-      )
-  );
-}
-
-/**
- * The end of Liqe's own range at `index`: a field no name character
- * precedes, a colon, an ordered operator (after `:!=` as well, since the
- * parser rewrites that to `NOT field:` first), and `[decimal TO decimal]`
- * or the `{...}` form with exactly one space on each side of `TO`.
- */
-function readLiqeRangeEnd(input: string, index: number): number | null {
-  if (followsNameCharacter(input, index)) {
-    return null;
-  }
-  const field = readFieldToken(input, index);
-  if (!field) {
-    return null;
-  }
-  const operator = readComparisonOperator(input, field.end);
-  if (operator === null || operator === ':' || operator === ':!=') {
-    return null;
-  }
-  const openerIndex = field.end + operator.length;
-  if (!/[[{]/.test(input[openerIndex] ?? '')) {
-    return null;
-  }
-  const closeIndex = readBracketEnd(input, openerIndex);
-  if (closeIndex === null) {
-    return null;
-  }
-  const bounds = input.slice(openerIndex + 1, closeIndex).split(' TO ');
-  if (
-    bounds.length !== 2 ||
-    !bounds.every(bound => SPELLED_DECIMAL.test(bound))
-  ) {
-    return null;
-  }
-  return closeIndex + 1;
 }
 
 /**
@@ -1053,66 +570,6 @@ export function readRangeBounds(
   return splitRangeBounds(span.body);
 }
 
-const bracketSpans = new WeakMap<
-  readonly boolean[],
-  { text: string; spans: IBracketExpressionSpan[] }
->();
-
-/**
- * Call `visit` for every bracket expression in `input` that the parser's
- * rewrite would consume, skipping literals and the spans themselves. With
- * `isCode` from a query text map, a span whose opener the map places
- * inside a literal is skipped too: Liqe reads the rewritten text, and a
- * regex it reads there swallows what the rewrite wrote (`x://T:[//]` is
- * one regex). The spans last read with a map's `isCode` are kept for the
- * next call with the same map and text, since the completeness checks
- * walk the same text many times.
- *
- * @param input Query text
- * @param visit Receives each span; return true to stop and report it
- * @param isCode Which indexes are syntax in the final reading of `input`
- * @returns True when `visit` returned true for a span
- */
-export function someBracketExpression(
-  input: string,
-  visit: (span: IBracketExpressionSpan) => boolean,
-  isCode?: readonly boolean[]
-): boolean {
-  if (!isCode) {
-    return readBracketExpressions(input).some(visit);
-  }
-  const cached = bracketSpans.get(isCode);
-  const spans =
-    cached && cached.text === input
-      ? cached.spans
-      : readBracketExpressions(input, isCode);
-  bracketSpans.set(isCode, { text: input, spans });
-  return spans.some(visit);
-}
-
-function readBracketExpressions(
-  input: string,
-  isCode?: readonly boolean[]
-): IBracketExpressionSpan[] {
-  const spans: IBracketExpressionSpan[] = [];
-  let index = 0;
-  while (index < input.length) {
-    const span = readBracketExpression(input, index);
-    if (span && (!isCode || isCode[span.bodyStart - 1] !== false)) {
-      spans.push(span);
-      index = span.end;
-      continue;
-    }
-    if (isCode && isCode[index] === false) {
-      index += 1;
-      continue;
-    }
-    const literal = readLiteralAt(input, index);
-    index = literal.kind === 'none' ? index + 1 : literal.end;
-  }
-  return spans;
-}
-
 /**
  * The parser's membership operator, read just after the field's colon.
  */
@@ -1169,12 +626,8 @@ function readStringLiteral(
   return { kind: 'string', end: input.length, closed: false };
 }
 
-function readRegexLiteral(
-  input: string,
-  start: number,
-  liqeText: string
-): ILiteralSpan {
-  const liqeEnd = liqeRegexSpans(liqeText)?.get(start);
+function readRegexLiteral(input: string, start: number): ILiteralSpan {
+  const liqeEnd = liqeRegexSpans(input)?.get(start);
   if (liqeEnd !== undefined) {
     return { kind: 'regex', end: liqeEnd, closed: true };
   }
@@ -1183,13 +636,10 @@ function readRegexLiteral(
 
 /**
  * The regex spans of Liqe's unique parse of `input`, keyed by start index,
- * or null when Liqe rejects the text or reads it two ways. Only a text that
- * holds a slash is parsed.
+ * or null when Liqe rejects the text or reads it two ways. Only a text with
+ * a slash at a literal's start reaches here, so every text is parsed.
  */
 function liqeRegexSpans(input: string): Map<number, number> | null {
-  if (!input.includes('/')) {
-    return null;
-  }
   const reading = readLiqe(input);
   if (!reading.ast) {
     return null;

@@ -11,7 +11,6 @@
 
 import { filterInMemory } from '../adapters/memory';
 import { SqlTranslator } from '../translators/sql';
-import { hasRejectedListMember } from './query-scanner';
 import { isInputComplete } from './input-parser';
 import { QueryParseError, QueryParser } from './parser';
 
@@ -66,16 +65,6 @@ describe('keyword list member', () => {
     expect(() => parser.parse(query)).toThrow(QueryParseError);
     expect(() => filterInMemory(query, rows)).toThrow(QueryParseError);
     expect(parser.parseWithContext(query).recovery?.autofix).toBeUndefined();
-  });
-
-  it('reports a rejected member through the predicate it is given', () => {
-    const isKeyword = (member: string): boolean => member === 'AND';
-    expect(hasRejectedListMember('status:[AND]', isKeyword)).toBe(true);
-    expect(hasRejectedListMember('status:[x, AND]', isKeyword)).toBe(true);
-    expect(hasRejectedListMember('status:["AND"]', isKeyword)).toBe(false);
-    expect(hasRejectedListMember('status:[AND y]', isKeyword)).toBe(false);
-    expect(hasRejectedListMember('status:in[AND]', isKeyword)).toBe(false);
-    expect(hasRejectedListMember('status:[AND TO x]', isKeyword)).toBe(false);
   });
 
   it.each([

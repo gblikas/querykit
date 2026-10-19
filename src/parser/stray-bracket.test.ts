@@ -10,7 +10,6 @@
 
 import { filterInMemory } from '../adapters/memory';
 import { SqlTranslator } from '../translators/sql';
-import { hasStrayBracket } from './query-scanner';
 import { isInputComplete } from './input-parser';
 import { QueryParseError, QueryParser } from './parser';
 
@@ -61,17 +60,6 @@ describe('stray bracket', () => {
     expect(context.structure.isComplete).toBe(false);
     expect(context.success).toBe(false);
     expect(context.recovery?.autofix).toBeUndefined();
-  });
-
-  it.each([
-    ['status:a]', true],
-    ['status:[[a]]', true],
-    ['count:>[a TO b]', true],
-    ['count:>[1 TO 5]', false],
-    ['status:in[[a]]', false],
-    ['status:[[a] TO b]', false]
-  ])('hasStrayBracket(%p) is %p', (query, expected) => {
-    expect(hasStrayBracket(query)).toBe(expected);
   });
 
   const RANGE_SQL = `("count" >= 1) AND ("count" <= 5)`;
