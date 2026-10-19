@@ -66,7 +66,10 @@ export interface IQueryKitOptions<
    * rejected before any adapter runs; a `table.` qualifier that differs
    * from the selected table only by ASCII case is read as that table. A
    * table the schema does not declare, or one that declares no property,
-   * leaves the field checks to the adapter.
+   * leaves the field checks to the adapter. The selected table is also
+   * passed to the adapter as `schema` on execution, so an empty in-memory
+   * table checks that table's own keys even when the adapter was
+   * constructed with records only.
    */
   schema: TSchema;
 
@@ -672,7 +675,8 @@ export function createQueryKit<
                     ...executionSecurity(securityOptions),
                     orderBy: sortFields.length > 0 ? orderBy : undefined,
                     limit: effectiveLimit,
-                    offset: offsetState
+                    offset: offsetState,
+                    schema: selectedTableSchema(schema, table)
                   }),
                 securityOptions.queryTimeout
               );

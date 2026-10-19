@@ -407,20 +407,24 @@ export function canonicalFieldName(
 }
 
 /**
- * Every name a schema declares: each property bare and as `table.property`.
- * Enumerable inherited keys count, as they always have for the filter check.
+ * Every name a schema declares: each own property bare and as
+ * `table.property`. Inherited names are not fields. A Drizzle table's
+ * enumerable prototype method `getSQL` is one of those, so the kit rejects
+ * it with `QuerySecurityError` before either adapter runs.
  */
 function schemaFieldNames(schema: SchemaTables | undefined): Set<string> {
   const schemaFields = new Set<string>();
   if (!schema) {
     return schemaFields;
   }
-  for (const table in schema) {
-    if (typeof schema[table] === 'object') {
-      for (const field in schema[table]) {
-        schemaFields.add(`${table}.${field}`);
-        schemaFields.add(field);
-      }
+  for (const table of Object.keys(schema)) {
+    const columns = schema[table];
+    if (typeof columns !== 'object' || columns === null) {
+      continue;
+    }
+    for (const field of Object.keys(columns)) {
+      schemaFields.add(`${table}.${field}`);
+      schemaFields.add(field);
     }
   }
   return schemaFields;

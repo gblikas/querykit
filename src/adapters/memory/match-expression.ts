@@ -49,7 +49,9 @@ const REGEX_MESSAGE = 'Unsupported operator: REGEX';
  * `QuerySecurityError` the translators throw) and the enforced exclusions
  * are appended; then `fieldMappings` rename the fields and, with a
  * `tableScope`, a `table.column` naming another table and a name that no
- * row of the selected table has are rejected.
+ * row of the selected table has are rejected. An empty table with columns
+ * rejects a name those columns lack; without columns it has no keys to
+ * check.
  *
  * This walks the existing AST. It does not parse a second grammar, rank
  * rows, or build an index.

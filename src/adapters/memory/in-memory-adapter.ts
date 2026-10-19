@@ -25,9 +25,10 @@ import {
  * sort fields with own-property lookups, as in the Drizzle adapter, and
  * each field is held to the selected table: a `table.column` must name it
  * and the name must be a key of its rows, as a Drizzle schema holds a
- * query to the table's properties. Sort, limit, and offset run after
- * filtering, order values the way SQLite orders a column, and do not score
- * relevance.
+ * query to the table's properties. An empty table checks the own keys of a
+ * schema given to the adapter or on the execution; with no schema it has
+ * no keys to check. Sort, limit, and offset run after filtering, order
+ * values the way SQLite orders a column, and do not score relevance.
  *
  * @example
  * const adapter = inMemoryAdapter({ records: { tasks } });
@@ -37,6 +38,7 @@ import {
 export class InMemoryAdapter implements IAdapter<IInMemoryAdapterOptions> {
   private records: Record<string, readonly object[]> = {};
   private fieldMappings: Record<string, string> = {};
+  private schema: Record<string, unknown> | undefined;
   private initialized = false;
 
   /**
@@ -49,10 +51,11 @@ export class InMemoryAdapter implements IAdapter<IInMemoryAdapterOptions> {
   }
 
   /**
-   * Store the rows this adapter will filter and the field mappings to apply.
-   * Mappings from an earlier call are replaced, not merged.
+   * Store the rows this adapter will filter, the field mappings to apply,
+   * and the schema an empty table checks. Mappings and the schema from an
+   * earlier call are replaced, not merged.
    *
-   * @param options Adapter options, including `records` and optional `fieldMappings`
+   * @param options Adapter options, including `records`, optional `fieldMappings`, and optional `schema`
    * @throws {InMemoryAdapterError} When `records` is missing
    */
   public initialize(options: IInMemoryAdapterOptions): void {
@@ -61,6 +64,7 @@ export class InMemoryAdapter implements IAdapter<IInMemoryAdapterOptions> {
     }
     this.records = options.records;
     this.fieldMappings = options.fieldMappings ?? {};
+    this.schema = options.schema;
     this.initialized = true;
   }
 
@@ -72,7 +76,7 @@ export class InMemoryAdapter implements IAdapter<IInMemoryAdapterOptions> {
    * @param options Security settings and the result window
    * @returns Matching rows
    * @throws {QuerySecurityError} When the query breaks a cap or names a field outside `allowedFields`
-   * @throws {InMemoryAdapterError} When the adapter is not initialized, the table is missing, a field names another table or a property no row has, or the window is invalid
+   * @throws {InMemoryAdapterError} When the adapter is not initialized, the table is missing, a field names another table or a property no row or empty-table schema has, or the window is invalid
    */
   public async execute<TResult = unknown>(
     tableName: string,
@@ -89,7 +93,11 @@ export class InMemoryAdapter implements IAdapter<IInMemoryAdapterOptions> {
       throw new InMemoryAdapterError(`Table ${tableName} not found in records`);
     }
     const window = resolveWindow(options);
-    const tableScope: ITableScope = { tableName, records: this.records };
+    const tableScope: ITableScope = {
+      tableName,
+      records: this.records,
+      columns: tableColumns(tableName, options?.schema, this.schema)
+    };
     const sortFields = resolveSortFields(
       options?.orderBy,
       this.fieldMappings,
@@ -183,9 +191,53 @@ function resolveWindow(
 }
 
 /**
+ * The selected table's schema for an empty-table field check. The schema on
+ * this call wins when it declares the table; otherwise the schema stored on
+ * the adapter is used. A table neither schema declares has no columns, so
+ * an empty table accepts every name.
+ *
+ * @param tableName - Selected table
+ * @param callSchema - Schema passed to this execution, if any
+ * @param storedSchema - Schema stored by `initialize`, if any
+ * @returns The table object, or undefined when no schema declares an object for it
+ */
+function tableColumns(
+  tableName: string,
+  callSchema: Record<string, unknown> | undefined,
+  storedSchema: Record<string, unknown> | undefined
+): object | undefined {
+  const schema = schemaDeclaring(callSchema, tableName)
+    ? callSchema
+    : storedSchema;
+  if (!schemaDeclaring(schema, tableName)) {
+    return undefined;
+  }
+  const table = schema[tableName];
+  return typeof table === 'object' && table !== null ? table : undefined;
+}
+
+/**
+ * Whether a schema map has the selected table as its own key.
+ *
+ * @param schema - Tables keyed by name, if any
+ * @param tableName - Selected table
+ * @returns True when the map declares that table
+ */
+function schemaDeclaring(
+  schema: Record<string, unknown> | undefined,
+  tableName: string
+): schema is Record<string, unknown> {
+  return (
+    schema !== undefined &&
+    Object.prototype.hasOwnProperty.call(schema, tableName)
+  );
+}
+
+/**
  * Map the sort fields and hold each to the selected table: its qualifier
- * must name the table and some row must have the key, as the Drizzle
- * adapter sorts only by a property of the selected table. When two keys
+ * must name the table and some row must have the key, or the empty table's
+ * schema must, as the Drizzle adapter sorts only by a property of the
+ * selected table. When two keys
  * map to the same name, the first keeps its direction and the second is
  * dropped, as a repeated `ORDER BY` key is a no-op in SQL.
  *
@@ -193,7 +245,7 @@ function resolveWindow(
  * @param fieldMappings Query field name to row key
  * @param tableScope The selected table and the records map
  * @returns Mapped field and direction pairs, in insertion order
- * @throws {InMemoryAdapterError} When a direction is not asc or desc, or a key names another table or a property no row has
+ * @throws {InMemoryAdapterError} When a direction is not asc or desc, or a key names another table or a property no row or empty-table schema has
  */
 function resolveSortFields(
   orderBy: Record<string, 'asc' | 'desc'> | undefined,

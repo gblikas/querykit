@@ -1,8 +1,9 @@
 /**
  * An in-memory field checked against the selected table: its qualifier
  * must name that table, the way SQLite checks a `table.column` against its
- * FROM clause, and its name must read a key of the table's rows, the way a
- * Drizzle schema holds a query to the table's properties.
+ * FROM clause, and its name must read a key of the table's rows, or of the
+ * table's schema when the table is empty, the way a Drizzle schema holds a
+ * query to the table's properties.
  */
 
 import { QueryExpression } from '../../parser/types';
@@ -20,6 +21,13 @@ export interface ITableScope {
   tableName: string;
   /** Every table the adapter holds, keyed by name. */
   records: object;
+  /**
+   * The selected table's schema. An empty table requires
+   * {@link resolveRowKey} to find the field on these own keys. An empty
+   * table without columns still accepts every name. A table that has a row
+   * is checked by its row keys and does not consult `columns`.
+   */
+  columns?: object;
 }
 
 /**
@@ -71,13 +79,17 @@ export function assertQualifierInScope(
  * Drizzle selects are keyed by property, so the column name `status_col`
  * for the property `status`, the quoted literal `"Items.status"` and the
  * sort key `created_at` are rejected here as the Drizzle adapter rejects
- * them, instead of reading no key on every row. A table with no rows has
- * no keys to check against, so every name passes to read as null.
+ * them, instead of reading no key on every row. A table that has a row is
+ * still checked by its row keys. An empty table with `columns` requires
+ * {@link resolveRowKey} to find the name there, so a schema given to the
+ * adapter or passed through by `createQueryKit` rejects an unknown name.
+ * An empty table without columns still has no keys to check, and every
+ * name passes to read as null.
  *
  * @param field - The field name as the reader will see it, after any mapping
  * @param isLiteral - True when the parser marked the name one identifier
- * @param scope - The selected table and the records map
- * @throws {InMemoryAdapterError} `Field <field> does not name the selected table <table>` for a foreign qualifier, `Field <field> does not name a property of table <table>` for a name no row has
+ * @param scope - The selected table, its records, and its schema when one was given
+ * @throws {InMemoryAdapterError} `Field <field> does not name the selected table <table>` for a foreign qualifier, `Field <field> does not name a property of table <table>` for a name no row or empty-table schema has
  *
  * @example
  * ```typescript
@@ -93,16 +105,32 @@ export function assertFieldInScope(
   scope: ITableScope
 ): void {
   assertQualifierInScope(field, isLiteral, scope);
-  const rows = selectedRows(scope);
+  const candidates = fieldCandidates(scope);
   if (
-    rows.length === 0 ||
-    rows.some(row => resolveRowKey(row, field, isLiteral) !== undefined)
+    candidates.length === 0 ||
+    candidates.some(row => resolveRowKey(row, field, isLiteral) !== undefined)
   ) {
     return;
   }
   throw new InMemoryAdapterError(
     `Field ${field} does not name a property of table ${scope.tableName}`
   );
+}
+
+/**
+ * The objects a field is resolved against. A table that has a row is
+ * checked by those rows. An empty table with columns is checked against
+ * that schema, and an empty table without columns has nothing to check.
+ *
+ * @param scope - The selected table, its records, and its schema when given
+ * @returns The rows, the schema as one stand-in row, or nothing
+ */
+function fieldCandidates(scope: ITableScope): readonly object[] {
+  const rows = selectedRows(scope);
+  if (rows.length > 0) {
+    return rows;
+  }
+  return scope.columns === undefined ? [] : [scope.columns];
 }
 
 /**
