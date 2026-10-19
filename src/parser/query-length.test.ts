@@ -22,15 +22,20 @@ const overLongBareWord = 'a'.repeat(DEFAULT_CAP + 1);
 const overLongQuoted = `status:"${'a'.repeat(DEFAULT_CAP - 8)}"`;
 const expectedMessage = `Query exceeds the maximum length of ${DEFAULT_CAP} characters (${DEFAULT_CAP + 1})`;
 
-/** The fastest of three runs, so a busy CI machine does not fail the budget. */
-function fastestMs(run: () => void): number {
-  let fastest = Number.POSITIVE_INFINITY;
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+/**
+ * The fastest of three runs, so a busy CI machine does not fail the budget,
+ * with the value of that run. `run` is the bare call: under coverage the
+ * matchers cost more than the rejection, so they are applied afterwards.
+ */
+function fastest<T>(run: () => T): { elapsedMs: number; value: T } {
+  const runs = [0, 1, 2].map(() => {
     const startedAt = performance.now();
-    run();
-    fastest = Math.min(fastest, performance.now() - startedAt);
-  }
-  return fastest;
+    const value = run();
+    return { elapsedMs: performance.now() - startedAt, value };
+  });
+  return runs.reduce((best, next) =>
+    next.elapsedMs < best.elapsedMs ? next : best
+  );
 }
 
 describe('the query length cap', () => {
@@ -48,32 +53,39 @@ describe('the query length cap', () => {
 
   describe('rejects a 10,001-character input before the parser reads it', () => {
     it('parse throws QueryParseError within the budget', () => {
-      const elapsedMs = fastestMs(() => {
-        expect(() => parser.parse(overLongBareWord)).toThrow(expectedMessage);
+      const { elapsedMs, value: thrown } = fastest((): unknown => {
+        try {
+          return parser.parse(overLongBareWord);
+        } catch (e) {
+          return e;
+        }
       });
+      expect(thrown).toBeInstanceOf(QueryParseError);
+      expect((thrown as Error).message).toContain(expectedMessage);
       expect(elapsedMs).toBeLessThan(REJECTION_BUDGET_MS);
     });
 
     it('parseWithContext returns a failed, incomplete result within the budget', () => {
-      const elapsedMs = fastestMs(() => {
-        const result = parser.parseWithContext(overLongBareWord);
-        expect(result).toMatchObject({
-          success: false,
-          error: { message: expectedMessage, position: DEFAULT_CAP },
-          tokens: [],
-          activeTokenIndex: -1,
-          structure: { isComplete: false, clauseCount: 0, referencedFields: [] }
-        });
-        expect(result.ast).toBeUndefined();
-        expect(result.recovery).toBeUndefined();
+      const { elapsedMs, value: result } = fastest(() =>
+        parser.parseWithContext(overLongBareWord)
+      );
+      expect(result).toMatchObject({
+        success: false,
+        error: { message: expectedMessage, position: DEFAULT_CAP },
+        tokens: [],
+        activeTokenIndex: -1,
+        structure: { isComplete: false, clauseCount: 0, referencedFields: [] }
       });
+      expect(result.ast).toBeUndefined();
+      expect(result.recovery).toBeUndefined();
       expect(elapsedMs).toBeLessThan(REJECTION_BUDGET_MS);
     });
 
     it('isInputComplete returns false within the budget', () => {
-      const elapsedMs = fastestMs(() => {
-        expect(isInputComplete(overLongBareWord)).toBe(false);
-      });
+      const { elapsedMs, value } = fastest(() =>
+        isInputComplete(overLongBareWord)
+      );
+      expect(value).toBe(false);
       expect(elapsedMs).toBeLessThan(REJECTION_BUDGET_MS);
     });
   });
