@@ -8,41 +8,12 @@
  * spellings answers each exactly, and an ambiguous third spelling nothing.
  */
 
-import { createRequire } from 'module';
-import {
-  integer,
-  sqliteTable,
-  SQLiteSyncDialect,
-  text
-} from 'drizzle-orm/sqlite-core';
+import { integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 import { filterInMemory } from '../adapters/memory';
 import { filterByExpression } from '../adapters/memory/match-expression';
 import { QueryParser } from '../parser';
 import { QueryExpression } from '../parser/types';
-import { DrizzleTranslator } from './drizzle';
-import { SqlTranslator } from './sql';
-
-const nodeRequire = createRequire(__filename);
-
-interface ISqliteStatement {
-  all(...params: unknown[]): Array<{ id: number }>;
-  run(...params: unknown[]): unknown;
-}
-
-interface ISqliteDatabase {
-  exec(sqlText: string): void;
-  prepare(sqlText: string): ISqliteStatement;
-  close(): void;
-}
-
-interface ISqliteDatabaseConstructor {
-  new (filename: string): ISqliteDatabase;
-}
-
-interface IParameterizedSql {
-  sql: string;
-  params: unknown[];
-}
+import { openSqliteHarness } from '../test-support';
 
 const rows: Array<{ id: number; status: string | null }> = [
   { id: 1, status: 'open' },
@@ -56,41 +27,13 @@ const items = sqliteTable('items', {
   status: text('status')
 });
 
-function openDatabase(): ISqliteDatabase {
-  const Database = nodeRequire('better-sqlite3') as ISqliteDatabaseConstructor;
-  const database = new Database(':memory:');
-  database.exec('CREATE TABLE items (id INTEGER PRIMARY KEY, status TEXT)');
-  const insert = database.prepare('INSERT INTO items VALUES (?, ?)');
-  for (const row of rows) {
-    insert.run(row.id, row.status);
-  }
-  return database;
-}
-
 describe('a field name in another letter case', () => {
   const parser = new QueryParser();
-  const dialect = new SQLiteSyncDialect();
-  const database = openDatabase();
-
-  afterAll((): void => {
-    database.close();
+  const harness = openSqliteHarness({
+    table: items,
+    columns: { status: 'TEXT' },
+    rows
   });
-
-  function idsOfSql(statement: IParameterizedSql): number[] {
-    return database
-      .prepare(`SELECT id FROM items WHERE ${statement.sql} ORDER BY id`)
-      .all(...statement.params)
-      .map(row => row.id);
-  }
-
-  function compileDrizzle(
-    expression: QueryExpression,
-    schema?: Record<string, Record<string, unknown>>
-  ): IParameterizedSql {
-    const translator = new DrizzleTranslator(schema ? { schema } : {});
-    const compiled = dialect.sqlToQuery(translator.translate(expression));
-    return { sql: compiled.sql, params: compiled.params };
-  }
 
   it.each(['status:open', 'Status:open', 'STATUS:open'])(
     '%s reads the stored column on every engine',
@@ -103,24 +46,13 @@ describe('a field name in another letter case', () => {
         operator: '==',
         value: 'open'
       });
-      const inline = new SqlTranslator({ useParameters: false }).translate(
-        expression
-      ) as string;
-      const parameterized = new SqlTranslator().translate(
-        expression
-      ) as IParameterizedSql;
-      const bare = compileDrizzle(expression);
-      expect(inline).toBe(`"${field}" = 'open'`);
-      expect(parameterized).toEqual({
+      const run = harness.expectSameIds(query, [1]);
+      expect(run.inlineSql).toBe(`"${field}" = 'open'`);
+      expect(run.parameterized).toEqual({
         sql: `"${field}" = ?`,
         params: ['open']
       });
-      expect(bare).toEqual({ sql: `"${field}" = ?`, params: ['open'] });
-      expect(idsOfSql({ sql: inline, params: [] })).toEqual([1]);
-      expect(idsOfSql(parameterized)).toEqual([1]);
-      expect(idsOfSql(bare)).toEqual([1]);
-      expect(idsOfSql(compileDrizzle(expression, { items }))).toEqual([1]);
-      expect(filterInMemory(query, rows).map(row => row.id)).toEqual([1]);
+      expect(run.drizzle).toEqual({ sql: `"${field}" = ?`, params: ['open'] });
     }
   );
 
