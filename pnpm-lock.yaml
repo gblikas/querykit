@@ -12,6 +12,9 @@ importers:
         specifier: ^3.3.0
         version: 3.8.2
     devDependencies:
+      '@electric-sql/pglite':
+        specifier: ^0.3.7
+        version: 0.3.16
       '@types/jest':
         specifier: ^29.5.12
         version: 29.5.14
@@ -29,7 +32,7 @@ importers:
         version: 11.10.0
       drizzle-orm:
         specifier: 0.45.4
-        version: 0.45.4(better-sqlite3@11.10.0)
+        version: 0.45.4(@electric-sql/pglite@0.3.16)(better-sqlite3@11.10.0)
       eslint:
         specifier: ^8.57.0
         version: 8.57.1
@@ -221,6 +224,9 @@ packages:
 
   '@bcoe/v8-coverage@0.2.3':
     resolution: {integrity: sha512-0hYQ8SB4Db5zvZB4axdMHGwEaQjkZzFjQiN9LVYvIFB2nSUHW9tYpxWriPrWDASIxiaXax83REcLxuSdnGPZtw==}
+
+  '@electric-sql/pglite@0.3.16':
+    resolution: {integrity: sha512-mZkZfOd9OqTMHsK+1cje8OSzfAQcpD7JmILXTl5ahdempjUDdmg4euf1biDex5/LfQIDJ3gvCu6qDgdnDxfJmA==}
 
   '@eslint-community/eslint-utils@4.6.1':
     resolution: {integrity: sha512-KTsJMmobmbrFLe3LDh0PC2FXpcSYJt/MLjlkh/9LEnmKYLSYmT/0EW9JWANjeoemiuZrmogti0tW5Ch+qNUYDw==}
@@ -2159,6 +2165,8 @@ snapshots:
 
   '@bcoe/v8-coverage@0.2.3': {}
 
+  '@electric-sql/pglite@0.3.16': {}
+
   '@eslint-community/eslint-utils@4.6.1(eslint@8.57.1)':
     dependencies:
       eslint: 8.57.1
@@ -2808,8 +2816,9 @@ snapshots:
     dependencies:
       esutils: 2.0.3
 
-  drizzle-orm@0.45.4(better-sqlite3@11.10.0):
+  drizzle-orm@0.45.4(@electric-sql/pglite@0.3.16)(better-sqlite3@11.10.0):
     optionalDependencies:
+      '@electric-sql/pglite': 0.3.16
       better-sqlite3: 11.10.0
 
   ejs@3.1.10:

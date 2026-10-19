@@ -87,13 +87,35 @@ export interface IDrizzleQueryExecutionOptions extends IQueryExecutionOptions {
 }
 
 /**
- * Error thrown when adapter operations fail
+ * Error thrown when adapter operations fail. When the database or Drizzle
+ * rejected the query, the error it threw is kept as `cause`.
  */
 export class DrizzleAdapterError extends Error {
-  constructor(message: string) {
+  public readonly cause?: unknown;
+
+  constructor(message: string, cause?: unknown) {
     super(message);
     this.name = 'DrizzleAdapterError';
+    this.cause = cause;
   }
+}
+
+/**
+ * The message of an error followed by the messages of its causes. Drizzle
+ * reports a failed query as `Failed query: ...` with the database's own
+ * error as the cause, so a user sees the database's words as well.
+ */
+function describeError(error: unknown): string {
+  const messages: string[] = [];
+  let current: unknown = error;
+  while (current !== undefined && messages.length < 4) {
+    messages.push(current instanceof Error ? current.message : String(current));
+    current =
+      current instanceof Error
+        ? (current as { cause?: unknown }).cause
+        : undefined;
+  }
+  return messages.join(': ');
 }
 
 /**
@@ -220,7 +242,8 @@ export class DrizzleAdapter<
         throw error;
       }
       throw new DrizzleAdapterError(
-        `Failed to execute query: ${error instanceof Error ? error.message : String(error)}`
+        `Failed to execute query: ${describeError(error)}`,
+        error
       );
     }
   }

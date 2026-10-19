@@ -88,6 +88,41 @@ function rewritesValue(
 }
 
 /**
+ * The part of a Drizzle column that names its dialect and type, such as
+ * `SQLiteText`, `PgBoolean` or `MySqlInt`.
+ */
+interface IDialectColumn {
+  columnType: string;
+}
+
+/**
+ * Whether a schema column belongs to Drizzle's SQLite core, whose drivers
+ * take no boolean parameter.
+ */
+function isSqliteColumn(column: SQLWrapper): boolean {
+  const columnType = (column as Partial<IDialectColumn>).columnType;
+  return typeof columnType === 'string' && columnType.startsWith('SQLite');
+}
+
+/**
+ * Whether a boolean compared with a schema column is bound through the
+ * column's own driver mapping, as `eq(column, true)` binds it: always when
+ * the mapping rewrites the value (a boolean-mode SQLite integer column
+ * binds 1 / 0), and for every column outside Drizzle's SQLite core, so a
+ * Postgres or MySQL boolean column receives a boolean parameter and a
+ * column of another type fails with the database's own error. A SQLite
+ * column whose mapping leaves the boolean alone cannot bind it, since no
+ * SQLite driver accepts a boolean, and is written `TRUE` / `FALSE` instead.
+ */
+function bindsBoolean(column: SQLWrapper, value: boolean): boolean {
+  const encoder = (column as Partial<IDriverValueEncoder>).mapToDriverValue;
+  if (typeof encoder !== 'function') {
+    return false;
+  }
+  return rewritesValue(column, value) || !isSqliteColumn(column);
+}
+
+/**
  * Options specific to the Drizzle translator
  */
 export interface IDrizzleTranslatorOptions extends ITranslatorOptions {
@@ -243,8 +278,10 @@ export class DrizzleTranslator implements ITranslator<SQL> {
    * Build the condition for one operator. Every value is bound as itself:
    * a string, a number and a bigint never pass through a column encoder, so
    * a boolean-mode column cannot turn `TRUE`, `yes` or `2` into `1`. A
-   * boolean and a `Date` go through the encoder only when it rewrites them,
-   * else a boolean is inlined and a `Date` is bound as ISO-8601 text.
+   * boolean is bound through a schema column's own mapping unless the
+   * column is a SQLite column that leaves it alone (see `bindsBoolean`),
+   * and a `Date` goes through the encoder only when it rewrites it, else
+   * the boolean is inlined and the `Date` is bound as ISO-8601 text.
    *
    * @param column - The column or quoted identifier to compare
    * @param encoder - The schema column whose encoder may apply, if any
@@ -305,16 +342,18 @@ export class DrizzleTranslator implements ITranslator<SQL> {
   }
 
   /**
-   * The SQL chunk for one query value. A boolean is inlined as `TRUE` /
-   * `FALSE`, which no SQLite driver could bind, unless the column encodes
-   * it (a boolean-mode integer column binds 1 / 0). A `Date` is bound as
+   * The SQL chunk for one query value. A boolean compared with a schema
+   * column is bound through the column's own mapping, as `eq(column, true)`
+   * binds it, unless the column is a SQLite column that leaves the boolean
+   * alone; then, and with no schema column, it is inlined as `TRUE` /
+   * `FALSE`, which no SQLite driver could bind. A `Date` is bound as
    * ISO-8601 text, the form SQLite stores, unless the column encoder
    * rewrites it (a timestamp column keeps its unix value). Anything else is
    * bound as itself.
    */
   private bindValue(value: unknown, encoder: SQLWrapper | null): SQL {
     if (typeof value === 'boolean') {
-      return encoder && rewritesValue(encoder, value)
+      return encoder && bindsBoolean(encoder, value)
         ? sql`${sql.param(value, encoder as unknown as IDriverValueEncoder)}`
         : sql.raw(value ? 'TRUE' : 'FALSE');
     }
@@ -347,7 +386,8 @@ export class DrizzleTranslator implements ITranslator<SQL> {
    * Empty IN is false and empty NOT IN is true; Drizzle's inArray has
    * treated an empty list differently across versions, so the list is
    * written here. Each non-null member is bound the way `==` binds it, so a
-   * boolean member is inlined unless the column encodes it.
+   * boolean member goes through the schema column's mapping or is inlined
+   * under the same rule.
    *
    * @throws {DrizzleTranslationError} When a member is a non-finite number
    */
