@@ -88,12 +88,6 @@ export interface IQueryTextMap {
    * a text of the same length that stands in for the parser's rewrite.
    */
   liqeText: string;
-  /**
-   * The same-length text the parser's bracket rewrite walks, after its
-   * inequality rewrite and before the brackets are rewritten; the query
-   * itself when no stand-in was given.
-   */
-  rewriteText: string;
 }
 
 /**
@@ -221,20 +215,17 @@ const textMaps = new Map<string, IQueryTextMap>();
  * walks the same text. When `liqeText` is given, a text of the same length
  * that stands in for the parser's rewritten query, its Liqe reading
  * supplies the regex spans, so a regex is read as the parser's Liqe reads
- * it where Liqe cannot read the typed text itself. `rewriteText` is kept
- * for checks that need the text the parser's bracket rewrite walked.
+ * it where Liqe cannot read the typed text itself.
  *
  * @param input Query text
  * @param liqeText Same-length text to read regex spans from
- * @param rewriteText Same-length text the bracket rewrite walked
  * @returns The map
  */
 export function mapQueryText(
   input: string,
-  liqeText: string = input,
-  rewriteText: string = liqeText
+  liqeText: string = input
 ): IQueryTextMap {
-  const key = `${input}\u0000${liqeText}\u0000${rewriteText}`;
+  const key = `${input}\u0000${liqeText}`;
   const cached = textMaps.get(key);
   if (cached) {
     return cached;
@@ -267,7 +258,7 @@ export function mapQueryText(
   if (textMaps.size >= TEXT_MAP_CACHE_LIMIT) {
     textMaps.clear();
   }
-  const map = { isCode, depth, literals, liqeText, rewriteText };
+  const map = { isCode, depth, literals, liqeText };
   textMaps.set(key, map);
   return map;
 }
@@ -857,32 +848,6 @@ export function readUnquotedRewrite(
 }
 
 /**
- * The indexes just past every bracket closer the rewrite replaces with a
- * `)`, in order.
- *
- * @param input Query text
- * @param isCode Which indexes are syntax in the final reading of `input`
- * @returns The end index of each group-emitting span
- */
-export function readGroupEnds(
-  input: string,
-  isCode?: readonly boolean[]
-): number[] {
-  const ends: number[] = [];
-  someBracketExpression(
-    input,
-    span => {
-      if (emitsGroup(span)) {
-        ends.push(span.end);
-      }
-      return false;
-    },
-    isCode
-  );
-  return ends;
-}
-
-/**
  * Whether a `[`, `]`, `{` or `}` in `input` reaches Liqe where Liqe does not
  * read one: outside the bracket expressions the rewrite consumes and
  * outside Liqe's own `field:>[decimal TO decimal]` range, or inside a list
@@ -929,45 +894,6 @@ export function hasStrayBracket(
       return true;
     }
     index += 1;
-  }
-  return false;
-}
-
-/**
- * Whether Liqe's own range (`count:>[1 TO 5]`) has text glued to its
- * closer, which Liqe rejects; the parser's rewrite does not touch such a
- * range, so no join happens there as it does for `status:[a]b`.
- *
- * @param input Query text
- * @param isCode Which indexes are syntax in the final reading of `input`
- * @returns True when such a range is written
- */
-export function hasGluedRangeTail(
-  input: string,
-  isCode?: readonly boolean[]
-): boolean {
-  let index = 0;
-  while (index < input.length) {
-    const span = readBracketExpression(input, index);
-    if (span && (!isCode || isCode[span.bodyStart - 1] !== false)) {
-      index = span.end;
-      continue;
-    }
-    const rangeEnd = readLiqeRangeEnd(input, index);
-    if (rangeEnd !== null && (!isCode || isCode[rangeEnd - 1] !== false)) {
-      const after = input[rangeEnd];
-      if (after !== undefined && !isLiqeWhitespace(after) && after !== ')') {
-        return true;
-      }
-      index = rangeEnd;
-      continue;
-    }
-    if (isCode && isCode[index] === false) {
-      index += 1;
-      continue;
-    }
-    const literal = readLiteralAt(input, index);
-    index = literal.kind === 'none' ? index + 1 : literal.end;
   }
   return false;
 }

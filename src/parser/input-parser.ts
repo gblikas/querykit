@@ -11,20 +11,13 @@
 import type { LiqeQuery } from 'liqe';
 import {
   emitsGroup,
-  hasGluedRangeTail,
-  hasRejectedBracketExpression,
-  hasStrayBracket,
-  IBracketExpressionSpan,
+  hasQuotedTail,
   ILiteralAt,
   IQueryTextMap,
-  isCopiedBracketMember,
   isLiqeWhitespace,
-  isListBody,
-  isQuotedToken,
   isRejectedBracketBody,
   mapQueryText,
   readComparisonOperator,
-  readGroupEnds,
   readLiqe,
   readLiteralAt,
   readQuotedLiteralStarts,
@@ -33,8 +26,7 @@ import {
   readUnquotedRewrite,
   someBracketExpression,
   splitListMembers,
-  uppercaseBooleanOperators,
-  writesBackUnquoted
+  uppercaseBooleanOperators
 } from './query-scanner';
 import {
   hasUnreadRegexMember,
@@ -46,8 +38,7 @@ import {
   isPlainInteger,
   isUnstorableInteger,
   readNumeralToken,
-  spellNumeralToken,
-  spellNumerals
+  spellNumeralToken
 } from './stored-integer';
 
 /**
@@ -556,82 +547,41 @@ export function findTrailingLogicalOperator(
 /**
  * Check if the input appears to be a complete, valid query expression.
  * This is a lightweight check - it doesn't guarantee the query will parse
- * successfully, but it agrees with `QueryParser.parse` on the shapes below:
- * it is never true where the parser throws for one of them, and never false
- * where the parser accepts.
+ * successfully, but it agrees with `QueryParser.parse`: it is never true
+ * where the parser throws, and false where the parser accepts only on the
+ * forms the completeness probe records, regex literals the same-length
+ * stand-in below closes where the parser's Liqe does not.
+ *
+ * The input is read the way the parser reads it. The parser's own rewrite
+ * of the text and Liqe's reading of the result decide first
+ * (`hasRejectedLiqeReading`): the input is incomplete when the rewrite
+ * rejects a numeral, when Liqe has no reading or two readings of the
+ * rewritten text, when it reads a clause that names no field, or when its
+ * one reading fails one of the three checks the parser makes after it.
+ * That covers an unclosed quote or regex, unbalanced or glued parentheses,
+ * a dangling, stacked or glued operator word, a bare word, a colon with no
+ * field name, a stray or unreadable bracket, a value or list member Liqe
+ * refuses, a tail glued to a literal or a bracket, and a regex Liqe reads
+ * two ways. Then the forms the parser rejects only after Liqe has read
+ * them, or never hands Liqe, are read from the text:
+ * - an empty group, `()`, which Liqe reads as an empty expression;
+ * - a comparison operator with no value after it (`status:`, `x:>`,
+ *   `x:!=`, `(x:)`), which Liqe reads as a tag with an empty expression;
+ * - an unquoted integer outside the signed 64-bit range, as the value
+ *   after an operator or as a list member or range bound the bracket
+ *   rewrite writes back as a number, which Liqe reads as a number and the
+ *   parser then rejects;
+ * - a quoted literal Liqe's string grammar refuses, a raw line feed or a
+ *   backslash sequence outside Liqe's escapes, and a quoted membership
+ *   member that is not one closed literal (`status:in["a"b"c"]`), which
+ *   the parser's own membership decode refuses before Liqe runs.
  *
  * Quotes, regex literals, and parentheses inside those literals are not
- * syntax. A regex spans what Liqe reads as one literal, so
- * `name:/foo/) AND status:/bar/` is complete and the ambiguous
- * `name:/foo/ AND status:/bar/` is not. Whether Liqe reads the text two
- * ways, or reads a clause that names no field, is decided on the text the
- * parser's rewrites hand Liqe, so a list of two regex members whose
- * rewrite Liqe reads two ways (`b:[,//,////]` is `(b:// OR b:////)`,
- * `status:[/a/, /b/, x]`) is incomplete; so are the parser's checks on
- * Liqe's one reading of that text, that a regex literal is read at each
- * regex list member and a quoted literal at each lifted membership list
- * (`t:[//, a` LF `b] OR (d:/a/i)` is one regex past its grouped member).
- *
- * Incomplete input:
- * - a field with an operator and no value, an unclosed quote or regex, or
- *   unbalanced parentheses, including a close before its open (a
- *   parenthesis inside a bracket body is a value the rewrite quotes);
- * - a trailing `AND`, `OR` or `NOT`; an `AND` or `OR` with no clause on one
- *   side or with another operator word beside it; a `NOT` with nothing to
- *   negate, or stacked on another `NOT`; an empty parenthesis group;
- * - a clause that names no field, whether a bare word, a quoted phrase, a
- *   numeral or a regex, wherever it stands (there is no full-text field);
- * - a colon with no field name, with whitespace before it, after a name that
- *   starts with `.` or a digit, or after a name glued to the text before it
- *   (`status :a`, `:a`, `.column:open`, `status:open\u2003AND\u2003x:1`);
- * - a Unicode space (U+00A0, U+1680, U+2000–U+200A, U+2028, U+2029, U+202F,
- *   U+205F, U+3000, U+FEFF) outside quotes and outside every term; inside
- *   an unquoted value it is a value character, as it is to Liqe;
- * - a `[min TO max]` range whose unquoted bound is `null`, `true` or
- *   `false`, which the parser leaves to Liqe to reject;
- * - a character Liqe never accepts outside a literal: `&`, `|`, `;`, `^`,
- *   `~`, a `!` that is not the one in `:!=`, or a `?` outside every value
- *   (`status:open?` is a wildcard; `?status:open` is not);
- * - a `--` or `-` stacked on another negation, a `NOT` followed by `NOT`, a
- *   minus or a `:!=` clause, which reaches Liqe as `NOT NOT`;
- * - an unquoted value that starts like a number but is not one Liqe reads
- *   or the parser spells (`0x10`, `1_0`, `1e`, `1.2.3`, `--1`, `+`, `.`,
- *   `1e401`), or a numeral the parser rejects (an integer outside the
- *   signed 64-bit range, an exponent that underflows to zero);
- * - a closed quote followed by the same quote (`"a""b"`), or a quoted
- *   backslash sequence Liqe does not accept (`"a\q"`, `"\U0041"`), or a raw
- *   line feed inside quotes or inside an unquoted list member or range
- *   bound the rewrite quotes (`status:[a` LF `b]` reaches Liqe as
- *   `status:"a` LF `b"`; a membership member keeps it), or two backslashes
- *   in a row inside a regex Liqe reads (`l:/\\/`, `status:[/\\/]`), whose
- *   body takes any character but a backslash or a backslash and one such
- *   character;
- * - a parenthesis glued to a clause, to `NOT`, to a minus or to another
- *   group (`AND` and `OR` may touch a group, but not the `NOT (` a
- *   `field:!=[a, b]` list becomes), a clause-leading minus with no tag
- *   glued to it, and a clause-leading minus before a list or two-sided
- *   range, which the rewrite turns into `-(`;
- * - a carriage return or any other ASCII control character that is not
- *   Liqe whitespace, outside quotes, regex and bracket lists;
- * - a bracket body the parser leaves to Liqe (`[]`, `{abc}`, `[a TO ]`,
- *   `[* TO *]`, an unclosed opener, `in[a}`), a stray bracket, a list
- *   member written back unquoted that Liqe refuses (`[AND]`, `[1x]`,
- *   `["a"b]`, `[[a]]`), a quoted member, bound or membership member with
- *   text after its first literal (`["a" OR status:"c"]`, `["a" "b"]`), or
- *   a membership list or regex member swallowed by a regex Liqe reads
- *   from the text before it (`f:[//]x:in[]/`, `x://T:[//]`);
- * - a tail glued to a closed quote or regex (`status:"a"b`, `status:/a/ib`)
- *   or to a bracket closer, unless Liqe reads the rewrite's one unquoted
- *   member or numeric bound joined to it (`status:[a]b` is `status:ab`,
- *   `status:[1].5` is `status:1.5`, `status:[1]x` and `status:[1].` are
- *   neither a value nor Liqe's decimal, `status:[a, b]x` glues a `)`), a quote or
- *   regex glued to the text before it (`NOT"a"`, `status:[a]/b/`), a field
- *   name that starts with a digit, and an unquoted value that is not
- *   Liqe's value or number (`a%b`, `-x`, `a=b`, `1x`, `a"b"`) or is exactly
- *   `AND`, `OR` or `NOT`.
- *
- * `field:!=` is read as the parser rewrites it, `NOT field:`, so an ordered
- * operator after it belongs to the operator: `count:!=>5` is complete.
+ * syntax. A regex spans what Liqe reads as one literal in the rewritten
+ * text, so `name:/foo/) AND status:/bar/` is complete and the ambiguous
+ * `name:/foo/ AND status:/bar/` is not. `field:!=` is read as the parser
+ * rewrites it, `NOT field:`, so an ordered operator after it belongs to
+ * the operator: `count:!=>5` is complete.
  *
  * @param input The query input string
  * @returns true if the input appears complete, false if it looks incomplete
@@ -640,40 +590,30 @@ export function isInputComplete(input: string): boolean {
   if (!input || input.trim().length === 0) {
     return false;
   }
-  const standIn = readLiqeStandIn(input);
-  const map = mapQueryText(input, standIn.liqeText, standIn.rewriteText);
-  if (map.literals.some(literal => !literal.closed)) {
+  if (hasRejectedLiqeReading(input)) {
     return false;
   }
+  const map = mapQueryText(input, readLiqeStandIn(input));
   return !COMPLETENESS_CHECKS.some(check => check(input, map));
 }
 
 /**
- * Texts of the same length as `input` that Liqe reads the way it reads
- * the parser's rewritten query, as far as regex spans and ambiguity go.
- * `liqeText` stands for the text Liqe finally parses: operator words
+ * A text of the same length as `input` that Liqe reads the way it reads
+ * the parser's rewritten query, as far as regex spans go: operator words
  * uppercased, each numeral the parser spells replaced by digits, each
  * bracket span the rewrite consumes replaced by a group or quoted
  * placeholder (its brackets by spaces when its member is written back as
- * typed), and `field:!=` read as the parser's `NOT field:` with any ordered
- * operator after it kept in place. `rewriteText` stops before the brackets,
- * which is the text the parser's bracket rewrite reads its literals from.
- * Liqe cannot read the typed `:!=`, `in[...]`, `[a, b]` or `1e5`, so
- * without this the search box would close every regex at its first slash
- * where the parser's Liqe reads `status:!=/a/b/` as one regex. The
- * stand-in keeps the typed positions; what it hides, the regex members of
- * a group, is decided on the parser's rewritten text itself
- * (`readParserText`).
+ * typed), and `field:!=` read as the parser's `NOT field:` with any
+ * ordered operator after it kept in place. Liqe cannot read the typed
+ * `:!=`, `in[...]`, `[a, b]` or `1e5`, so without this the text map would
+ * close every regex at its first slash where the parser's Liqe reads
+ * `status:!=/a/b/` as one regex. The stand-in keeps the typed positions,
+ * which the checks on the text need; what Liqe reads is decided on the
+ * parser's rewritten text itself (`hasRejectedLiqeReading`).
  */
-function readLiqeStandIn(input: string): {
-  liqeText: string;
-  rewriteText: string;
-} {
+function readLiqeStandIn(input: string): string {
   const spelled = standInForNumerals(uppercaseBooleanOperators(input));
-  return {
-    liqeText: standInForInequalities(standInForBrackets(spelled), spelled),
-    rewriteText: standInForInequalities(spelled, spelled)
-  };
+  return standInForInequalities(standInForBrackets(spelled), spelled);
 }
 
 function standInForNumerals(text: string): string {
@@ -798,76 +738,25 @@ function readFieldEndAt(text: string, index: number): number | null {
 }
 
 /**
- * One reason the search box reports input incomplete. Each check mirrors a
- * rejection of `QueryParser.parse`.
+ * One reason the search box reports input incomplete that Liqe's reading
+ * of the rewritten text does not show: each mirrors a rejection
+ * `QueryParser.parse` makes after Liqe has read the text, or before it
+ * hands Liqe a membership member.
  */
 type CompletenessCheck = (input: string, map: IQueryTextMap) => boolean;
 
 const COMPLETENESS_CHECKS: CompletenessCheck[] = [
-  hasDanglingSyntax,
-  hasFieldlessClause,
-  hasInvalidFieldColon,
-  hasRejectedLiqeReading,
-  hasStackedNegation,
-  hasBrokenNumeral,
-  hasRejectedQuote,
-  hasRejectedRegexEscape,
-  hasQuotedLineFeed,
-  hasGluedParenthesis,
-  (input, map): boolean => hasRejectedBracketExpression(input, map.isCode),
-  (input, map): boolean => hasStrayBracket(input, map.isCode),
-  hasCopiedMember,
-  hasRejectedListWord,
-  hasGluedLiteralTail,
-  hasRejectedValueWord
+  hasEmptyGroup,
+  hasValuelessOperator,
+  hasUnstorableInteger,
+  hasRejectedStringLiteral,
+  hasRejectedMembershipLiteral
 ];
-
-/**
- * Liqe's unquoted value, as its grammar writes it.
- */
-const LIQE_UNQUOTED_VALUE =
-  /^[#$*?@A-Za-z_\u0080-\uffff][\w#$*.?@\u0080-\uffff-]*$/;
-
-/**
- * The operator words, which Liqe never reads as a value.
- */
-const LIQE_KEYWORD_VALUE = /^(?:AND|OR|NOT)$/;
-
-/**
- * The parser's membership opener after a field's comparison operator.
- */
-const MEMBERSHIP_LIST_OPEN = /^(?:not\s+in|in)\s*\[/i;
-
-/**
- * The index just past the `[` of a membership list whose operator's colon
- * is at `colonIndex`, or null when no membership list opens there. The
- * whitespace the parser accepts between `in` and `[` lies inside it.
- */
-function readMembershipOpenEnd(
-  input: string,
-  colonIndex: number
-): number | null {
-  const operator = readComparisonOperator(input, colonIndex);
-  if (operator !== ':' && operator !== ':!=') {
-    return null;
-  }
-  const start = colonIndex + operator.length;
-  const opener = MEMBERSHIP_LIST_OPEN.exec(input.slice(start));
-  return opener ? start + opener[0].length : null;
-}
 
 /**
  * Liqe's field name: `[$A-Z_a-z][\w$.]*`.
  */
-const FIELD_NAME_START = /^[A-Za-z_$]/;
-const FIELD_NAME_CHARACTER = /[\w$.]/;
 const FIELD_NAME = /^[A-Za-z_$][\w$.]*/;
-
-/**
- * A word that begins like a number: an optional sign or dot before a digit,
- * or nothing but signs and dots.
- */
-const NUMERAL_LIKE_WORD = /^(?:[+-.]*\d|[+-.]+$)/;
 
 /**
  * The decimals Liqe reads and the spellings the parser turns into one:
@@ -903,28 +792,13 @@ function isSpelledNumeral(word: string): boolean {
 const SIMPLE_ESCAPES = '"/\\bfnrt';
 
 /**
- * A piece of query syntax at bracket depth zero: a parenthesis, an operator
- * word, or a clause (everything else up to whitespace or a parenthesis,
- * literals and bracket bodies included).
- */
-interface ISyntaxToken {
-  kind: 'open' | 'close' | 'AND' | 'OR' | 'NOT' | 'clause';
-  start: number;
-  end: number;
-}
-
-/**
  * Read the operator word at `index` when the parser would treat it as one:
  * preceded by the start of the text, whitespace or a parenthesis, and
- * followed by the end of the text, whitespace or a parenthesis. Where the
- * bracket rewrite closes a group (`groupEnds`), the text before the word is
- * a `)` to Liqe, so an `AND` or `OR` stands there too; it is not uppercased
- * after a bracket, so only the uppercase words count.
+ * followed by the end of the text, whitespace or a parenthesis.
  */
 function readLogicalOperator(
   input: string,
-  index: number,
-  groupEnds: number[] = []
+  index: number
 ): 'AND' | 'OR' | 'NOT' | null {
   const before = input[index - 1];
   if (
@@ -932,11 +806,7 @@ function readLogicalOperator(
     !isLiqeWhitespace(before) &&
     !/[()]/.test(before)
   ) {
-    if (!groupEnds.includes(index)) {
-      return null;
-    }
-    const glued = /^(AND|OR)(?=$|[\s()])/.exec(input.slice(index));
-    return glued ? (glued[1] as 'AND' | 'OR') : null;
+    return null;
   }
   const match = PATTERNS.LOGICAL_OPERATOR.exec(input.slice(index));
   if (!match) {
@@ -945,293 +815,61 @@ function readLogicalOperator(
   return match[1].toUpperCase() as 'AND' | 'OR' | 'NOT';
 }
 
-const syntaxTokens = new WeakMap<IQueryTextMap, ISyntaxToken[]>();
-
 /**
- * The syntax tokens of the text at bracket depth zero. A clause runs to
- * Liqe's whitespace or a parenthesis; a Unicode space is a value character
- * and stays inside it, as does the whitespace between `in` and `[`. The
- * tokens are kept with the map, which the checks share.
- */
-function readSyntaxTokens(input: string, map: IQueryTextMap): ISyntaxToken[] {
-  const cached = syntaxTokens.get(map);
-  if (cached) {
-    return cached;
-  }
-  const tokens = collectSyntaxTokens(input, map);
-  syntaxTokens.set(map, tokens);
-  return tokens;
-}
-
-function collectSyntaxTokens(
-  input: string,
-  map: IQueryTextMap
-): ISyntaxToken[] {
-  const tokens: ISyntaxToken[] = [];
-  const groupEnds = readGroupEnds(input, map.isCode);
-  let index = 0;
-  while (index < input.length) {
-    const char = input[index] ?? '';
-    if (map.isCode[index] && map.depth[index] === 0) {
-      if (isLiqeWhitespace(char)) {
-        index += 1;
-        continue;
-      }
-      if (char === '(' || char === ')') {
-        const kind = char === '(' ? 'open' : 'close';
-        tokens.push({ kind, start: index, end: index + 1 });
-        index += 1;
-        continue;
-      }
-      const word = readLogicalOperator(input, index, groupEnds);
-      if (word) {
-        tokens.push({ kind: word, start: index, end: index + word.length });
-        index += word.length;
-        continue;
-      }
-    }
-    const end = readClauseEnd(input, map, index, groupEnds);
-    tokens.push({ kind: 'clause', start: index, end });
-    index = end;
-  }
-  return tokens;
-}
-
-/**
- * The end of the clause that begins at `start`: the next whitespace or
- * parenthesis at bracket depth zero, or the closer of a bracket span the
- * rewrite turns into a group, which is a `)` to Liqe.
- */
-function readClauseEnd(
-  input: string,
-  map: IQueryTextMap,
-  start: number,
-  groupEnds: number[]
-): number {
-  let index = start;
-  while (index < input.length) {
-    if (index > start && groupEnds.includes(index)) {
-      break;
-    }
-    const char = input[index] ?? '';
-    const isSyntax = map.isCode[index] && map.depth[index] === 0;
-    if (isSyntax && (isLiqeWhitespace(char) || char === '(' || char === ')')) {
-      break;
-    }
-    const membershipEnd = isSyntax ? readMembershipOpenEnd(input, index) : null;
-    index = membershipEnd ?? index + 1;
-  }
-  return Math.max(index, start + 1);
-}
-
-/**
- * An `AND` or `OR` needs a clause or group on each side (`NOT` may stand on
- * the right), a `NOT` needs a clause or group after it and cannot stack on
- * another `NOT`, a group cannot be empty, a `)` cannot come before its `(`,
- * and every `(` needs its `)`. Liqe rejects each of these. Parentheses
- * inside a bracket body are values the rewrite quotes, not groups.
- */
-function hasDanglingSyntax(input: string, map: IQueryTextMap): boolean {
-  const tokens = readSyntaxTokens(input, map);
-  let depth = 0;
-  for (let index = 0; index < tokens.length; index += 1) {
-    const token = tokens[index];
-    const previous = tokens[index - 1];
-    const next = tokens[index + 1];
-    if (token.kind === 'open') {
-      depth += 1;
-      if (next?.kind === 'close') {
-        return true;
-      }
-    } else if (token.kind === 'close') {
-      depth -= 1;
-      if (depth < 0) {
-        return true;
-      }
-    } else if (token.kind === 'AND' || token.kind === 'OR') {
-      if (!previous || !['clause', 'close'].includes(previous.kind)) {
-        return true;
-      }
-      if (!next || !['clause', 'open', 'NOT'].includes(next.kind)) {
-        return true;
-      }
-    } else if (token.kind === 'NOT') {
-      if (!next || !['clause', 'open'].includes(next.kind)) {
-        return true;
-      }
-    }
-  }
-  return depth !== 0;
-}
-
-/**
- * Every clause must name a field: Liqe reads a clause with no colon outside
- * its literals as an implicit-field expression, which the parser rejects,
- * or not at all. This reads positions, so a bare word, quoted phrase,
- * numeral or regex beside a clause Liqe cannot read before the parser's
- * rewrites (`open status:in[a]`, `x status:!=a`) is found as well.
- */
-function hasFieldlessClause(input: string, map: IQueryTextMap): boolean {
-  return readSyntaxTokens(input, map).some(
-    token =>
-      token.kind === 'clause' &&
-      !hasSyntaxColon(input, map, token.start, token.end)
-  );
-}
-
-function hasSyntaxColon(
-  input: string,
-  map: IQueryTextMap,
-  start: number,
-  end: number
-): boolean {
-  for (let index = start; index < end; index += 1) {
-    if (map.isCode[index] && map.depth[index] === 0 && input[index] === ':') {
-      return true;
-    }
-  }
-  return false;
-}
-
-/**
- * Every colon at bracket depth zero must end a field name: a closed quoted
- * string, or a bare name of Liqe's field characters that starts with a
- * letter, `_` or `$`. The name must begin a clause: the start of the text,
- * Liqe whitespace, `(` or a clause-leading minus precedes it. Whitespace
- * before the colon, a missing name, `.column`, and a name glued to the text
- * before it (`openlabel:x`, a value holding a Unicode space) are rejected.
- * The operator must be followed by a value: the end of the text, Liqe
- * whitespace or a parenthesis after it leaves a tag with no expression,
- * which the parser rejects for a quoted name as it does for a bare one.
- */
-function hasInvalidFieldColon(input: string, map: IQueryTextMap): boolean {
-  for (let index = 0; index < input.length; index += 1) {
-    if (!map.isCode[index] || map.depth[index] !== 0 || input[index] !== ':') {
-      continue;
-    }
-    const name = readFieldNameBefore(input, map, index);
-    if (name === null) {
-      return true;
-    }
-    if (!name.quoted && !FIELD_NAME_START.test(input.slice(name.start))) {
-      return true;
-    }
-    if (!separatesBeforeField(input, map, name.start)) {
-      return true;
-    }
-    if (isValuelessOperator(input, index)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function isValuelessOperator(input: string, colonIndex: number): boolean {
-  const operator = readComparisonOperator(input, colonIndex) ?? ':';
-  const after = input[colonIndex + operator.length];
-  return after === undefined || isLiqeWhitespace(after) || /[()]/.test(after);
-}
-
-function readFieldNameBefore(
-  input: string,
-  map: IQueryTextMap,
-  colonIndex: number
-): { start: number; quoted: boolean } | null {
-  const quoted = map.literals.find(
-    literal =>
-      literal.end === colonIndex && literal.kind === 'string' && literal.closed
-  );
-  if (quoted) {
-    return { start: quoted.start, quoted: true };
-  }
-  let start = colonIndex;
-  while (
-    start > 0 &&
-    map.isCode[start - 1] &&
-    FIELD_NAME_CHARACTER.test(input[start - 1] ?? '')
-  ) {
-    start -= 1;
-  }
-  return start === colonIndex ? null : { start, quoted: false };
-}
-
-/**
- * Whether a field or value may begin at `start`: the start of the text,
- * Liqe whitespace, `(` or a clause-leading minus comes before it.
- */
-function separatesBeforeField(
-  input: string,
-  map: IQueryTextMap,
-  start: number
-): boolean {
-  if (start === 0) {
-    return true;
-  }
-  const before = input[start - 1] ?? '';
-  if (!map.isCode[start - 1]) {
-    return false;
-  }
-  if (isLiqeWhitespace(before) || before === '(') {
-    return true;
-  }
-  return before === '-' && startsMinusNegation(input, map, start - 1);
-}
-
-/**
- * Whether the minus at `minusIndex` begins a clause: the start of the text,
- * Liqe whitespace or `(` precedes it. A minus after `:`, `>`, `[` or `,` is
- * part of a value.
- */
-function startsMinusNegation(
-  input: string,
-  map: IQueryTextMap,
-  minusIndex: number
-): boolean {
-  if (minusIndex === 0) {
-    return true;
-  }
-  const before = input[minusIndex - 1] ?? '';
-  return (
-    map.isCode[minusIndex - 1] === true &&
-    (isLiqeWhitespace(before) || before === '(')
-  );
-}
-
-/**
- * The parser's own checks on the text its rewrites hand Liqe, decided on
- * that text rather than on the same-length stand-in. Liqe reads a literal
- * with no field as an implicit-field tag, which the parser rejects
- * (`open`, `open done`, `"hello world"`, `""`), and the parser rejects a
- * text Liqe reads two ways (`name:/foo/ AND status:/bar/`). The stand-in
- * replaces a bracket group by opaque text, so two regex members whose
- * group Liqe reads two ways (`b:[,//,////]` is `(b:// OR b:////)`) can
- * only be decided by the rewrite itself, as can a lowercase `and` the
- * typed text keeps inside an unclosed regex while the rewritten text
- * closes it earlier (`r:!=///// and $:b`). On Liqe's one reading of that
- * text the parser further requires a regex literal at each regex list
- * member written back as typed, ending where a grouped member ends
- * (`hasUnreadRegexMember`), and a quoted literal at each lifted membership
- * placeholder, so the clause can be put back; the stand-in writes a member
- * holding a raw line feed as a plain string, which Liqe reads where it
- * cannot read the member, so Liqe reads the stand-in two ways where it
- * reads the rewritten text one way (`t:[//, a` LF `b] OR (d:/a/i)` is one
- * regex to the `i`, past its grouped member, and `(t:[//] u:[a` LF `b]
- * v:in[a] OR d:/a/i)` one regex that swallows the placeholder). A Liqe
- * syntax error decides nothing here; the other checks cover those shapes.
- * A numeral the parser rejects before Liqe is left to the numeral check.
+ * The parser's own reading of the text its rewrites hand Liqe, decided on
+ * that text rather than on the same-length stand-in. The parser rejects
+ * the query when the rewrite rejects a numeral before Liqe sees it (an
+ * integer outside the signed 64-bit range, an exponent that underflows to
+ * zero), when Liqe has no reading of the rewritten text (`status:"a"b`,
+ * `x:1 AND`, `NOT NOT x:1`, `x:[]`) or two readings (`name:/foo/ AND
+ * status:/bar/`, and two regex members whose group Liqe reads two ways,
+ * `b:[,//,////]` is `(b:// OR b:////)`), when Liqe reads a literal with
+ * no field as an implicit-field tag (`open`, `open done`, `"hello
+ * world"`, `""`), and when Liqe's one reading fails one of the three
+ * checks the parser makes after it: a regex literal must begin at each
+ * regex list member written back as typed and end where a grouped member
+ * ends (`hasUnreadRegexMember`), no quoted literal may begin at a quoted
+ * member or bound copied as written that is not one closed literal
+ * (`status:["a" OR status:"c"]` reaches Liqe as `status:"a" OR
+ * status:"c"`), and a quoted literal must begin at each lifted membership
+ * placeholder, so the clause can be put back. A regex Liqe reads from the
+ * text before a member swallows it (`t:[//, a` LF `b] OR (d:/a/i)` is one
+ * regex to the `i`; `(t:[//] u:[a` LF `b] v:in[a] OR d:/a/i)` swallows
+ * the placeholder), which the stand-in, where such a member is a plain
+ * string, cannot show. What the parser rejects after Liqe's reading is
+ * converted, a tag with no value or an empty group, is left to the
+ * positional checks. The verdict is kept per input string, since a search
+ * box asks about the same text on every render and again when a typist
+ * backspaces to it, and the rewrite and the Earley parse are the cost of
+ * this check.
  */
 function hasRejectedLiqeReading(input: string): boolean {
-  const rewrites: IBracketRewrite[] = [];
-  const rewritten = readParserText(input, rewrite => rewrites.push(rewrite));
-  if (rewritten === null) {
-    return false;
+  const cached = liqeVerdicts.get(input);
+  if (cached !== undefined) {
+    return cached;
   }
-  const reading = readLiqe(rewritten);
-  if (reading.isAmbiguous) {
+  const verdict = readsRejectedLiqeReading(input);
+  if (liqeVerdicts.size >= LIQE_VERDICT_CACHE_LIMIT) {
+    liqeVerdicts.clear();
+  }
+  liqeVerdicts.set(input, verdict);
+  return verdict;
+}
+
+const LIQE_VERDICT_CACHE_LIMIT = 256;
+const liqeVerdicts = new Map<string, boolean>();
+
+function readsRejectedLiqeReading(input: string): boolean {
+  const rewrites: IBracketRewrite[] = [];
+  let rewritten: string;
+  try {
+    rewritten = rewriteQueryForLiqe(input, rewrite => rewrites.push(rewrite));
+  } catch {
     return true;
   }
+  const reading = readLiqe(rewritten);
   if (reading.ast === null) {
-    return false;
+    return true;
   }
   return (
     hasImplicitField(reading.ast) || hasUnreadRewrite(rewrites, reading.ast)
@@ -1239,25 +877,11 @@ function hasRejectedLiqeReading(input: string): boolean {
 }
 
 /**
- * The text the parser hands Liqe for `input`, or null when the parser
- * rejects a numeral before Liqe sees it. `visit` receives each bracket
- * expression the rewrite consumed, as the parser's own preprocessing does.
- */
-function readParserText(
-  input: string,
-  visit?: (rewrite: IBracketRewrite) => void
-): string | null {
-  try {
-    return rewriteQueryForLiqe(input, visit);
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Whether Liqe's one reading of the rewritten text, `ast`, did not read a
- * regex literal at a regex list member or a quoted literal at a
- * membership placeholder of one of the `rewrites`.
+ * Whether Liqe's one reading of the rewritten text, `ast`, fails one of
+ * the parser's checks after Liqe for one of the `rewrites`: it did not
+ * read a regex literal at a regex list member, it read a quoted literal at
+ * a copied quoted member or bound that is not one closed literal, or it
+ * did not read a quoted literal at a membership placeholder.
  */
 function hasUnreadRewrite(
   rewrites: IBracketRewrite[],
@@ -1271,6 +895,7 @@ function hasUnreadRewrite(
   return rewrites.some(
     rewrite =>
       hasUnreadRegexMember(rewrite.regexMembers, regexSpans) ||
+      rewrite.quotedTails.some(tail => literalStarts.has(tail.start)) ||
       (rewrite.span.kind === 'membership' &&
         !literalStarts.has(readPlaceholderStart(rewrite)))
   );
@@ -1297,30 +922,29 @@ function hasImplicitField(node: unknown): boolean {
 }
 
 /**
- * Liqe's `NOT` and minus each take one tag or, for `NOT`, one group. After
- * a `NOT` operator and Liqe whitespace, or directly after a clause-leading
- * minus, another `NOT`, a minus, or a field followed by `:!=` (which the
- * parser rewrites to `NOT field:`) stacks two negations, which Liqe
- * rejects. A parenthesis is not skipped, so `NOT (NOT a:1)` is complete.
+ * Whether the character at `index` is query syntax at bracket depth zero:
+ * outside every literal and outside every bracket body, whose characters
+ * are values the rewrite quotes or decodes.
  */
-function hasStackedNegation(input: string, map: IQueryTextMap): boolean {
+function isSyntaxAt(map: IQueryTextMap, index: number): boolean {
+  return map.isCode[index] === true && map.depth[index] === 0;
+}
+
+/**
+ * Liqe reads `()`, with nothing or only Liqe whitespace inside, as an
+ * empty expression, which the parser rejects once Liqe has read it
+ * (`()`, `( )`, `(())`, `status:a AND ()`).
+ */
+function hasEmptyGroup(input: string, map: IQueryTextMap): boolean {
   for (let index = 0; index < input.length; index += 1) {
-    if (!map.isCode[index] || map.depth[index] !== 0) {
+    if (!isSyntaxAt(map, index) || input[index] !== '(') {
       continue;
     }
-    if (readLogicalOperator(input, index) === 'NOT') {
-      let next = index + 3;
-      while (isLiqeWhitespace(input[next])) {
-        next += 1;
-      }
-      if (next > index + 3 && startsNegation(input, map, next)) {
-        return true;
-      }
-    } else if (
-      input[index] === '-' &&
-      startsMinusNegation(input, map, index) &&
-      startsNegation(input, map, index + 1)
-    ) {
+    let next = index + 1;
+    while (isLiqeWhitespace(input[next])) {
+      next += 1;
+    }
+    if (isSyntaxAt(map, next) && input[next] === ')') {
       return true;
     }
   }
@@ -1328,47 +952,47 @@ function hasStackedNegation(input: string, map: IQueryTextMap): boolean {
 }
 
 /**
- * Whether a negation begins at `index`: a `NOT` word, a minus, or a field
- * (bare or closed quoted) followed by `:!=`.
+ * A comparison operator must be followed by a value: the end of the text,
+ * Liqe whitespace or a parenthesis after it leaves a tag with an empty
+ * expression, which Liqe reads and the parser rejects (`status:`, `x:>`,
+ * `"a b":`, `(x:)`). `field:!=` is the parser's `NOT field:`, so `x:!=`
+ * is one too.
  */
-function startsNegation(
-  input: string,
-  map: IQueryTextMap,
-  index: number
-): boolean {
-  if (input[index] === '-' || /^NOT(?=$|[\s()])/i.test(input.slice(index))) {
-    return true;
+function hasValuelessOperator(input: string, map: IQueryTextMap): boolean {
+  for (let index = 0; index < input.length; index += 1) {
+    if (
+      isSyntaxAt(map, index) &&
+      input[index] === ':' &&
+      isValuelessOperator(input, index)
+    ) {
+      return true;
+    }
   }
-  const quoted = map.literals.find(
-    literal =>
-      literal.start === index && literal.kind === 'string' && literal.closed
-  );
-  if (quoted) {
-    return input.startsWith(':!=', quoted.end);
-  }
-  const name = FIELD_NAME.exec(input.slice(index));
-  return name !== null && input.startsWith(':!=', index + name[0].length);
+  return false;
+}
+
+function isValuelessOperator(input: string, colonIndex: number): boolean {
+  const operator = readComparisonOperator(input, colonIndex) ?? ':';
+  const after = input[colonIndex + operator.length];
+  return after === undefined || isLiqeWhitespace(after) || /[()]/.test(after);
 }
 
 /**
- * The parser spells `+1`, `1.`, `.5` and exponents into Liqe's decimal and
- * rejects an integer outside the signed 64-bit range or an exponent that
- * underflows to zero; any other word that starts like a number is a Liqe
- * syntax error. Membership members are read with `Number`, so a wide
- * integer inside `in[...]` is not rejected there.
+ * Liqe reads a run of digits as a number, and the parser then reads the
+ * digits back from the text and rejects a plain integer outside the
+ * signed 64-bit range: the unquoted value after an operator
+ * (`count:9223372036854775809`), or a list member or range bound the
+ * bracket rewrite writes back as a number (`count:[1 TO
+ * 9223372036854775809]`). Membership members are read with `Number`, so a
+ * wide integer inside `in[...]` is not rejected there.
  */
-function hasBrokenNumeral(input: string, map: IQueryTextMap): boolean {
-  try {
-    spellNumerals(input);
-  } catch {
-    return true;
-  }
+function hasUnstorableInteger(input: string, map: IQueryTextMap): boolean {
   for (let index = 0; index < input.length; index += 1) {
-    if (!map.isCode[index] || map.depth[index] !== 0 || input[index] !== ':') {
+    if (!isSyntaxAt(map, index) || input[index] !== ':') {
       continue;
     }
     const word = readValueWordAfterOperator(input, map, index);
-    if (word !== null && isBrokenNumeralWord(word)) {
+    if (word !== null && isUnstorableIntegerWord(word)) {
       return true;
     }
   }
@@ -1382,18 +1006,13 @@ function hasBrokenNumeral(input: string, map: IQueryTextMap): boolean {
       const written = bounds
         ? [bounds.min, bounds.max]
         : splitListMembers(span.body);
-      return written.some(
-        token => isPlainInteger(token) && isUnstorableInteger(token)
-      );
+      return written.some(isUnstorableIntegerWord);
     },
     map.isCode
   );
 }
 
-function isBrokenNumeralWord(word: string): boolean {
-  if (NUMERAL_LIKE_WORD.test(word) && !isSpelledNumeral(word)) {
-    return true;
-  }
+function isUnstorableIntegerWord(word: string): boolean {
   return isPlainInteger(word) && isUnstorableInteger(word);
 }
 
@@ -1401,7 +1020,7 @@ function isBrokenNumeralWord(word: string): boolean {
  * The unquoted word after the comparison operator whose colon is at
  * `colonIndex`, up to Liqe whitespace, a parenthesis or the end of the text.
  * Null when no word follows, or when it begins a literal, a bracket, or a
- * membership list, which other checks read.
+ * membership list.
  */
 function readValueWordAfterOperator(
   input: string,
@@ -1420,449 +1039,6 @@ function readValueWordAfterOperator(
   return word.length === 0 ? null : word;
 }
 
-/**
- * A quoted backslash sequence outside Liqe's escapes is a syntax error
- * (`"a\q"` is not `aq`). A closed quote directly followed by the same quote
- * (`"a""b"`) is a tail glued to a literal, which the glued-tail check reads,
- * or a copied bracket member with a tail.
- */
-function hasRejectedQuote(input: string, map: IQueryTextMap): boolean {
-  return map.literals.some(
-    literal =>
-      literal.kind === 'string' &&
-      literal.closed &&
-      hasRejectedEscape(input, literal)
-  );
-}
-
-/**
- * Liqe's regex body is any character but a backslash, or a backslash and
- * one such character, so two backslashes in a row never stand inside a
- * regex Liqe reads: `l:/\\/` is a syntax error while `l:/\//` and `l:"\\"`
- * parse. The scan that closes a regex where Liqe cannot read the text
- * pairs `\\` as an escape, so a regex that reaches Liqe as one, at bracket
- * depth zero or as a list member written back as typed, is read here. A
- * quoted bound, a membership member and a member the rewrite quotes reach
- * Liqe as strings, whose escapes the quote check reads.
- */
-function hasRejectedRegexEscape(input: string, map: IQueryTextMap): boolean {
-  const hasRegexLiteral = map.literals.some(
-    literal =>
-      literal.kind === 'regex' &&
-      map.depth[literal.start] === 0 &&
-      input.slice(literal.start, literal.end).includes('\\\\')
-  );
-  return (
-    hasRegexLiteral ||
-    someBracketExpression(
-      input,
-      span =>
-        isListBody(span) &&
-        splitListMembers(span.body).some(
-          member =>
-            writesBackUnquoted(member) &&
-            member.startsWith('/') &&
-            member.includes('\\\\')
-        ),
-      map.isCode
-    )
-  );
-}
-
-/**
- * Liqe's string characters exclude a line feed, so a quoted value, member,
- * bound or field name holding one is a syntax error, as is an unquoted
- * list member or range bound holding one: the bracket rewrite quotes a
- * member with whitespace and a bound that is neither a number nor quoted,
- * escaping only backslashes and double quotes, so `status:[a` LF `b]`
- * reaches Liqe as `status:"a` LF `b"`. A regex body keeps the line feed
- * and a membership member is decoded by the parser and keeps it. Such a
- * member stands in a text Liqe reads only inside a regex Liqe reads from
- * the text before it (`x:[//] y:[a` LF `b] e://` is one regex), which the
- * parser's rewritten text decides: the same-length stand-in writes the
- * member as a plain string, so Liqe may read the stand-in two ways where
- * it reads the rewritten text one way. What that one reading swallowed
- * beside the member is `hasRejectedLiqeReading`'s.
- */
-function hasQuotedLineFeed(input: string, map: IQueryTextMap): boolean {
-  const hasLiteralLineFeed = map.literals.some(
-    literal =>
-      literal.kind === 'string' &&
-      input.slice(literal.start, literal.end).includes('\n')
-  );
-  return (
-    hasLiteralLineFeed ||
-    (someBracketExpression(input, hasLineFeedMember, map.isCode) &&
-      !isReadByLiqe(input))
-  );
-}
-
-/**
- * Whether the rewrite quotes a list member or range bound of `span` that
- * holds a raw line feed. A quoted token is copied as written, so its line
- * feed is read as a literal's; a member or bound is trimmed, so a line feed
- * beside a comma, a `TO` or a bracket is Liqe whitespace.
- */
-function hasLineFeedMember(span: IBracketExpressionSpan): boolean {
-  const holdsLineFeed = (token: string): boolean =>
-    !isQuotedToken(token) && token.includes('\n');
-  if (isListBody(span)) {
-    return splitListMembers(span.body).some(holdsLineFeed);
-  }
-  const bounds = readRangeBounds(span);
-  return bounds !== null && [bounds.min, bounds.max].some(holdsLineFeed);
-}
-
-/**
- * Whether Liqe reads the text the parser hands it for `input` one way. A
- * numeral the parser rejects before Liqe, a syntax error and an ambiguous
- * reading all make the parser throw.
- */
-function isReadByLiqe(input: string): boolean {
-  const rewritten = readParserText(input);
-  return rewritten !== null && readLiqe(rewritten).ast !== null;
-}
-
-/**
- * Liqe's implicit operator needs whitespace between two clauses or groups,
- * `NOT` needs whitespace before its operand, and a minus takes a tag, never
- * a group. `AND` and `OR` may touch a group: on their right always, on
- * their left only when that group is the whole left operand, so
- * `(a:1)AND(b:2)` parses while `(a:1)AND(b:2)AND(c:3)` and `x:1 (a:1)AND
- * (b:2)` do not. A `(` must therefore follow the start, Liqe whitespace,
- * `(` or an `AND`/`OR`, and a `)` must be followed by the end, Liqe
- * whitespace, `)`, or an `AND`/`OR` when its `(` begins the operand. The
- * group the bracket rewrite emits for a list or a two-sided range is one
- * such group, so a clause-leading minus before `status:[a, b]` reaches
- * Liqe as `-(`, which it rejects, while `NOT status:[a, b]` is `NOT (`;
- * `status:!=[a, b]` reaches Liqe as `NOT (status:a OR status:b)`, so its
- * group never begins its operand and `status:!=[a, b]AND(x:1)` is glued.
- */
-function hasGluedParenthesis(input: string, map: IQueryTextMap): boolean {
-  const groupEnds = readGroupEnds(input, map.isCode);
-  const tokens = readSyntaxTokens(input, map);
-  const openers: number[] = [];
-  for (let index = 0; index < tokens.length; index += 1) {
-    const token = tokens[index];
-    if (token.kind === 'open') {
-      if (!separatesBeforeGroup(input, map, token.start, groupEnds)) {
-        return true;
-      }
-      openers.push(index);
-    } else if (token.kind === 'close') {
-      const opener = openers.pop();
-      const openStart = opener === undefined ? 0 : tokens[opener].start;
-      const beginsOperand = beginsOperandAt(input, map, openStart);
-      if (!separatesAfterGroup(input, token.end, groupEnds, beginsOperand)) {
-        return true;
-      }
-      if (
-        opener !== undefined &&
-        followsGluedOperator(input, openStart, groupEnds) &&
-        !holdsOneOperand(tokens.slice(opener + 1, index))
-      ) {
-        return true;
-      }
-    }
-  }
-  return someBracketExpression(
-    input,
-    span => {
-      if (!emitsGroup(span)) {
-        return false;
-      }
-      const isAfterMinus =
-        input[span.start - 1] === '-' &&
-        startsMinusNegation(input, map, span.start - 1);
-      const beginsOperand =
-        span.operator !== ':!=' && beginsOperandAt(input, map, span.start);
-      return (
-        isAfterMinus ||
-        !separatesAfterGroup(input, span.end, groupEnds, beginsOperand)
-      );
-    },
-    map.isCode
-  );
-}
-
-function separatesBeforeGroup(
-  input: string,
-  map: IQueryTextMap,
-  index: number,
-  groupEnds: number[]
-): boolean {
-  if (index === 0) {
-    return true;
-  }
-  const before = input[index - 1] ?? '';
-  if (map.isCode[index - 1] && (isLiqeWhitespace(before) || before === '(')) {
-    return true;
-  }
-  return followsGluedOperator(input, index, groupEnds);
-}
-
-/**
- * Whether an `AND` or `OR` the parser reads as an operator ends exactly at
- * `index`, glued to what follows.
- */
-function followsGluedOperator(
-  input: string,
-  index: number,
-  groupEnds: number[]
-): boolean {
-  return [3, 2].some(length => {
-    if (index < length) {
-      return false;
-    }
-    const word = readLogicalOperator(input, index - length, groupEnds);
-    return word !== null && word !== 'NOT' && word.length === length;
-  });
-}
-
-/**
- * Whether the tokens inside a group are one operand to Liqe: one clause, or
- * one nested group, either after a `NOT`. A group glued to the `AND` or
- * `OR` before it may hold nothing else (`s:a AND(y:D)` parses, `s:a
- * AND(y:D l:a)` does not); with whitespace before it, any group may follow.
- */
-function holdsOneOperand(content: ISyntaxToken[]): boolean {
-  const operand = content[0]?.kind === 'NOT' ? content.slice(1) : content;
-  const first = operand[0];
-  if (first === undefined) {
-    return false;
-  }
-  if (operand.length === 1) {
-    return first.kind === 'clause';
-  }
-  let depth = 0;
-  for (let index = 0; index < operand.length; index += 1) {
-    const kind = operand[index].kind;
-    depth += kind === 'open' ? 1 : kind === 'close' ? -1 : 0;
-    if (depth === 0) {
-      return first.kind === 'open' && index === operand.length - 1;
-    }
-  }
-  return false;
-}
-
-/**
- * Whether a group that ends just before `end` may be followed by what
- * stands at `end`: the end of the text, Liqe whitespace, `)`, or an
- * `AND`/`OR` glued to it when the group begins its operand.
- */
-function separatesAfterGroup(
-  input: string,
-  end: number,
-  groupEnds: number[],
-  beginsOperand: boolean
-): boolean {
-  const after = input[end];
-  if (after === undefined || isLiqeWhitespace(after) || after === ')') {
-    return true;
-  }
-  const word = readLogicalOperator(input, end, groupEnds);
-  return (word === 'AND' || word === 'OR') && beginsOperand;
-}
-
-/**
- * Whether the group whose `(` stands at `openIndex` begins its operand: the
- * start of the text or an enclosing `(` and whitespace precede it.
- */
-function beginsOperandAt(
-  input: string,
-  map: IQueryTextMap,
-  openIndex: number
-): boolean {
-  let before = openIndex - 1;
-  while (before >= 0 && map.isCode[before] && isLiqeWhitespace(input[before])) {
-    before -= 1;
-  }
-  return before < 0 || (map.isCode[before] === true && input[before] === '(');
-}
-
-/**
- * A list member the rewrite writes back unquoted reaches Liqe as typed, so
- * `[AND]`, `[1x]` and `[a"b"]` are syntax errors. Operator words are
- * uppercased first, as the parser does, so `[ and ]` is `AND` while
- * `[and]` stays the value `and`. The one member of a list with text glued
- * to its closer reaches Liqe joined to that text, which the glued-tail
- * check reads (`[AND]x` is `ANDx`).
- */
-function hasRejectedListWord(input: string, map: IQueryTextMap): boolean {
-  const uppercased = uppercaseBooleanOperators(input);
-  return someBracketExpression(
-    uppercased,
-    span =>
-      isListBody(span) &&
-      !isJoinedToTail(uppercased, map, span) &&
-      splitListMembers(span.body).some(
-        member => writesBackUnquoted(member) && isRejectedValueWord(member)
-      ),
-    map.isCode
-  );
-}
-
-/**
- * Whether the rewrite writes the span's one member or bound back unquoted
- * with text glued to the closer, so Liqe reads them as one word, which the
- * glued-tail check judges.
- */
-function isJoinedToTail(
-  input: string,
-  map: IQueryTextMap,
-  span: IBracketExpressionSpan
-): boolean {
-  return (
-    readUnquotedRewrite(span) !== null &&
-    readWordAt(input, map, span.end).length > 0
-  );
-}
-
-/**
- * A bracket member or bound copied as written with a tail glued to its
- * literal is a syntax error (`status:["a"b]`, `status:[/a/b]`), unless it
- * is the one regex member of a list with text glued to the closer, which
- * Liqe reads joined to that text (`status:[//2]/` is `status://2/`). A
- * quoted member or bound with any text after its first literal
- * (`status:["a" OR status:"c"]`, `status:["a" "b"]`) is rejected by the
- * parser once Liqe has read that first literal, since Liqe reads the text
- * after it as more query.
- */
-function hasCopiedMember(input: string, map: IQueryTextMap): boolean {
-  return someBracketExpression(
-    input,
-    span =>
-      isCopiedBracketMember(span) &&
-      !(
-        isJoinedToTail(input, map, span) &&
-        (readUnquotedRewrite(span)?.startsWith('/') ?? false)
-      ),
-    map.isCode
-  );
-}
-
-/**
- * Whether an unquoted word Liqe reads as a value is one it refuses: exactly
- * an operator word, or neither its unquoted value nor a numeral the parser
- * spells. A word that begins a literal or a bracket is left to its own
- * check.
- */
-function isRejectedValueWord(word: string): boolean {
-  if (/^["'/[{]/.test(word)) {
-    return false;
-  }
-  if (LIQE_KEYWORD_VALUE.test(word)) {
-    return true;
-  }
-  return !LIQE_UNQUOTED_VALUE.test(word) && !isSpelledNumeral(word);
-}
-
-/**
- * A closed quote or regex must be followed by the end of the text, Liqe
- * whitespace or `)`; a quoted string may also be a field name, so `:` is
- * accepted after it. Anything else glued to the literal (`status:"a"b`,
- * `status:/a/ib`) is a syntax error. A literal inside a bracket body stays
- * on the parser's rewrite, but text glued to the bracket's closer reaches
- * Liqe glued to what the rewrite wrote: a quoted placeholder or value
- * (`status:in[a]b`, `status:["a"]b`, `status:[a TO *]b`), which is a
- * syntax error, or one unquoted member or numeric bound, which Liqe reads
- * joined to the tail (`status:[a]b` is `status:ab`, `status:[1]x` is
- * `status:1x`). A group's closer is read as a `)` by the syntax tokens.
- */
-function hasGluedLiteralTail(input: string, map: IQueryTextMap): boolean {
-  const hasQuoteTail = map.literals.some(literal => {
-    if (!literal.closed || map.depth[literal.start] !== 0) {
-      return false;
-    }
-    const after = input[literal.end];
-    if (after === undefined || isLiqeWhitespace(after) || after === ')') {
-      return false;
-    }
-    return !(literal.kind === 'string' && after === ':');
-  });
-  return (
-    hasQuoteTail ||
-    hasGluedRangeTail(input, map.isCode) ||
-    someBracketExpression(
-      input,
-      span => {
-        const after = input[span.end];
-        if (after === undefined || isLiqeWhitespace(after) || after === ')') {
-          return false;
-        }
-        if (span.kind === 'membership') {
-          return true;
-        }
-        if (span.kind === 'rejected' || emitsGroup(span)) {
-          return false;
-        }
-        const written = readUnquotedRewrite(span);
-        if (written === null) {
-          return true;
-        }
-        const tail = readWordAt(input, map, span.end);
-        return isRejectedJoinedValue(spellWrittenValue(written), tail);
-      },
-      map.isCode
-    )
-  );
-}
-
-/**
- * The spelling the parser hands Liqe for a bracket member it writes back
- * unquoted: a numeral is spelled first, so `[.5]` is `0.5`.
- */
-function spellWrittenValue(written: string): string {
-  if (!SPELLED_NUMERAL.test(written)) {
-    return written;
-  }
-  try {
-    return spellNumeralToken(written);
-  } catch {
-    return written;
-  }
-}
-
-/**
- * Whether Liqe rejects the value it reads when `tail` is glued to the
- * unquoted `written` text: a regex must still be one closed literal with
- * only flags after it, and any other word must be Liqe's value or decimal.
- * The parser spells numerals before its bracket rewrite, so the joined
- * text reaches Liqe as written: `status:[1].5` is `status:1.5`, while
- * `status:[1].` and `status:[1]e5` are not Liqe's decimal.
- */
-function isRejectedJoinedValue(written: string, tail: string): boolean {
-  const joined = written + tail;
-  if (joined.startsWith('/')) {
-    const literal = readLiteralAt(joined, 0);
-    return !(literal.closed && literal.end === joined.length);
-  }
-  return (
-    LIQE_KEYWORD_VALUE.test(joined) ||
-    !(LIQE_UNQUOTED_VALUE.test(joined) || LIQE_DECIMAL.test(joined))
-  );
-}
-
-/**
- * The unquoted word after a comparison operator must be Liqe's value or a
- * numeral the parser spells, and not an operator word: `a%b`, `-x`, `a=b`,
- * `1x`, `2nd`, `a"b"` and `status:AND` are syntax errors. A literal glued
- * to the word (`status:a"b"`) is part of it; a bare word that starts like
- * a number is a clause with no field.
- */
-function hasRejectedValueWord(input: string, map: IQueryTextMap): boolean {
-  for (let index = 0; index < input.length; index += 1) {
-    if (!map.isCode[index] || map.depth[index] !== 0 || input[index] !== ':') {
-      continue;
-    }
-    const word = readValueWordAfterOperator(input, map, index);
-    if (word !== null && isRejectedValueWord(word)) {
-      return true;
-    }
-  }
-  return false;
-}
-
 function readWordAt(input: string, map: IQueryTextMap, start: number): string {
   let end = start;
   while (end < input.length) {
@@ -1873,6 +1049,46 @@ function readWordAt(input: string, map: IQueryTextMap, start: number): string {
     end += 1;
   }
   return input.slice(start, end);
+}
+
+/**
+ * A closed quoted literal Liqe's string grammar refuses: its characters
+ * exclude a line feed, and a backslash must start one of Liqe's escapes
+ * (`"a\q"` is not `aq`, `"\U0041"` is not `A`). The parser decodes a
+ * quoted membership member with that grammar before Liqe runs
+ * (`status:in["a\q"]`, `status:in["a` LF `b"]`), which is where this
+ * decides; anywhere else the literal reaches Liqe, whose reading rejects
+ * it as well.
+ */
+function hasRejectedStringLiteral(input: string, map: IQueryTextMap): boolean {
+  return map.literals.some(
+    literal =>
+      literal.kind === 'string' &&
+      literal.closed &&
+      (input.slice(literal.start, literal.end).includes('\n') ||
+        hasRejectedEscape(input, literal))
+  );
+}
+
+/**
+ * A quoted membership member that is not one closed literal
+ * (`status:in["a"b"c"]`, `status:in["a" OR x:"c"]`, `status:in["a" "b"]`),
+ * which the parser's membership decode refuses. Liqe never sees the
+ * member, since the clause is lifted out as a placeholder; a bracket list
+ * member or range bound copied as written reaches Liqe, where the reading
+ * decides.
+ */
+function hasRejectedMembershipLiteral(
+  input: string,
+  map: IQueryTextMap
+): boolean {
+  return someBracketExpression(
+    input,
+    span =>
+      span.kind === 'membership' &&
+      splitListMembers(span.body).some(hasQuotedTail),
+    map.isCode
+  );
 }
 
 function hasRejectedEscape(input: string, literal: ILiteralAt): boolean {
