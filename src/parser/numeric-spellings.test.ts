@@ -12,39 +12,14 @@
  * name.
  */
 
-import { createRequire } from 'module';
-import { real, sqliteTable, SQLiteSyncDialect } from 'drizzle-orm/sqlite-core';
-import { filterInMemory } from '../adapters/memory';
-import { DrizzleTranslator } from '../translators/drizzle';
-import { SqlTranslator } from '../translators/sql';
+import { integer, real, sqliteTable } from 'drizzle-orm/sqlite-core';
 import { QueryParseError, QueryParser } from './parser';
-import { IComparisonExpression, QueryExpression } from './types';
-
-const nodeRequire = createRequire(__filename);
-
-interface ISqliteStatement {
-  all(...params: unknown[]): Array<{ id: number }>;
-  run(...params: unknown[]): unknown;
-}
-
-interface ISqliteDatabase {
-  exec(sqlText: string): void;
-  prepare(sqlText: string): ISqliteStatement;
-  close(): void;
-}
-
-interface ISqliteDatabaseConstructor {
-  new (filename: string): ISqliteDatabase;
-}
+import { IComparisonExpression } from './types';
+import { IParameterizedSql, openSqliteHarness } from '../test-support';
 
 interface IItem {
   id: number;
   priority: number;
-}
-
-interface IParameterizedSql {
-  sql: string;
-  params: unknown[];
 }
 
 interface IEngineRun {
@@ -67,21 +42,9 @@ const rows: IItem[] = [
 ];
 
 const items = sqliteTable('items', {
+  id: integer('id'),
   priority: real('priority')
 });
-
-function openDatabase(): ISqliteDatabase {
-  const Database = nodeRequire('better-sqlite3') as ISqliteDatabaseConstructor;
-  const database = new Database(':memory:');
-  database.exec('CREATE TABLE items (id INTEGER PRIMARY KEY, priority REAL)');
-  const insert = database.prepare(
-    'INSERT INTO items (id, priority) VALUES (?, ?)'
-  );
-  for (const row of rows) {
-    insert.run(row.id, row.priority);
-  }
-  return database;
-}
 
 function comparison(
   operator: IComparisonExpression['operator'],
@@ -93,52 +56,23 @@ function comparison(
 
 describe('unquoted numeric spellings', () => {
   const parser = new QueryParser();
-  const dialect = new SQLiteSyncDialect();
-  const database = openDatabase();
-
-  afterAll((): void => {
-    database.close();
+  const harness = openSqliteHarness({
+    table: items,
+    columns: { priority: 'REAL' },
+    rows
   });
-
-  function idsOfSql(statement: IParameterizedSql): number[] {
-    return database
-      .prepare(`SELECT id FROM items WHERE ${statement.sql} ORDER BY id`)
-      .all(...statement.params)
-      .map(row => row.id);
-  }
-
-  function compileDrizzle(
-    expression: QueryExpression,
-    schema?: Record<string, Record<string, unknown>>
-  ): IParameterizedSql {
-    const translator = new DrizzleTranslator(schema ? { schema } : {});
-    const compiled = dialect.sqlToQuery(translator.translate(expression));
-    return { sql: compiled.sql, params: compiled.params };
-  }
 
   /** Run one query through every engine and require them to agree. */
   function runEverywhere(query: string): IEngineRun {
-    const expression = parser.parse(query);
-    const inlineSql = new SqlTranslator({ useParameters: false }).translate(
-      expression
-    ) as string;
-    const parameterized = new SqlTranslator({ useParameters: true }).translate(
-      expression
-    ) as IParameterizedSql;
-    const drizzle = compileDrizzle(expression);
-    const schemaDrizzle = compileDrizzle(expression, { items });
-    const ids = filterInMemory(query, rows).map(row => row.id);
-    expect(idsOfSql({ sql: inlineSql, params: [] })).toEqual(ids);
-    expect(idsOfSql(parameterized)).toEqual(ids);
-    expect(idsOfSql(drizzle)).toEqual(ids);
-    expect(idsOfSql(schemaDrizzle)).toEqual(ids);
+    const run = harness.expectSameIds(query);
     return {
-      value: expression.type === 'comparison' ? expression.value : undefined,
-      inlineSql,
-      parameterized,
-      drizzle,
-      schemaDrizzle,
-      ids
+      value:
+        run.expression.type === 'comparison' ? run.expression.value : undefined,
+      inlineSql: run.inlineSql,
+      parameterized: run.parameterized,
+      drizzle: run.drizzle,
+      schemaDrizzle: run.schemaDrizzle,
+      ids: run.ids
     };
   }
 

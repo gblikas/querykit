@@ -11,42 +11,11 @@
  * In memory every string is greater than every boolean.
  */
 
-import { createRequire } from 'module';
-import { drizzle } from 'drizzle-orm/better-sqlite3';
-import {
-  integer,
-  sqliteTable,
-  SQLiteSyncDialect,
-  text
-} from 'drizzle-orm/sqlite-core';
+import { integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 import { filterInMemory } from '../adapters/memory';
 import { QueryParser } from '../parser';
 import { isInputComplete } from '../parser/input-parser';
-import { QueryExpression } from '../parser/types';
-import { DrizzleTranslator } from './drizzle';
-import { SqlTranslator } from './sql';
-
-const nodeRequire = createRequire(__filename);
-
-interface ISqliteStatement {
-  all(...params: unknown[]): Array<{ id: number }>;
-  run(...params: unknown[]): unknown;
-}
-
-interface ISqliteDatabase {
-  exec(sqlText: string): void;
-  prepare(sqlText: string): ISqliteStatement;
-  close(): void;
-}
-
-interface ISqliteDatabaseConstructor {
-  new (filename: string): ISqliteDatabase;
-}
-
-interface IParameterizedSql {
-  sql: string;
-  params: unknown[];
-}
+import { openSqliteHarness } from '../test-support';
 
 const rows: Array<{ id: number; label: string; flag: boolean | null }> = [
   { id: 1, label: 'a', flag: true },
@@ -59,17 +28,6 @@ const items = sqliteTable('items', {
   label: text('label'),
   flag: integer('flag', { mode: 'boolean' })
 });
-
-function openDatabase(): ISqliteDatabase {
-  const Database = nodeRequire('better-sqlite3') as ISqliteDatabaseConstructor;
-  const database = new Database(':memory:');
-  database.exec('CREATE TABLE items (id INTEGER PRIMARY KEY, label, flag)');
-  const insert = database.prepare('INSERT INTO items VALUES (?, ?, ?)');
-  for (const row of rows) {
-    insert.run(row.id, row.label, row.flag === null ? null : row.flag ? 1 : 0);
-  }
-  return database;
-}
 
 const cases: Array<
   [string, string, string, string, unknown[], string, number[]]
@@ -98,43 +56,11 @@ const cases: Array<
 
 describe('a string ordered against a boolean', () => {
   const parser = new QueryParser();
-  const dialect = new SQLiteSyncDialect();
-  const database = openDatabase();
-  const db = drizzle(database as never);
-
-  afterAll((): void => {
-    database.close();
+  const harness = openSqliteHarness({
+    table: items,
+    columns: { label: '', flag: '' },
+    rows
   });
-
-  function idsOfSql(statement: IParameterizedSql): number[] {
-    return database
-      .prepare(`SELECT id FROM items WHERE ${statement.sql} ORDER BY id`)
-      .all(...statement.params)
-      .map(row => row.id);
-  }
-
-  function compileDrizzle(
-    expression: QueryExpression,
-    schema?: Record<string, Record<string, unknown>>
-  ): IParameterizedSql {
-    const translator = new DrizzleTranslator(schema ? { schema } : {});
-    const compiled = dialect.sqlToQuery(translator.translate(expression));
-    return { sql: compiled.sql, params: compiled.params };
-  }
-
-  function idsOfBuilder(expression: QueryExpression): number[] {
-    const condition = new DrizzleTranslator({ schema: { items } }).translate(
-      expression,
-      { tableName: 'items' }
-    );
-    return db
-      .select({ id: items.id })
-      .from(items)
-      .where(condition)
-      .orderBy(items.id)
-      .all()
-      .map(row => row.id as number);
-  }
 
   it.each(cases)(
     '%s binds text as text and inlines a boolean on every SQL engine',
@@ -142,26 +68,14 @@ describe('a string ordered against a boolean', () => {
       expect(isInputComplete(query)).toBe(true);
       const expression = parser.parse(query);
       expect(expression).toMatchObject({ type: 'comparison', field, operator });
-      const inline = new SqlTranslator({ useParameters: false }).translate(
-        expression
-      ) as string;
-      const parameterized = new SqlTranslator().translate(
-        expression
-      ) as IParameterizedSql;
-      const bare = compileDrizzle(expression);
-      const schemaDrizzle = compileDrizzle(expression, { items });
-      expect(inline).toBe(inlineSql);
-      expect(parameterized).toEqual({ sql: parameterizedSql, params });
-      expect(bare).toEqual({ sql: parameterizedSql, params });
-      expect(schemaDrizzle).toEqual({
+      const run = harness.expectSameSqlIds(query, ids);
+      expect(run.inlineSql).toBe(inlineSql);
+      expect(run.parameterized).toEqual({ sql: parameterizedSql, params });
+      expect(run.drizzle).toEqual({ sql: parameterizedSql, params });
+      expect(run.schemaDrizzle).toEqual({
         sql: parameterizedSql.replace(`"${field}"`, `"items"."${field}"`),
         params
       });
-      expect(idsOfSql({ sql: inline, params: [] })).toEqual(ids);
-      expect(idsOfSql(parameterized)).toEqual(ids);
-      expect(idsOfSql(bare)).toEqual(ids);
-      expect(idsOfSql(schemaDrizzle)).toEqual(ids);
-      expect(idsOfBuilder(expression)).toEqual(ids);
     }
   );
 

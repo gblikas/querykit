@@ -2,6 +2,7 @@ export { openSqliteHarness } from './sqlite-harness';
 export type {
   HarnessTable,
   ICompiledQuery,
+  IEngineRun,
   IHarnessRow,
   IIdsByEngine,
   IParameterizedSql,
@@ -9,5 +10,6 @@ export type {
   ISqliteDatabase,
   ISqliteHarness,
   ISqliteHarnessOptions,
-  ISqliteStatement
+  ISqliteStatement,
+  QueryInput
 } from './types';

@@ -40,6 +40,9 @@ export interface ISqliteDatabase {
 export type HarnessTable = SQLiteTable &
   Record<string, unknown> & { readonly id: SQLiteColumn };
 
+/** A query as written, or an expression a test built by hand. */
+export type QueryInput = string | QueryExpression;
+
 /** A row the harness stores; `id` is what every engine returns. */
 export interface IHarnessRow {
   id: number;
@@ -77,6 +80,12 @@ export interface ICompiledQuery {
   schemaDrizzle: IParameterizedSql;
 }
 
+/** What the `expectSameIds` assertions return: the compiled forms and the agreed ids. */
+export interface IEngineRun extends ICompiledQuery {
+  /** The ids every engine returned: `expectedIds`, or the reference engine's. */
+  ids: number[];
+}
+
 /** The ids the SQL engines returned for one query, in id order. */
 export interface ISqlIdsByEngine {
   inline: number[];
@@ -104,8 +113,8 @@ export interface ISqliteHarness<TRow extends IHarnessRow> {
   readonly table: HarnessTable;
   readonly tableName: string;
   readonly rows: readonly TRow[];
-  /** Parses the query and compiles it on each SQL engine without running it. */
-  compile(query: string): ICompiledQuery;
+  /** Parses the query, if given as text, and compiles it on each SQL engine without running it. */
+  compile(query: QueryInput): ICompiledQuery;
   /** Ids of the table's rows the statement selects, in `orderBy` order. */
   idsOfSql(statement: IParameterizedSql, orderBy?: string): number[];
   /** The Drizzle translator's SQL for the expression, with or without a schema. */
@@ -116,16 +125,18 @@ export interface ISqliteHarness<TRow extends IHarnessRow> {
   /** Ids the Drizzle query builder returns for the expression, in id order. */
   idsOfBuilder(expression: QueryExpression): number[];
   /** Ids the in-memory filter returns for the query, in row order. */
-  idsInMemory(query: string): number[];
+  idsInMemory(query: QueryInput): number[];
   /** Runs the query on every engine and returns each engine's ids. */
-  idsByEngine(query: string): IIdsByEngine;
+  idsByEngine(query: QueryInput): IIdsByEngine;
   /** Runs the query on the SQL engines and returns each engine's ids. */
-  sqlIdsByEngine(query: string): ISqlIdsByEngine;
+  sqlIdsByEngine(query: QueryInput): ISqlIdsByEngine;
   /**
-   * Asserts that every engine returns `expectedIds`; a failure shows the
-   * ids of each engine. Returns the compiled forms for further assertions.
+   * Asserts that every engine returns `expectedIds`, or, when they are
+   * omitted, the ids the in-memory filter returned. One failure shows the
+   * ids of each engine, or the error an engine threw. Returns the compiled
+   * forms and the agreed ids for further assertions.
    */
-  expectSameIds(query: string, expectedIds: number[]): ICompiledQuery;
-  /** As `expectSameIds`, over the SQL engines only. */
-  expectSameSqlIds(query: string, expectedIds: number[]): ICompiledQuery;
+  expectSameIds(query: QueryInput, expectedIds?: number[]): IEngineRun;
+  /** As `expectSameIds`, over the SQL engines only; inline SQL is the reference. */
+  expectSameSqlIds(query: QueryInput, expectedIds?: number[]): IEngineRun;
 }

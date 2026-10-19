@@ -8,41 +8,11 @@
  * character (`U+FFFF` to `😀`) keeps both ends in memory as well.
  */
 
-import { createRequire } from 'module';
-import {
-  integer,
-  sqliteTable,
-  SQLiteSyncDialect,
-  text
-} from 'drizzle-orm/sqlite-core';
+import { integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 import { filterInMemory } from '../adapters/memory';
 import { QueryParser } from '../parser';
 import { QueryParseError } from '../parser/parser';
-import { QueryExpression } from '../parser/types';
-import { DrizzleTranslator } from './drizzle';
-import { SqlTranslator } from './sql';
-
-const nodeRequire = createRequire(__filename);
-
-interface ISqliteStatement {
-  all(...params: unknown[]): Array<{ id: number }>;
-  run(...params: unknown[]): unknown;
-}
-
-interface ISqliteDatabase {
-  exec(sqlText: string): void;
-  prepare(sqlText: string): ISqliteStatement;
-  close(): void;
-}
-
-interface ISqliteDatabaseConstructor {
-  new (filename: string): ISqliteDatabase;
-}
-
-interface IParameterizedSql {
-  sql: string;
-  params: unknown[];
-}
+import { openSqliteHarness } from '../test-support';
 
 const rows: Array<{
   id: number;
@@ -64,60 +34,17 @@ const items = sqliteTable('items', {
   label: text('label')
 });
 
-function openDatabase(): ISqliteDatabase {
-  const Database = nodeRequire('better-sqlite3') as ISqliteDatabaseConstructor;
-  const database = new Database(':memory:');
-  database.exec(
-    'CREATE TABLE items (id INTEGER PRIMARY KEY, priority INTEGER, label TEXT)'
-  );
-  const insert = database.prepare('INSERT INTO items VALUES (?, ?, ?)');
-  for (const row of rows) {
-    insert.run(row.id, row.priority, row.label);
-  }
-  return database;
-}
-
 describe('range bounds', () => {
   const parser = new QueryParser();
-  const dialect = new SQLiteSyncDialect();
-  const database = openDatabase();
-
-  afterAll((): void => {
-    database.close();
+  const harness = openSqliteHarness({
+    table: items,
+    columns: { priority: 'INTEGER', label: 'TEXT' },
+    rows
   });
-
-  function idsOfSql(statement: IParameterizedSql): number[] {
-    return database
-      .prepare(`SELECT id FROM items WHERE ${statement.sql} ORDER BY id`)
-      .all(...statement.params)
-      .map(row => row.id);
-  }
-
-  function compileDrizzle(
-    expression: QueryExpression,
-    schema?: Record<string, Record<string, unknown>>
-  ): IParameterizedSql {
-    const translator = new DrizzleTranslator(schema ? { schema } : {});
-    const compiled = dialect.sqlToQuery(translator.translate(expression));
-    return { sql: compiled.sql, params: compiled.params };
-  }
 
   /** Every engine must return the same ids for the query. */
   function expectIds(query: string, expectedIds: number[]): void {
-    const expression = parser.parse(query);
-    const inline = new SqlTranslator({ useParameters: false }).translate(
-      expression
-    ) as string;
-    const parameterized = new SqlTranslator().translate(
-      expression
-    ) as IParameterizedSql;
-    expect(idsOfSql({ sql: inline, params: [] })).toEqual(expectedIds);
-    expect(idsOfSql(parameterized)).toEqual(expectedIds);
-    expect(idsOfSql(compileDrizzle(expression))).toEqual(expectedIds);
-    expect(idsOfSql(compileDrizzle(expression, { items }))).toEqual(
-      expectedIds
-    );
-    expect(filterInMemory(query, rows).map(row => row.id)).toEqual(expectedIds);
+    harness.expectSameIds(query, expectedIds);
   }
 
   it('keeps an inclusive numeric range and matches nothing when swapped', () => {

@@ -28,6 +28,7 @@ import { getTableName } from 'drizzle-orm';
 import { BetterSQLite3Database, drizzle } from 'drizzle-orm/better-sqlite3';
 import { SQLiteSyncDialect } from 'drizzle-orm/sqlite-core';
 import { filterInMemory } from '../adapters/memory';
+import { filterByExpression } from '../adapters/memory/match-expression';
 import { QueryParser } from '../parser';
 import { IParserOptions, QueryExpression } from '../parser/types';
 import { DrizzleTranslator } from '../translators/drizzle';
@@ -35,13 +36,15 @@ import { SqlTranslator } from '../translators/sql';
 import {
   HarnessTable,
   ICompiledQuery,
+  IEngineRun,
   IHarnessRow,
   IIdsByEngine,
   IParameterizedSql,
   ISqlIdsByEngine,
   ISqliteDatabase,
   ISqliteHarness,
-  ISqliteHarnessOptions
+  ISqliteHarnessOptions,
+  QueryInput
 } from './types';
 
 const nodeRequire = createRequire(__filename);
@@ -98,6 +101,20 @@ function sameIdsAs<T extends object>(actual: T, expectedIds: number[]): T {
   ) as T;
 }
 
+/**
+ * Asserts every engine in `actual` returned `reference`; a reference engine
+ * that threw leaves `[]`, so its error still shows under its own key.
+ */
+function expectAgreement(
+  compiled: ICompiledQuery,
+  actual: Record<string, EngineReport>,
+  reference: EngineReport
+): IEngineRun {
+  const ids = Array.isArray(reference) ? reference : [];
+  expect(actual).toEqual(sameIdsAs(actual, ids));
+  return { ...compiled, ids };
+}
+
 class SqliteHarness<TRow extends IHarnessRow> implements ISqliteHarness<TRow> {
   public readonly parser: QueryParser;
   public readonly dialect = new SQLiteSyncDialect();
@@ -120,8 +137,9 @@ class SqliteHarness<TRow extends IHarnessRow> implements ISqliteHarness<TRow> {
     this.db = drizzle(this.database as never);
   }
 
-  public compile(query: string): ICompiledQuery {
-    const expression = this.parser.parse(query);
+  public compile(query: QueryInput): ICompiledQuery {
+    const expression =
+      typeof query === 'string' ? this.parser.parse(query) : query;
     const inlineSql = new SqlTranslator({ useParameters: false }).translate(
       expression
     ) as string;
@@ -169,38 +187,38 @@ class SqliteHarness<TRow extends IHarnessRow> implements ISqliteHarness<TRow> {
       .map(row => row.id as number);
   }
 
-  public idsInMemory(query: string): number[] {
-    return filterInMemory(query, this.rows, this.parserOptions).map(
-      row => row.id
-    );
+  public idsInMemory(query: QueryInput): number[] {
+    const matched =
+      typeof query === 'string'
+        ? filterInMemory(query, this.rows, this.parserOptions)
+        : filterByExpression(query, this.rows);
+    return matched.map(row => row.id);
   }
 
-  public idsByEngine(query: string): IIdsByEngine {
+  public idsByEngine(query: QueryInput): IIdsByEngine {
     return { ...this.sqlIdsByEngine(query), memory: this.idsInMemory(query) };
   }
 
-  public sqlIdsByEngine(query: string): ISqlIdsByEngine {
+  public sqlIdsByEngine(query: QueryInput): ISqlIdsByEngine {
     return this.sqlIdsOf(this.compile(query));
   }
 
-  public expectSameIds(query: string, expectedIds: number[]): ICompiledQuery {
+  public expectSameIds(query: QueryInput, expectedIds?: number[]): IEngineRun {
     const compiled = this.compile(query);
     const actual = {
       ...this.sqlReportOf(compiled),
       memory: attempt(() => this.idsInMemory(query))
     };
-    expect(actual).toEqual(sameIdsAs(actual, expectedIds));
-    return compiled;
+    return expectAgreement(compiled, actual, expectedIds ?? actual.memory);
   }
 
   public expectSameSqlIds(
-    query: string,
-    expectedIds: number[]
-  ): ICompiledQuery {
+    query: QueryInput,
+    expectedIds?: number[]
+  ): IEngineRun {
     const compiled = this.compile(query);
     const actual = this.sqlReportOf(compiled);
-    expect(actual).toEqual(sameIdsAs(actual, expectedIds));
-    return compiled;
+    return expectAgreement(compiled, actual, expectedIds ?? actual.inline);
   }
 
   /** Every SQL engine's ids; an engine that throws ends the run. */
