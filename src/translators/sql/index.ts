@@ -44,6 +44,17 @@ function isQuotedDecimal(value: unknown): value is string {
 }
 
 /**
+ * A finite bare number. Inline membership compares it by storage class,
+ * the same rule as equality.
+ *
+ * @param value - One membership member
+ * @returns True when the member is a finite number
+ */
+function isBareNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+/**
  * Options specific to the SQL translator
  */
 export interface ISqlTranslatorOptions extends ITranslatorOptions {
@@ -424,7 +435,10 @@ export class SqlTranslator
   /**
    * Membership that agrees with `=` and `<>`. An empty list is false and an
    * empty exclusion is true. A quoted decimal is compared by storage class,
-   * the same rule as equality, and the other members stay in one IN list.
+   * the same rule as equality. Inline SQL does the same for a bare number,
+   * so a TEXT column does not turn `2024` into the text `2024`.
+   * Parameterized SQL already binds a real and agrees. The other members
+   * stay in one IN list.
    *
    * @param field - Quoted identifier
    * @param values - List members, including null
@@ -439,26 +453,44 @@ export class SqlTranslator
     if (values.length === 0) {
       return isNot ? 'TRUE' : 'FALSE';
     }
-    const decimals = values.filter(isQuotedDecimal);
-    if (decimals.length === 0) {
+    const compared = values.filter((value: unknown): boolean =>
+      this.comparesMemberApart(value)
+    );
+    if (compared.length === 0) {
       return this.formatInClause(field, values, isNot);
     }
     const rest = values.filter(
-      (value: unknown): boolean => !isQuotedDecimal(value)
+      (value: unknown): boolean => !this.comparesMemberApart(value)
     );
     const parts: string[] = [];
     if (rest.length > 0) {
       parts.push(this.formatInClause(field, rest, isNot));
     }
     const operator = isNot ? '<>' : '=';
-    for (const decimal of decimals) {
-      parts.push(this.formatComparison(field, operator, decimal));
+    for (const member of compared) {
+      parts.push(this.formatComparison(field, operator, member));
     }
     if (parts.length === 1) {
       return parts[0];
     }
     const joiner = isNot ? ' AND ' : ' OR ';
     return parts.map((part: string): string => `(${part})`).join(joiner);
+  }
+
+  /**
+   * A member that equality compares on its own, outside the IN list.
+   *
+   * A quoted decimal always does. A bare number does only in inline SQL,
+   * where a numeric literal would take a TEXT column's affinity.
+   *
+   * @param value - One membership member
+   * @returns True when the member is compared by itself
+   */
+  private comparesMemberApart(value: unknown): boolean {
+    if (isQuotedDecimal(value)) {
+      return true;
+    }
+    return !this.options.useParameters && isBareNumber(value);
   }
 
   /**

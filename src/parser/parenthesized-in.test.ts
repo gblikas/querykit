@@ -82,7 +82,11 @@ describe('parenthesized in', () => {
     ],
     ['status IN (doing)', '"status" IN (\'doing\')', [2, 3]],
     ['status not in (doing)', '"status" NOT IN (\'doing\')', [1, 4]],
-    ['id in (2,3)', '"id" IN (2, 3)', [2, 3]],
+    [
+      'id in (2,3)',
+      '(("id" IS NULL AND NULL) OR (typeof("id") IN (\'integer\', \'real\') AND "id" = 2)) OR (("id" IS NULL AND NULL) OR (typeof("id") IN (\'integer\', \'real\') AND "id" = 3))',
+      [2, 3]
+    ],
     ['status in ("doing")', '"status" IN (\'doing\')', [2, 3]],
     ['status in ("a)b", doing)', "\"status\" IN ('a)b', 'doing')", [2, 3]],
     ['status in (not)', '"status" IN (\'not\')', []],

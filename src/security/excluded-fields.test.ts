@@ -1,7 +1,8 @@
 /**
  * Excluded field values on every engine.
  *
- * `enforceExcludedValues: { secret: [1] }` appends `AND secret NOT IN (1)`.
+ * `enforceExcludedValues: { secret: [1] }` appends the same comparison as
+ * `secret:!=1`. Inline SQL compares the number by storage class.
  * `createQueryKit` already injected it; inline SQL, parameterized SQL, the
  * Drizzle translator and the Drizzle adapter now apply the same comparison
  * when they are given the map, after the allowlist and complexity checks,
@@ -68,6 +69,8 @@ const items = sqliteTable('items', {
 
 const enforceExcludedValues = { secret: [1] };
 
+const excludedNumber = `NOT (("secret" IS NULL AND NULL) OR (typeof("secret") IN ('integer', 'real') AND "secret" = 1))`;
+
 function openDatabase(): ISqliteDatabase {
   const Database = nodeRequire('better-sqlite3') as ISqliteDatabaseConstructor;
   const database = new Database(':memory:');
@@ -79,16 +82,16 @@ function openDatabase(): ISqliteDatabase {
 }
 
 const cases: Array<[string, string, number[], number[]]> = [
-  ['status:open', `("status" = 'open') AND ("secret" NOT IN (1))`, [1], [1, 3]],
+  ['status:open', `("status" = 'open') AND (${excludedNumber})`, [1], [1, 3]],
   [
     'secret:1',
-    `(("secret" IS NULL AND NULL) OR (typeof("secret") IN ('integer', 'real') AND "secret" = 1)) AND ("secret" NOT IN (1))`,
+    `(("secret" IS NULL AND NULL) OR (typeof("secret") IN ('integer', 'real') AND "secret" = 1)) AND (${excludedNumber})`,
     [],
     [2, 3]
   ],
   [
     'status:open OR secret:1',
-    `(("status" = 'open') OR (("secret" IS NULL AND NULL) OR (typeof("secret") IN ('integer', 'real') AND "secret" = 1))) AND ("secret" NOT IN (1))`,
+    `(("status" = 'open') OR (("secret" IS NULL AND NULL) OR (typeof("secret") IN ('integer', 'real') AND "secret" = 1))) AND (${excludedNumber})`,
     [1],
     [1, 2, 3]
   ]

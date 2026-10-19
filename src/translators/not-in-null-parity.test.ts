@@ -1,10 +1,10 @@
 /**
  * NOT IN with null in the list.
  *
- * `priority:in[1,null]` is `IS NULL OR IN (1)` and keeps the null row;
- * `priority:not in[1,null]` is `IS NOT NULL AND NOT IN (1)` and keeps the
- * other non-null rows. The null member never makes the predicate unknown,
- * on inline SQL, parameterized SQL, Drizzle or in memory.
+ * `priority:in[1,null]` keeps the null row and the row whose priority is 1.
+ * `priority:not in[1,null]` keeps the other non-null rows. Inline SQL
+ * compares the number 1 by storage class. The null member never makes the
+ * predicate unknown, on inline SQL, parameterized SQL, Drizzle or in memory.
  */
 
 import { integer, sqliteTable } from 'drizzle-orm/sqlite-core';
@@ -36,13 +36,13 @@ describe('NOT IN with null in the list', () => {
     [
       'priority:in[1,null]',
       'IN',
-      '("priority" IS NULL) OR ("priority" IN (1))',
+      '("priority" IS NULL) OR (("priority" IS NULL AND NULL) OR (typeof("priority") IN (\'integer\', \'real\') AND "priority" = 1))',
       [1, 3]
     ],
     [
       'priority:not in[1,null]',
       'NOT IN',
-      '("priority" IS NOT NULL) AND ("priority" NOT IN (1))',
+      '("priority" IS NOT NULL) AND (NOT (("priority" IS NULL AND NULL) OR (typeof("priority") IN (\'integer\', \'real\') AND "priority" = 1)))',
       [2, 4]
     ]
   ])(

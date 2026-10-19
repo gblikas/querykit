@@ -29,9 +29,24 @@ describe('IN on a bigint', () => {
   });
 
   it.each([
-    ['amount:in[10]', 'IN', '"amount" IN (10)', [1, 3]],
-    ['amount:not in[10]', 'NOT IN', '"amount" NOT IN (10)', [2]],
-    ['amount:in[10.5, 20]', 'IN', '"amount" IN (10.5, 20)', [2]]
+    [
+      'amount:in[10]',
+      'IN',
+      '("amount" IS NULL AND NULL) OR (typeof("amount") IN (\'integer\', \'real\') AND "amount" = 10)',
+      [1, 3]
+    ],
+    [
+      'amount:not in[10]',
+      'NOT IN',
+      'NOT (("amount" IS NULL AND NULL) OR (typeof("amount") IN (\'integer\', \'real\') AND "amount" = 10))',
+      [2]
+    ],
+    [
+      'amount:in[10.5, 20]',
+      'IN',
+      '(("amount" IS NULL AND NULL) OR (typeof("amount") IN (\'integer\', \'real\') AND "amount" = 10.5)) OR (("amount" IS NULL AND NULL) OR (typeof("amount") IN (\'integer\', \'real\') AND "amount" = 20))',
+      [2]
+    ]
   ])(
     '%s matches the same integers on every engine',
     (query, operator, inlineSql, expectedIds) => {
