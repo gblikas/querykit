@@ -1,6 +1,6 @@
 {
   "name": "@gblikas/querykit",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "QueryKit compiles a Liqe / GitHub-like filter string into a Drizzle query or an in-memory filter, with field allowlists, clause limits, request-context virtual fields, and a token parser for a search box. Other ORMs, a CLI, and HTTP middleware are not implemented.",
   "repository": {
     "type": "git",
