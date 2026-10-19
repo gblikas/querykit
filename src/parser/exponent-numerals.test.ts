@@ -217,7 +217,10 @@ describe('exponent numerals', () => {
 
   it('binds the number 1e-7 through parameterized SQL', () => {
     const statement = parameterizedSql('priority:1e-7');
-    expect(statement).toEqual({ sql: '"priority" = ?', params: [1e-7] });
+    expect(statement).toEqual({
+      sql: `("priority" IS NULL AND NULL) OR (typeof("priority") IN ('integer', 'real') AND "priority" = ?)`,
+      params: [1e-7]
+    });
     expect(idsOfSql(statement)).toEqual([1]);
   });
 
@@ -233,7 +236,10 @@ describe('exponent numerals', () => {
 
   it('binds the number 1e-7 through the Drizzle translator', () => {
     const statement = drizzleSql('priority:1e-7');
-    expect(statement).toEqual({ sql: '"priority" = ?', params: [1e-7] });
+    expect(statement).toEqual({
+      sql: `("priority" IS NULL AND NULL) OR (typeof("priority") IN ('integer', 'real') AND "priority" = ?)`,
+      params: [1e-7]
+    });
     expect(idsOfSql(statement)).toEqual([1]);
   });
 

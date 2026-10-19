@@ -324,12 +324,13 @@ export class SqlTranslator
    * A bare number compared by storage class.
    *
    * Equality stays numeric: a TEXT column must not turn `2024` into the
-   * text `2024`. Inline SQL does that itself; parameterized equality already
-   * binds a real and agrees. An ordered comparison treats every text value
-   * as greater than every number, which is what in-memory filtering does
-   * and what a column with no affinity does. A TEXT column would otherwise
-   * compare the digits as text. The leading `IS NULL AND NULL` term keeps a
-   * NULL unknown.
+   * text `2024`, and a bound real must not match the text `2024.0`.
+   * Parameterized SQL binds a JavaScript number as a real, and a TEXT
+   * column reads that real back as `2024.0`. An ordered comparison treats
+   * every text value as greater than every number, which is what in-memory
+   * filtering does and what a column with no affinity does. A TEXT column
+   * would otherwise compare the digits as text. The leading `IS NULL AND
+   * NULL` term keeps a NULL unknown.
    *
    * @param field - Quoted identifier
    * @param sqlOperator - SQL comparison operator
@@ -351,21 +352,22 @@ export class SqlTranslator
   }
 
   /**
-   * Inline equality of a bare number against integer and real storage.
+   * Equality of a bare number against integer and real storage.
+   *
+   * Inline SQL writes the digits. Parameterized SQL binds the number. Both
+   * keep the comparison on integer and real storage, so a TEXT column
+   * matches neither the text `2024` nor the text `2024.0`.
    *
    * @param field - Quoted identifier
    * @param sqlOperator - `=` or `<>`
    * @param value - The number
-   * @returns The comparison, or null when parameters already agree
+   * @returns The comparison
    */
   private formatBareNumberEquality(
     field: string,
     sqlOperator: string,
     value: number
-  ): string | null {
-    if (this.options.useParameters) {
-      return null;
-    }
+  ): string {
     const literal = this.formatValue(value);
     const equality = `(${field} IS NULL AND NULL) OR (typeof(${field}) IN ('integer', 'real') AND ${field} = ${literal})`;
     return sqlOperator === '=' ? equality : `NOT (${equality})`;
@@ -435,10 +437,9 @@ export class SqlTranslator
   /**
    * Membership that agrees with `=` and `<>`. An empty list is false and an
    * empty exclusion is true. A quoted decimal is compared by storage class,
-   * the same rule as equality. Inline SQL does the same for a bare number,
-   * so a TEXT column does not turn `2024` into the text `2024`.
-   * Parameterized SQL already binds a real and agrees. The other members
-   * stay in one IN list.
+   * the same rule as equality. A bare number is too, in inline and
+   * parameterized SQL, so a TEXT column matches neither the text `2024` nor
+   * the text `2024.0`. The other members stay in one IN list.
    *
    * @param field - Quoted identifier
    * @param values - List members, including null
@@ -480,8 +481,9 @@ export class SqlTranslator
   /**
    * A member that equality compares on its own, outside the IN list.
    *
-   * A quoted decimal always does. A bare number does only in inline SQL,
-   * where a numeric literal would take a TEXT column's affinity.
+   * A quoted decimal always does. A bare number does in inline and
+   * parameterized SQL. A bound real would otherwise take a TEXT column's
+   * affinity and match the text `2024.0`.
    *
    * @param value - One membership member
    * @returns True when the member is compared by itself
@@ -490,7 +492,7 @@ export class SqlTranslator
     if (isQuotedDecimal(value)) {
       return true;
     }
-    return !this.options.useParameters && isBareNumber(value);
+    return isBareNumber(value);
   }
 
   /**

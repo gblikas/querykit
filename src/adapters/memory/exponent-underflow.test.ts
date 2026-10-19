@@ -74,7 +74,7 @@ describe('an exponent that underflows to zero', () => {
       const run = harness.expectSameIds(query, expectedIds);
       expect(run.inlineSql).toBe(inlineSql);
       expect(run.parameterized).toEqual({
-        sql: '"count" = ?',
+        sql: `("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" = ?)`,
         params: [value]
       });
     }

@@ -169,7 +169,9 @@ describe('excluded field values', () => {
         { enforceExcludedValues }
       );
       expect(executed.map(row => row.id)).toEqual(expectedIds);
-      expect(logged[0]).toContain('"items"."secret" not in (?)');
+      expect(logged[0]).toContain(
+        `NOT (("items"."secret" IS NULL AND NULL) OR (typeof("items"."secret") IN ('integer', 'real') AND "items"."secret" = ?))`
+      );
       for (const kitAdapter of [
         adapter,
         inMemoryAdapter({ records: { items: rows } })

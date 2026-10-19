@@ -89,7 +89,10 @@ describe('a bare numeral against text, integer, and real storage', () => {
       expect(run.inlineSql).toBe(
         `("year" IS NULL AND NULL) OR (typeof("year") IN ('integer', 'real') AND "year" = 2024)`
       );
-      expect(run.parameterized).toEqual({ sql: '"year" = ?', params: [2024] });
+      expect(run.parameterized).toEqual({
+        sql: `("year" IS NULL AND NULL) OR (typeof("year") IN ('integer', 'real') AND "year" = ?)`,
+        params: [2024]
+      });
     }
   );
 
@@ -112,7 +115,7 @@ describe('a bare numeral against text, integer, and real storage', () => {
         `NOT (("year" IS NULL AND NULL) OR (typeof("year") IN ('integer', 'real') AND "year" = 2024))`
       );
       expect(run.parameterized).toEqual({
-        sql: 'NOT ("year" = ?)',
+        sql: `NOT (("year" IS NULL AND NULL) OR (typeof("year") IN ('integer', 'real') AND "year" = ?))`,
         params: [2024]
       });
     }

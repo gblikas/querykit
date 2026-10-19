@@ -95,7 +95,11 @@ describe('odd numerals', () => {
       new DrizzleTranslator().translate(expression)
     );
     expect(inline).toBe(sql);
-    expect(parameterized).toEqual({ sql: '"count" = ?', params: [value] });
+    const bound =
+      typeof value === 'number'
+        ? `("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" = ?)`
+        : '"count" = ?';
+    expect(parameterized).toEqual({ sql: bound, params: [value] });
     expect(idsOf(inline, [])).toEqual(ids);
     expect(idsOf(parameterized.sql, parameterized.params)).toEqual(ids);
     expect(idsOf(drizzle.sql, drizzle.params)).toEqual(ids);

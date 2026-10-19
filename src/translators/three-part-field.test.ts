@@ -121,11 +121,9 @@ describe('three-part field names', () => {
     expect(inlineSql).toBe(
       '("a.b.c" IS NULL AND NULL) OR (typeof("a.b.c") IN (\'integer\', \'real\') AND "a.b.c" = 1)'
     );
-    expect(parameterized).toEqual({ sql: '"a.b.c" = ?', params: [1] });
-    expect(compileDrizzle(expression)).toEqual({
-      sql: '"a.b.c" = ?',
-      params: [1]
-    });
+    const bound = `("a.b.c" IS NULL AND NULL) OR (typeof("a.b.c") IN ('integer', 'real') AND "a.b.c" = ?)`;
+    expect(parameterized).toEqual({ sql: bound, params: [1] });
+    expect(compileDrizzle(expression)).toEqual({ sql: bound, params: [1] });
     expect(() => compileDrizzle(expression, { item })).toThrow(
       DrizzleTranslationError
     );
@@ -145,7 +143,9 @@ describe('three-part field names', () => {
       parser.parse('abc:1')
     );
     expect(rows.map(row => row.id)).toEqual([1]);
-    expect(logged[0]).toContain('where "item"."a.b.c" = ?');
+    expect(logged[0]).toContain(
+      `where ("item"."a.b.c" IS NULL AND NULL) OR (typeof("item"."a.b.c") IN ('integer', 'real') AND "item"."a.b.c" = ?)`
+    );
     expect(filterInMemory('a.b.c:1', literalRows).map(row => row.id)).toEqual([
       1
     ]);

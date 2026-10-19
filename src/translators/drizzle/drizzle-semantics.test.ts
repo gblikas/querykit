@@ -192,7 +192,9 @@ describe('DrizzleTranslator semantics', () => {
       users: { id: sql.raw('users.id') },
       todos: { id: sql.raw('todos.id') }
     });
-    expect(compiled.sql).toBe('"id" = ?');
+    expect(compiled.sql).toBe(
+      `("id" IS NULL AND NULL) OR (typeof("id") IN ('integer', 'real') AND "id" = ?)`
+    );
     expect(compiled.sql).not.toContain('users');
     expect(matchingIds(compiled)).toEqual([1]);
   });

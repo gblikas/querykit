@@ -128,6 +128,34 @@ function isQuotedDecimal(value: unknown): value is string {
 }
 
 /**
+ * A finite bare number. Equality and membership compare it by storage class
+ * on SQLite, the same rule as an ordered comparison.
+ *
+ * @param value - One query value or membership member
+ * @returns True when the value is a finite number
+ */
+function isBareNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+/**
+ * A member that equality compares on its own, outside the IN list.
+ *
+ * A quoted decimal always does. A bare number does on SQLite, where a
+ * bound real would take a TEXT column's affinity and match the text
+ * `2024.0`.
+ *
+ * @param value - One membership member
+ * @returns True when the member is compared by itself
+ */
+function comparesMemberApart(value: unknown): boolean {
+  if (isQuotedDecimal(value)) {
+    return true;
+  }
+  return isBareNumber(value);
+}
+
+/**
  * The SQL operator for a comparison that has a two-sided form.
  *
  * @param operator - A QueryKit comparison operator
@@ -324,7 +352,9 @@ export class DrizzleTranslator implements ITranslator<SQL> {
    * a string, a number and a bigint never pass through a column encoder, so
    * a boolean-mode column cannot turn `TRUE`, `yes` or `2` into `1`. A
    * quoted decimal on SQLite compares by storage class instead, as a number
-   * against a number and as text against text. A boolean is bound through
+   * against a number and as text against text. Equality of a bare number
+   * does too, so a TEXT column does not read a bound real as `2024.0`. A
+   * boolean is bound through
    * a schema column's own mapping unless the column is a SQLite column
    * that leaves it alone (see `bindsBoolean`), and a `Date` goes through
    * the encoder only when it rewrites it, else the boolean is inlined and
@@ -344,6 +374,15 @@ export class DrizzleTranslator implements ITranslator<SQL> {
     const affinity = this.numericAffinitySql(column, encoder, operator, value);
     if (affinity !== null) {
       return affinity;
+    }
+    const bareEquality = this.bareNumberEqualitySql(
+      column,
+      encoder,
+      operator,
+      value
+    );
+    if (bareEquality !== null) {
+      return bareEquality;
     }
     const orderedNumber = this.orderedNumberSql(
       column,
@@ -399,6 +438,40 @@ export class DrizzleTranslator implements ITranslator<SQL> {
       default:
         throw new DrizzleTranslationError(`Unsupported operator: ${operator}`);
     }
+  }
+
+  /**
+   * Equality of a bare number by SQLite storage class.
+   *
+   * A bound JavaScript number is a real. On a TEXT column that real's text
+   * form is `2024.0`, so a plain `=` matches the string `2024.0`. Integer
+   * and real storage still compare numerically, which is what inline SQL
+   * and in-memory filtering do. A PostgreSQL column is left to `bindValue`
+   * so the database casts. The leading `IS NULL AND NULL` term keeps a
+   * NULL unknown.
+   *
+   * @param column - The column or quoted identifier to compare
+   * @param encoder - The schema column, or null when the field is quoted
+   * @param operator - The QueryKit comparison operator
+   * @param value - The query value
+   * @returns The comparison, or null when this value stays a plain binding
+   */
+  private bareNumberEqualitySql(
+    column: SQLWrapper,
+    encoder: SQLWrapper | null,
+    operator: string,
+    value: unknown
+  ): SQL | null {
+    const sqlOperator = comparisonSqlOperator(operator);
+    if (
+      (sqlOperator !== '=' && sqlOperator !== '<>') ||
+      !comparesByStorageClass(encoder) ||
+      !isBareNumber(value)
+    ) {
+      return null;
+    }
+    const equality = sql`(${column} IS NULL AND NULL) OR (typeof(${column}) IN ('integer', 'real') AND ${column} = ${value})`;
+    return sqlOperator === '=' ? equality : sql`NOT (${equality})`;
   }
 
   /**
@@ -515,14 +588,14 @@ export class DrizzleTranslator implements ITranslator<SQL> {
   }
 
   /**
-   * A quoted decimal in a membership list, compared by storage class so the
-   * list agrees with `=`. Other members keep the IN / NULL rewrite. A
-   * PostgreSQL column is not sent here; it binds the text and lets the
-   * database cast it.
+   * A quoted decimal or bare number in a membership list, compared by
+   * storage class so the list agrees with `=`. Other members keep the IN /
+   * NULL rewrite. A PostgreSQL column is not sent here; it binds the value
+   * and lets the database cast it.
    *
    * @param column - The column or quoted identifier
    * @param encoder - The schema column, or null when the field is quoted
-   * @param values - List members, at least one of them a quoted decimal
+   * @param values - List members, at least one compared by storage class
    * @param isNegated - True for NOT IN
    * @returns The membership predicate
    */
@@ -532,17 +605,17 @@ export class DrizzleTranslator implements ITranslator<SQL> {
     values: unknown[],
     isNegated: boolean
   ): SQL {
-    const decimals = values.filter(isQuotedDecimal);
+    const apart = values.filter(comparesMemberApart);
     const rest = values.filter(
-      (value: unknown): boolean => !isQuotedDecimal(value)
+      (value: unknown): boolean => !comparesMemberApart(value)
     );
     const operator = isNegated ? '!=' : '==';
     const parts: SQL[] = [];
     if (rest.length > 0) {
       parts.push(this.translateMembership(column, encoder, rest, isNegated));
     }
-    for (const decimal of decimals) {
-      parts.push(this.buildSqlForOperator(column, encoder, operator, decimal));
+    for (const member of apart) {
+      parts.push(this.buildSqlForOperator(column, encoder, operator, member));
     }
     if (parts.length === 1) {
       return parts[0];
@@ -576,7 +649,7 @@ export class DrizzleTranslator implements ITranslator<SQL> {
     if (values.length === 0) {
       return isNegated ? sql`TRUE` : sql`FALSE`;
     }
-    if (comparesByStorageClass(encoder) && values.some(isQuotedDecimal)) {
+    if (comparesByStorageClass(encoder) && values.some(comparesMemberApart)) {
       return this.translateNumeralMembership(
         column,
         encoder,

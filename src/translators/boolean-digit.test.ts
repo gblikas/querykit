@@ -57,10 +57,11 @@ describe('boolean digit equality', () => {
       expect(run.inlineSql).toBe(
         `("flag" IS NULL AND NULL) OR (typeof("flag") IN ('integer', 'real') AND "flag" = ${value})`
       );
-      expect(run.parameterized).toEqual({ sql: '"flag" = ?', params: [value] });
-      expect(run.drizzle).toEqual({ sql: '"flag" = ?', params: [value] });
+      const bound = `("flag" IS NULL AND NULL) OR (typeof("flag") IN ('integer', 'real') AND "flag" = ?)`;
+      expect(run.parameterized).toEqual({ sql: bound, params: [value] });
+      expect(run.drizzle).toEqual({ sql: bound, params: [value] });
       expect(run.schemaDrizzle).toEqual({
-        sql: '"items"."flag" = ?',
+        sql: `("items"."flag" IS NULL AND NULL) OR (typeof("items"."flag") IN ('integer', 'real') AND "items"."flag" = ?)`,
         params: [value]
       });
     }
