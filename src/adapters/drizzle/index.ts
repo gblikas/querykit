@@ -181,8 +181,9 @@ export class DrizzleAdapter<
    * SQLite reads `TRUE` and `FALSE` (`true` is 1, `false` is 0). A canonical
    * digit string is that integer (`"2"` is 2, `"0"` is 0), and so is that
    * integer with surrounding ASCII space, a decimal whose fraction is only
-   * zeros, a leading plus, or leading zeros (`" 2"`, `"2 "`, `"2.0"`,
-   * `"02"`, `"+2"`), before that check. A non-finite limit
+   * zeros, a leading plus, a leading minus, leading zeros, or an exponent
+   * (`" 2"`, `"2 "`, `"2.0"`, `"02"`, `"+2"`, `"-2"`, `"2e1"`), before that
+   * check. A negative integer is no upper bound. A non-finite limit
    * or offset (`NaN`, `Infinity`, or `-Infinity`)
    * is rejected there too: Drizzle would otherwise omit a `NaN` or
    * `-Infinity` limit and return the matching rows.
@@ -269,8 +270,9 @@ export class DrizzleAdapter<
    * written as `LIMIT -1`. `Infinity` passes `>= 0` and is bound, which
    * SQLite then rejects; it is still not an integer. SQLite and the
    * in-memory adapter reject the whole window. A boolean is already 1 or 0
-   * here, and a canonical, padded, signed, or decimal integer string is
-   * already that integer; `countedWindow` reads both before this check.
+   * here, and a canonical, padded, signed, decimal, or exponent integer
+   * string is already that integer; `countedWindow` reads both before this
+   * check. `"-2"` is -2 and `"2e1"` is 20. `"+ 2"` is still a string.
    *
    * @param options Result window as the caller passed it
    * @throws {DrizzleAdapterError} When the limit or the offset is NaN, Infinity, or -Infinity
@@ -287,12 +289,13 @@ export class DrizzleAdapter<
 
   /**
    * A copy of the execution options whose boolean limit and offset are 1 and
-   * 0, and whose digit, padded, signed, or decimal integer strings are those
-   * integers. The caller's object is left unchanged, so a later read of the
-   * options still sees the original value. `undefined` stays `undefined`.
+   * 0, and whose digit, padded, signed, decimal, or exponent integer strings
+   * are those integers. The caller's object is left unchanged, so a later
+   * read of the options still sees the original value. `undefined` stays
+   * `undefined`.
    *
    * @param options Result window as the caller passed it
-   * @returns The same window with `true` read as 1, `false` read as 0, and `"2"`, `" 2"`, `"2.0"`, `"02"`, and `"+2"` read as 2
+   * @returns The same window with `true` read as 1, `false` read as 0, `"2"` read as 2, `"-2"` read as -2, and `"2e1"` read as 20
    */
   private countedWindow(
     options?: IDrizzleQueryExecutionOptions
