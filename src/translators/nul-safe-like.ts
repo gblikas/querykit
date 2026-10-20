@@ -2,13 +2,34 @@
  * SQLite LIKE stops at the first U+0000. Equality still sees the bytes
  * after it, and a wildcard has to see them too. A value with no U+0000 is
  * compared as written. Each U+0000 is replaced with U+0001, one character
- * LIKE can read, and the bytes after it stay in the match. `?` still
- * matches one character. A stored U+0001 then compares as U+0000 under LIKE.
+ * LIKE can read, and the bytes after it stay in the match. The pattern
+ * uses that same stand-in, so a null written in the pattern does not end
+ * the match before the rest of it. `?` still matches one character. A
+ * stored U+0001 then compares as U+0000 under LIKE.
  */
 
 import { SQL, SQLWrapper, sql } from 'drizzle-orm';
 
-const COLUMN = '\u0000';
+const NUL = '\u0000';
+const NUL_STAND_IN = '\u0001';
+const COLUMN = NUL;
+
+/**
+ * Text a SQLite LIKE comparison can read.
+ *
+ * LIKE stops at the first U+0000. The column operand replaces each one
+ * with U+0001, and a pattern has to use that same stand-in or the
+ * characters after a null in the pattern are never compared. Text with
+ * no U+0000 is returned unchanged.
+ *
+ * @param text LIKE pattern or field text
+ * @returns The text with each U+0000 replaced by U+0001
+ * @example
+ * nulSafeLikeText('a\u0000%') // "a\u0001%"
+ */
+export function nulSafeLikeText(text: string): string {
+  return text.split(NUL).join(NUL_STAND_IN);
+}
 
 /**
  * Left-hand LIKE operand with a stand-in for the column expression.

@@ -18,7 +18,7 @@ import {
   readFieldIdentifiers
 } from '../field-identifiers';
 import { likeEscapeClause, toSqlLikePattern } from '../like-pattern';
-import { nulSafeLikeSql } from '../nul-safe-like';
+import { nulSafeLikeSql, nulSafeLikeText } from '../nul-safe-like';
 import { findOwnKeyIgnoringCase } from '../own-key-case';
 import {
   enforceTranslationSecurity,
@@ -417,10 +417,10 @@ export class DrizzleTranslator implements ITranslator<SQL> {
             'LIKE operator requires a string value'
           );
         }
-        const sqlPattern = this.wildcardToSqlPattern(value);
-        const operand = comparesByStorageClass(encoder)
-          ? nulSafeLikeSql(column)
-          : column;
+        const converted = this.wildcardToSqlPattern(value);
+        const sqliteLike = comparesByStorageClass(encoder);
+        const sqlPattern = sqliteLike ? nulSafeLikeText(converted) : converted;
+        const operand = sqliteLike ? nulSafeLikeSql(column) : column;
         return sql`${operand} LIKE ${sqlPattern} ${sql.raw(likeEscapeClause())}`;
       }
       case 'IN': {

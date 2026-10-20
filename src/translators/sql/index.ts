@@ -13,7 +13,7 @@ import {
 } from '../../parser/types';
 import { quoteFieldIdentifiers } from '../field-identifiers';
 import { likeEscapeClause, toSqlLikePattern } from '../like-pattern';
-import { nulSafeLikeOperand } from '../nul-safe-like';
+import { nulSafeLikeOperand, nulSafeLikeText } from '../nul-safe-like';
 import {
   enforceTranslationSecurity,
   resolveTranslationSecurity
@@ -234,7 +234,7 @@ export class SqlTranslator
             'LIKE operator requires a string value'
           );
         }
-        const sqlPattern = this.wildcardToSqlPattern(value);
+        const sqlPattern = nulSafeLikeText(this.wildcardToSqlPattern(value));
         const escapeClause = likeEscapeClause(this.options.stringLiteralQuote);
         const operand = nulSafeLikeOperand(quotedField);
         return `${operand} LIKE ${this.formatValue(sqlPattern)} ${escapeClause}`;

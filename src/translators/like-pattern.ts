@@ -1,3 +1,4 @@
+import { nulSafeLikeText } from './nul-safe-like';
 import { foldAsciiCase } from './own-key-case';
 
 /**
@@ -105,7 +106,9 @@ function tokenizeLikePattern(sqlPattern: string): LikeToken[] {
  * repeated `.*` groups does.
  *
  * The pattern is the SQL form from {@link toSqlLikePattern}, not the
- * QueryKit form: `%` is any sequence and `_` is one character.
+ * QueryKit form: `%` is any sequence and `_` is one character. Each
+ * U+0000 in the pattern and in the value is compared as U+0001, the
+ * stand-in SQLite LIKE can read, so a null does not end either side.
  *
  * @param sqlPattern SQL LIKE pattern
  * @param value Field value
@@ -119,8 +122,10 @@ function tokenizeLikePattern(sqlPattern: string): LikeToken[] {
  * ```
  */
 export function matchesLikePattern(sqlPattern: string, value: string): boolean {
-  const tokens = tokenizeLikePattern(foldAsciiCase(sqlPattern));
-  const chars = Array.from(foldAsciiCase(value));
+  const tokens = tokenizeLikePattern(
+    foldAsciiCase(nulSafeLikeText(sqlPattern))
+  );
+  const chars = Array.from(foldAsciiCase(nulSafeLikeText(value)));
   let tokenIndex = 0;
   let charIndex = 0;
   let lastAnyToken = -1;
