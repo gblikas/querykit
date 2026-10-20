@@ -8,6 +8,7 @@
  */
 
 import { filterInMemory } from '../adapters/memory';
+import { withNulSafeLike } from '../translators/nul-safe-like';
 import { SqlTranslator } from '../translators/sql';
 import { isInputComplete } from './input-parser';
 import { QueryParseError, QueryParser } from './parser';
@@ -59,7 +60,7 @@ describe('block comment', () => {
     expect(expression).toMatchObject({ operator: 'LIKE', value: '/* note */' });
     expect(
       new SqlTranslator({ useParameters: false }).translate(expression)
-    ).toBe(`"status" LIKE '/% note %/' ESCAPE '!'`);
+    ).toBe(withNulSafeLike(`"status" LIKE '/% note %/' ESCAPE '!'`));
     expect(filterInMemory(query, rows)).toEqual([]);
   });
 });

@@ -9,6 +9,7 @@
 
 import { integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 import { QueryParser } from '../../parser';
+import { withNulSafeLike } from '../../translators/nul-safe-like';
 import { isInputComplete } from '../../parser/input-parser';
 import { openSqliteHarness } from '../../test-support';
 
@@ -49,7 +50,7 @@ describe('letter case under a wildcard', () => {
     ['status:cl*ED', `"status" LIKE 'cl%ED' ESCAPE '!'`, [6]]
   ])('%s folds ASCII letters on every engine', (query, inlineSql, ids) => {
     expect(parser.parse(query)).toMatchObject({ operator: 'LIKE' });
-    expect(expectIds(query, ids)).toBe(inlineSql);
+    expect(expectIds(query, ids)).toBe(withNulSafeLike(inlineSql));
   });
 
   it('negates the folded LIKE', () => {

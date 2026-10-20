@@ -13,6 +13,7 @@ import {
 } from '../../parser/types';
 import { quoteFieldIdentifiers } from '../field-identifiers';
 import { likeEscapeClause, toSqlLikePattern } from '../like-pattern';
+import { nulSafeLikeOperand } from '../nul-safe-like';
 import {
   enforceTranslationSecurity,
   resolveTranslationSecurity
@@ -235,7 +236,8 @@ export class SqlTranslator
         }
         const sqlPattern = this.wildcardToSqlPattern(value);
         const escapeClause = likeEscapeClause(this.options.stringLiteralQuote);
-        return `${quotedField} LIKE ${this.formatValue(sqlPattern)} ${escapeClause}`;
+        const operand = nulSafeLikeOperand(quotedField);
+        return `${operand} LIKE ${this.formatValue(sqlPattern)} ${escapeClause}`;
       }
       case 'IN': {
         if (!Array.isArray(value)) {

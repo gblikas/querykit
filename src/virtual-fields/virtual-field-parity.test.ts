@@ -20,6 +20,7 @@ import {
   text
 } from 'drizzle-orm/sqlite-core';
 import { filterByExpression } from '../adapters/memory/match-expression';
+import { withNulSafeLike } from '../translators/nul-safe-like';
 import { inMemoryAdapter } from '../adapters/memory';
 import { QueryParser } from '../parser';
 import { QueryExpression } from '../parser/types';
@@ -201,7 +202,9 @@ describe('virtual field opened', () => {
     const parameterized = new SqlTranslator().translate(
       expression
     ) as IParameterizedSql;
-    expect(inline).toBe(`"created_at" LIKE '2020%' ESCAPE '!'`);
+    expect(inline).toBe(
+      withNulSafeLike(`"created_at" LIKE '2020%' ESCAPE '!'`)
+    );
     expect(idsOfSql({ sql: inline, params: [] }, 'created_at')).toEqual([1, 3]);
     expect(idsOfSql(parameterized, 'created_at')).toEqual([1, 3]);
     expect(idsOfSql(compileDrizzle(expression), 'created_at')).toEqual([1, 3]);

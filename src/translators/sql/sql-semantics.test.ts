@@ -13,6 +13,7 @@
 import { createRequire } from 'module';
 import { QueryExpression, QueryValue } from '../../parser/types';
 import { SqlTranslationError, SqlTranslator } from './index';
+import { withNulSafeLike } from '../nul-safe-like';
 
 const nodeRequire = createRequire(__filename);
 
@@ -163,8 +164,10 @@ describe('SqlTranslator semantics', () => {
     const parameterized = new SqlTranslator({ useParameters: true }).translate(
       expression
     ) as { sql: string; params: unknown[] };
-    expect(inline).toBe("\"name\" LIKE 'foo\\%' ESCAPE '!'");
-    expect(parameterized.sql).toBe('"name" LIKE ? ESCAPE \'!\'');
+    expect(inline).toBe(withNulSafeLike("\"name\" LIKE 'foo\\%' ESCAPE '!'"));
+    expect(parameterized.sql).toBe(
+      withNulSafeLike('"name" LIKE ? ESCAPE \'!\'')
+    );
     expect(parameterized.params).toEqual(['foo\\%']);
     expect(matchingIds(expression, false)).toEqual([3]);
     expect(matchingIds(expression, true)).toEqual([3]);
