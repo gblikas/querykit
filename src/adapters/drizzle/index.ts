@@ -15,6 +15,7 @@ import { enforceTranslationSecurity } from '../../translators/translation-securi
 import { ITranslationSecurity } from '../../translators/types';
 import { QuerySecurityError } from '../../security/validator';
 import { IAdapter, IAdapterOptions, IQueryExecutionOptions } from '../types';
+import { booleanWindowCount } from '../../common/boolean-window-count';
 import { QueryExpression } from '../../parser/types';
 import { SQL, SQLWrapper, asc, desc, sql } from 'drizzle-orm';
 import { createQueryKit, QueryKit } from '../../query-kit';
@@ -176,9 +177,11 @@ export class DrizzleAdapter<
    * length, depth and clause caps) run before `select().from`, so a rejected
    * query builds nothing and reads nothing; the enforced exclusions are
    * appended by the translator. A `QuerySecurityError` is thrown as is, not
-   * wrapped as an adapter error. A non-finite limit or offset (`NaN`,
-   * `Infinity`, or `-Infinity`) is rejected there too: Drizzle would
-   * otherwise omit a `NaN` or `-Infinity` limit and return the matching rows.
+   * wrapped as an adapter error. A boolean limit or offset is read as
+   * SQLite reads `TRUE` and `FALSE` (`true` is 1, `false` is 0) before that
+   * check. A non-finite limit or offset (`NaN`, `Infinity`, or `-Infinity`)
+   * is rejected there too: Drizzle would otherwise omit a `NaN` or
+   * `-Infinity` limit and return the matching rows.
    *
    * @throws {QuerySecurityError} When the query breaks a cap or names a field outside the allowlist
    * @throws {DrizzleAdapterError} When the table is unknown, the limit or offset is not finite, or the query cannot be built or run
@@ -201,7 +204,8 @@ export class DrizzleAdapter<
       ...security,
       enforceExcludedValues: undefined
     });
-    this.rejectNonFiniteWindow(options);
+    const window = this.booleanWindow(options);
+    this.rejectNonFiniteWindow(window);
 
     try {
       // Start with a base query
@@ -227,14 +231,14 @@ export class DrizzleAdapter<
         }
       }
 
-      const limit = this.limitClause(options);
+      const limit = this.limitClause(window);
       if (limit !== undefined) {
         query = query.limit(limit);
       }
 
       // Add offset if specified
-      if (options?.offset !== undefined) {
-        query = query.offset(options.offset);
+      if (window?.offset !== undefined) {
+        query = query.offset(window.offset);
       }
 
       // Execute the query
@@ -260,7 +264,8 @@ export class DrizzleAdapter<
    * come back. A non-finite limit beside an offset would otherwise be
    * written as `LIMIT -1`. `Infinity` passes `>= 0` and is bound, which
    * SQLite then rejects; it is still not an integer. SQLite and the
-   * in-memory adapter reject the whole window.
+   * in-memory adapter reject the whole window. A boolean is already 1 or 0
+   * here; `booleanWindow` reads it before this check.
    *
    * @param options Result window as the caller passed it
    * @throws {DrizzleAdapterError} When the limit or the offset is NaN, Infinity, or -Infinity
@@ -273,6 +278,27 @@ export class DrizzleAdapter<
     if (offset !== undefined && !Number.isFinite(offset)) {
       throw new DrizzleAdapterError('Offset must be an integer');
     }
+  }
+
+  /**
+   * A copy of the execution options whose boolean limit and offset are 1 and
+   * 0. The caller's object is left unchanged, so a later read of the options
+   * still sees the boolean. `undefined` stays `undefined`.
+   *
+   * @param options Result window as the caller passed it
+   * @returns The same window with `true` read as 1 and `false` read as 0
+   */
+  private booleanWindow(
+    options?: IDrizzleQueryExecutionOptions
+  ): IDrizzleQueryExecutionOptions | undefined {
+    if (options === undefined) {
+      return undefined;
+    }
+    return {
+      ...options,
+      limit: booleanWindowCount(options.limit) as number | undefined,
+      offset: booleanWindowCount(options.offset) as number | undefined
+    };
   }
 
   /**

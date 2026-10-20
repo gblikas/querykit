@@ -12,6 +12,7 @@
  * root barrel re-exports every public name of this module.
  */
 
+import { booleanWindowCount } from './common/boolean-window-count';
 import { QueryParser, IParserOptions } from './parser';
 import {
   DEFAULT_SECURITY_OPTIONS,
@@ -298,7 +299,8 @@ function definedSecurityOptions(
  * Choose the limit forwarded to the adapter.
  *
  * An omitted limit uses `defaultLimit`. A limit above `maxLimit` is capped.
- * The chosen limit is always less than or equal to `maxLimit`.
+ * The chosen limit is always less than or equal to `maxLimit`. A boolean
+ * `true` is 1 and `false` is 0, the way SQLite reads `TRUE` and `FALSE`.
  *
  * @param requestedLimit - Limit supplied by the caller, if any
  * @param security - Resolved security settings
@@ -310,7 +312,9 @@ function resolveResultLimit(
   security: Required<ISecurityOptions>
 ): number {
   const chosenLimit =
-    requestedLimit === undefined ? security.defaultLimit : requestedLimit;
+    requestedLimit === undefined
+      ? security.defaultLimit
+      : booleanWindowCount(requestedLimit);
   if (!isResultLimit(chosenLimit)) {
     throw new QuerySecurityError('Invalid query limit');
   }
@@ -669,13 +673,16 @@ export function createQueryKit<
                 limitState,
                 securityOptions
               );
+              const effectiveOffset = booleanWindowCount(offsetState) as
+                | number
+                | undefined;
               const results = await executeWithTimeout(
                 () =>
                   options.adapter.execute(table, finalExpression, {
                     ...executionSecurity(securityOptions),
                     orderBy: sortFields.length > 0 ? orderBy : undefined,
                     limit: effectiveLimit,
-                    offset: offsetState,
+                    offset: effectiveOffset,
                     schema: selectedTableSchema(schema, table)
                   }),
                 securityOptions.queryTimeout
