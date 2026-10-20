@@ -302,8 +302,9 @@ function definedSecurityOptions(
  * The chosen limit is always less than or equal to `maxLimit`. A boolean
  * `true` is 1 and `false` is 0, the way SQLite reads `TRUE` and `FALSE`. A
  * canonical digit string is that integer, the way SQLite reads `LIMIT '2'`,
- * and so is that integer with surrounding ASCII space or a decimal whose
- * fraction is only zeros (`" 2"`, `"2 "`, `"2.0"`).
+ * and so is that integer with surrounding ASCII space, a decimal whose
+ * fraction is only zeros, a leading plus, or leading zeros (`" 2"`, `"2 "`,
+ * `"2.0"`, `"02"`, `"+2"`). `"2.5"` is not an integer.
  *
  * @param requestedLimit - Limit supplied by the caller, if any
  * @param security - Resolved security settings
