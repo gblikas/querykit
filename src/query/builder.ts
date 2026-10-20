@@ -244,14 +244,36 @@ export class QueryBuilder<T> implements IQueryBuilder<T> {
   }
 
   /**
-   * Add an order by clause to the query
+   * Add an order by clause to the query.
+   *
+   * @param field - Column to sort by
+   * @param direction - `asc` or `desc`, in any letter case. Defaults to `asc`
+   * @returns This builder
+   * @throws {QueryBuilderError} When the direction is not asc or desc
    */
   public orderBy(
     field: QueryField<T>,
     direction: SortDirection = 'asc'
   ): IQueryBuilder<T> {
-    this.orderByClause = `ORDER BY ${field} ${direction.toUpperCase()}`;
+    this.orderByClause = `ORDER BY ${field} ${this.sortKeyword(direction)}`;
     return this;
+  }
+
+  /**
+   * The SQL keyword for a sort direction. An empty string is not ascending:
+   * SQLite would read `ORDER BY column` with no keyword as ASC.
+   *
+   * @param direction - Requested sort direction
+   * @returns `ASC` or `DESC`
+   * @throws {QueryBuilderError} When the direction is not asc or desc
+   */
+  private sortKeyword(direction: unknown): string {
+    const normalized =
+      typeof direction === 'string' ? direction.toLowerCase() : '';
+    if (normalized === 'asc' || normalized === 'desc') {
+      return normalized.toUpperCase();
+    }
+    throw new QueryBuilderError(`Invalid sort direction: ${String(direction)}`);
   }
 
   /**
