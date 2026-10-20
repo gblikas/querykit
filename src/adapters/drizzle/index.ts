@@ -15,7 +15,7 @@ import { enforceTranslationSecurity } from '../../translators/translation-securi
 import { ITranslationSecurity } from '../../translators/types';
 import { QuerySecurityError } from '../../security/validator';
 import { IAdapter, IAdapterOptions, IQueryExecutionOptions } from '../types';
-import { booleanWindowCount } from '../../common/boolean-window-count';
+import { sqliteWindowCount } from '../../common/sqlite-window-count';
 import { QueryExpression } from '../../parser/types';
 import { SQL, SQLWrapper, asc, desc, sql } from 'drizzle-orm';
 import { createQueryKit, QueryKit } from '../../query-kit';
@@ -178,8 +178,9 @@ export class DrizzleAdapter<
    * query builds nothing and reads nothing; the enforced exclusions are
    * appended by the translator. A `QuerySecurityError` is thrown as is, not
    * wrapped as an adapter error. A boolean limit or offset is read as
-   * SQLite reads `TRUE` and `FALSE` (`true` is 1, `false` is 0) before that
-   * check. A non-finite limit or offset (`NaN`, `Infinity`, or `-Infinity`)
+   * SQLite reads `TRUE` and `FALSE` (`true` is 1, `false` is 0), and a
+   * canonical digit string is that integer (`"2"` is 2, `"0"` is 0), before
+   * that check. A non-finite limit or offset (`NaN`, `Infinity`, or `-Infinity`)
    * is rejected there too: Drizzle would otherwise omit a `NaN` or
    * `-Infinity` limit and return the matching rows.
    *
@@ -204,7 +205,7 @@ export class DrizzleAdapter<
       ...security,
       enforceExcludedValues: undefined
     });
-    const window = this.booleanWindow(options);
+    const window = this.countedWindow(options);
     this.rejectNonFiniteWindow(window);
 
     try {
@@ -265,7 +266,8 @@ export class DrizzleAdapter<
    * written as `LIMIT -1`. `Infinity` passes `>= 0` and is bound, which
    * SQLite then rejects; it is still not an integer. SQLite and the
    * in-memory adapter reject the whole window. A boolean is already 1 or 0
-   * here; `booleanWindow` reads it before this check.
+   * here, and a canonical digit string is already that integer;
+   * `countedWindow` reads both before this check.
    *
    * @param options Result window as the caller passed it
    * @throws {DrizzleAdapterError} When the limit or the offset is NaN, Infinity, or -Infinity
@@ -282,13 +284,14 @@ export class DrizzleAdapter<
 
   /**
    * A copy of the execution options whose boolean limit and offset are 1 and
-   * 0. The caller's object is left unchanged, so a later read of the options
-   * still sees the boolean. `undefined` stays `undefined`.
+   * 0, and whose canonical digit-string limit and offset are those integers.
+   * The caller's object is left unchanged, so a later read of the options
+   * still sees the original value. `undefined` stays `undefined`.
    *
    * @param options Result window as the caller passed it
-   * @returns The same window with `true` read as 1 and `false` read as 0
+   * @returns The same window with `true` read as 1, `false` read as 0, and `"2"` read as 2
    */
-  private booleanWindow(
+  private countedWindow(
     options?: IDrizzleQueryExecutionOptions
   ): IDrizzleQueryExecutionOptions | undefined {
     if (options === undefined) {
@@ -296,8 +299,8 @@ export class DrizzleAdapter<
     }
     return {
       ...options,
-      limit: booleanWindowCount(options.limit) as number | undefined,
-      offset: booleanWindowCount(options.offset) as number | undefined
+      limit: sqliteWindowCount(options.limit) as number | undefined,
+      offset: sqliteWindowCount(options.offset) as number | undefined
     };
   }
 

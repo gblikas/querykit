@@ -1,4 +1,4 @@
-import { booleanWindowCount } from '../../common/boolean-window-count';
+import { sqliteWindowCount } from '../../common/sqlite-window-count';
 import { IAdapter } from '../types';
 import { QueryExpression } from '../../parser/types';
 import { InMemoryAdapterError } from './in-memory-adapter-error';
@@ -165,9 +165,10 @@ interface IResultWindow {
 
 /**
  * Read the limit and offset the way SQLite does. A boolean is 1 or 0, as
- * SQLite reads `TRUE` and `FALSE`. A negative limit is no limit. A negative
- * offset beside a limit is zero; with no limit it is rejected, as SQLite
- * rejects a bare OFFSET. A fraction is rejected.
+ * SQLite reads `TRUE` and `FALSE`. A canonical digit string is that integer,
+ * as SQLite reads `LIMIT '2'` and `OFFSET '0'`. A negative limit is no limit.
+ * A negative offset beside a limit is zero; with no limit it is rejected, as
+ * SQLite rejects a bare OFFSET. A fraction is rejected.
  *
  * @param options Result window as the caller passed it
  * @returns The rows to skip and, when bounded, the rows to keep
@@ -176,8 +177,8 @@ interface IResultWindow {
 function resolveWindow(
   options?: IInMemoryQueryExecutionOptions
 ): IResultWindow {
-  const limit = booleanWindowCount(options?.limit) as number | undefined;
-  const offset = booleanWindowCount(options?.offset) as number | undefined;
+  const limit = sqliteWindowCount(options?.limit) as number | undefined;
+  const offset = sqliteWindowCount(options?.offset) as number | undefined;
   if (limit !== undefined && !Number.isInteger(limit)) {
     throw new InMemoryAdapterError('Limit must be an integer');
   }
