@@ -176,11 +176,12 @@ export class DrizzleAdapter<
    * length, depth and clause caps) run before `select().from`, so a rejected
    * query builds nothing and reads nothing; the enforced exclusions are
    * appended by the translator. A `QuerySecurityError` is thrown as is, not
-   * wrapped as an adapter error. A NaN limit or offset is rejected there
-   * too: Drizzle would otherwise omit the clause and return the matching rows.
+   * wrapped as an adapter error. A non-finite limit or offset (`NaN`,
+   * `Infinity`, or `-Infinity`) is rejected there too: Drizzle would
+   * otherwise omit a `NaN` or `-Infinity` limit and return the matching rows.
    *
    * @throws {QuerySecurityError} When the query breaks a cap or names a field outside the allowlist
-   * @throws {DrizzleAdapterError} When the table is unknown, the limit or offset is NaN, or the query cannot be built or run
+   * @throws {DrizzleAdapterError} When the table is unknown, the limit or offset is not finite, or the query cannot be built or run
    */
   public async execute<TResult = unknown>(
     tableName: string,
@@ -200,7 +201,7 @@ export class DrizzleAdapter<
       ...security,
       enforceExcludedValues: undefined
     });
-    this.rejectNanWindow(options);
+    this.rejectNonFiniteWindow(options);
 
     try {
       // Start with a base query
@@ -251,23 +252,25 @@ export class DrizzleAdapter<
   }
 
   /**
-   * Reject a NaN limit or offset before Drizzle builds the statement.
+   * Reject a non-finite limit or offset before Drizzle builds the statement.
    *
    * Drizzle omits a limit when `limit >= 0` is false and omits an offset
-   * when the offset is falsy. `NaN` fails both checks, so the clause
-   * disappears and the matching rows come back. A NaN limit beside an
-   * offset would otherwise be written as `LIMIT -1`. SQLite and the
-   * in-memory adapter reject that window.
+   * when the offset is falsy. `NaN` fails both checks, and `-Infinity`
+   * fails the limit check, so the clause disappears and the matching rows
+   * come back. A non-finite limit beside an offset would otherwise be
+   * written as `LIMIT -1`. `Infinity` passes `>= 0` and is bound, which
+   * SQLite then rejects; it is still not an integer. SQLite and the
+   * in-memory adapter reject the whole window.
    *
    * @param options Result window as the caller passed it
-   * @throws {DrizzleAdapterError} When the limit or the offset is NaN
+   * @throws {DrizzleAdapterError} When the limit or the offset is NaN, Infinity, or -Infinity
    */
-  private rejectNanWindow(options?: IDrizzleQueryExecutionOptions): void {
+  private rejectNonFiniteWindow(options?: IDrizzleQueryExecutionOptions): void {
     const { limit, offset } = options ?? {};
-    if (limit !== undefined && Number.isNaN(limit)) {
+    if (limit !== undefined && !Number.isFinite(limit)) {
       throw new DrizzleAdapterError('Limit must be an integer');
     }
-    if (offset !== undefined && Number.isNaN(offset)) {
+    if (offset !== undefined && !Number.isFinite(offset)) {
       throw new DrizzleAdapterError('Offset must be an integer');
     }
   }
@@ -277,8 +280,8 @@ export class DrizzleAdapter<
    * reads `LIMIT -1` as no limit, while Drizzle drops a negative number, so
    * an offset with no limit, or beside a negative limit, is written as the
    * raw `-1`; a negative limit with no offset is omitted. A non-negative
-   * limit is passed as given. A NaN limit or offset never reaches this
-   * method; `rejectNanWindow` rejects it first.
+   * limit is passed as given. A NaN, Infinity, or -Infinity limit or offset
+   * never reaches this method; `rejectNonFiniteWindow` rejects it first.
    */
   private limitClause(
     options?: IDrizzleQueryExecutionOptions
