@@ -166,9 +166,11 @@ interface IResultWindow {
 /**
  * Read the limit and offset the way SQLite does. A boolean is 1 or 0, as
  * SQLite reads `TRUE` and `FALSE`. A canonical digit string is that integer,
- * as SQLite reads `LIMIT '2'` and `OFFSET '0'`. A negative limit is no limit.
+ * as SQLite reads `LIMIT '2'` and `OFFSET '0'`, and so is that integer with
+ * surrounding ASCII space or a decimal whose fraction is only zeros. A
+ * negative limit is no limit.
  * A negative offset beside a limit is zero; with no limit it is rejected, as
- * SQLite rejects a bare OFFSET. A fraction is rejected.
+ * SQLite rejects a bare OFFSET. A non-integer fraction is rejected.
  *
  * @param options Result window as the caller passed it
  * @returns The rows to skip and, when bounded, the rows to keep

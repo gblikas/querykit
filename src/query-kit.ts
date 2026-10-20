@@ -301,7 +301,9 @@ function definedSecurityOptions(
  * An omitted limit uses `defaultLimit`. A limit above `maxLimit` is capped.
  * The chosen limit is always less than or equal to `maxLimit`. A boolean
  * `true` is 1 and `false` is 0, the way SQLite reads `TRUE` and `FALSE`. A
- * canonical digit string is that integer, the way SQLite reads `LIMIT '2'`.
+ * canonical digit string is that integer, the way SQLite reads `LIMIT '2'`,
+ * and so is that integer with surrounding ASCII space or a decimal whose
+ * fraction is only zeros (`" 2"`, `"2 "`, `"2.0"`).
  *
  * @param requestedLimit - Limit supplied by the caller, if any
  * @param security - Resolved security settings
