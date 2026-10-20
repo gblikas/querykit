@@ -5,6 +5,7 @@
  * WHERE clause conditions that can be used in any SQL query.
  */
 
+import { quotedDecimalValue } from '../../parser/stored-integer';
 import {
   IComparisonExpression,
   ILogicalExpression,
@@ -12,6 +13,7 @@ import {
 } from '../../parser/types';
 import { quoteFieldIdentifiers } from '../field-identifiers';
 import { likeEscapeClause, toSqlLikePattern } from '../like-pattern';
+import { nulSafeLikeOperand, nulSafeLikeText } from '../nul-safe-like';
 import {
   enforceTranslationSecurity,
   resolveTranslationSecurity
@@ -30,6 +32,27 @@ import {
 interface IResolvedField {
   name: string;
   isLiteral: boolean;
+}
+
+/**
+ * A quoted decimal, the strings equality compares by storage class.
+ *
+ * @param value - One membership member
+ * @returns True when the member spells a decimal
+ */
+function isQuotedDecimal(value: unknown): value is string {
+  return typeof value === 'string' && quotedDecimalValue(value) !== null;
+}
+
+/**
+ * A finite bare number. Inline membership compares it by storage class,
+ * the same rule as equality.
+ *
+ * @param value - One membership member
+ * @returns True when the member is a finite number
+ */
+function isBareNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
 }
 
 /**
@@ -211,19 +234,16 @@ export class SqlTranslator
             'LIKE operator requires a string value'
           );
         }
-        const sqlPattern = this.wildcardToSqlPattern(value);
+        const sqlPattern = nulSafeLikeText(this.wildcardToSqlPattern(value));
         const escapeClause = likeEscapeClause(this.options.stringLiteralQuote);
-        return `${quotedField} LIKE ${this.formatValue(sqlPattern)} ${escapeClause}`;
+        const operand = nulSafeLikeOperand(quotedField);
+        return `${operand} LIKE ${this.formatValue(sqlPattern)} ${escapeClause}`;
       }
       case 'IN': {
         if (!Array.isArray(value)) {
           throw new SqlTranslationError('IN operator requires an array value');
         }
-        if (value.length === 0) {
-          // Empty IN clause should always be false
-          return 'FALSE';
-        }
-        return this.formatInClause(quotedField, value, false);
+        return this.formatMembership(quotedField, value, false);
       }
       case 'NOT IN': {
         if (!Array.isArray(value)) {
@@ -231,11 +251,7 @@ export class SqlTranslator
             'NOT IN operator requires an array value'
           );
         }
-        if (value.length === 0) {
-          // Empty NOT IN clause should always be true
-          return 'TRUE';
-        }
-        return this.formatInClause(quotedField, value, true);
+        return this.formatMembership(quotedField, value, true);
       }
       default:
         throw new SqlTranslationError(`Unsupported operator: ${operator}`);
@@ -294,8 +310,191 @@ export class SqlTranslator
     if (value === null && (sqlOperator === '=' || sqlOperator === '<>')) {
       return sqlOperator === '=' ? `${field} IS NULL` : `${field} IS NOT NULL`;
     }
+    const affinity = this.formatNumericAffinity(field, sqlOperator, value);
+    if (affinity !== null) {
+      return affinity;
+    }
+    const bareNumber = this.formatBareNumber(field, sqlOperator, value);
+    if (bareNumber !== null) {
+      return bareNumber;
+    }
     const formattedValue = this.formatValue(value);
     return `${field} ${sqlOperator} ${formattedValue}`;
+  }
+
+  /**
+   * A bare number compared by storage class.
+   *
+   * Equality stays numeric: a TEXT column must not turn `2024` into the
+   * text `2024`, and a bound real must not match the text `2024.0`.
+   * Parameterized SQL binds a JavaScript number as a real, and a TEXT
+   * column reads that real back as `2024.0`. An ordered comparison treats
+   * every text value as greater than every number, which is what in-memory
+   * filtering does and what a column with no affinity does. A TEXT column
+   * would otherwise compare the digits as text. The leading `IS NULL AND
+   * NULL` term keeps a NULL unknown.
+   *
+   * @param field - Quoted identifier
+   * @param sqlOperator - SQL comparison operator
+   * @param value - Query value
+   * @returns The comparison, or null when the value stays a plain literal
+   */
+  private formatBareNumber(
+    field: string,
+    sqlOperator: string,
+    value: unknown
+  ): string | null {
+    if (typeof value !== 'number') {
+      return null;
+    }
+    if (sqlOperator === '=' || sqlOperator === '<>') {
+      return this.formatBareNumberEquality(field, sqlOperator, value);
+    }
+    return this.formatOrderedNumber(field, sqlOperator, value);
+  }
+
+  /**
+   * Equality of a bare number against integer and real storage.
+   *
+   * Inline SQL writes the digits. Parameterized SQL binds the number. Both
+   * keep the comparison on integer and real storage, so a TEXT column
+   * matches neither the text `2024` nor the text `2024.0`.
+   *
+   * @param field - Quoted identifier
+   * @param sqlOperator - `=` or `<>`
+   * @param value - The number
+   * @returns The comparison
+   */
+  private formatBareNumberEquality(
+    field: string,
+    sqlOperator: string,
+    value: number
+  ): string {
+    const literal = this.formatValue(value);
+    const equality = `(${field} IS NULL AND NULL) OR (typeof(${field}) IN ('integer', 'real') AND ${field} = ${literal})`;
+    return sqlOperator === '=' ? equality : `NOT (${equality})`;
+  }
+
+  /**
+   * An ordered comparison of a bare number. Text is greater than every
+   * number. Integer and real storage compare numerically.
+   *
+   * @param field - Quoted identifier
+   * @param sqlOperator - `>`, `>=`, `<` or `<=`
+   * @param value - The number
+   * @returns The comparison, or null for an operator this method does not own
+   */
+  private formatOrderedNumber(
+    field: string,
+    sqlOperator: string,
+    value: number
+  ): string | null {
+    if (
+      sqlOperator !== '>' &&
+      sqlOperator !== '>=' &&
+      sqlOperator !== '<' &&
+      sqlOperator !== '<='
+    ) {
+      return null;
+    }
+    const literal = this.formatValue(value);
+    const numeric = `typeof(${field}) IN ('integer', 'real') AND ${field} ${sqlOperator} ${literal}`;
+    if (sqlOperator === '>' || sqlOperator === '>=') {
+      return `(${field} IS NULL AND NULL) OR (${numeric}) OR (typeof(${field}) = 'text')`;
+    }
+    return `(${field} IS NULL AND NULL) OR (${numeric})`;
+  }
+
+  /**
+   * A quoted decimal compared by SQLite storage class, the rule the
+   * in-memory adapter uses. A number or real uses the number the text
+   * spells, so `count > "2"` keeps a stored 10. Text stays text, so the
+   * string `2.0` is still greater than `2`. A NULL stays unknown, because
+   * the leading `IS NULL AND NULL` term is NULL and `NOT` of that is NULL.
+   * A column with no affinity then agrees with a typed numeric column and
+   * with memory.
+   *
+   * @param field - Quoted identifier
+   * @param sqlOperator - SQL comparison operator
+   * @param value - Query value
+   * @returns The comparison, or null when the value is not a quoted decimal
+   */
+  private formatNumericAffinity(
+    field: string,
+    sqlOperator: string,
+    value: unknown
+  ): string | null {
+    if (typeof value !== 'string') {
+      return null;
+    }
+    const numeral = quotedDecimalValue(value);
+    if (numeral === null) {
+      return null;
+    }
+    const numericSql = this.formatValue(numeral);
+    const textSql = this.formatValue(value);
+    return `(${field} IS NULL AND NULL) OR (typeof(${field}) IN ('integer', 'real') AND ${field} ${sqlOperator} ${numericSql}) OR (typeof(${field}) = 'text' AND ${field} ${sqlOperator} ${textSql})`;
+  }
+
+  /**
+   * Membership that agrees with `=` and `<>`. An empty list is false and an
+   * empty exclusion is true. A quoted decimal is compared by storage class,
+   * the same rule as equality. A bare number is too, in inline and
+   * parameterized SQL, so a TEXT column matches neither the text `2024` nor
+   * the text `2024.0`. The other members stay in one IN list.
+   *
+   * @param field - Quoted identifier
+   * @param values - List members, including null
+   * @param isNot - True for NOT IN
+   * @returns The SQL predicate
+   */
+  private formatMembership(
+    field: string,
+    values: unknown[],
+    isNot: boolean
+  ): string {
+    if (values.length === 0) {
+      return isNot ? 'TRUE' : 'FALSE';
+    }
+    const compared = values.filter((value: unknown): boolean =>
+      this.comparesMemberApart(value)
+    );
+    if (compared.length === 0) {
+      return this.formatInClause(field, values, isNot);
+    }
+    const rest = values.filter(
+      (value: unknown): boolean => !this.comparesMemberApart(value)
+    );
+    const parts: string[] = [];
+    if (rest.length > 0) {
+      parts.push(this.formatInClause(field, rest, isNot));
+    }
+    const operator = isNot ? '<>' : '=';
+    for (const member of compared) {
+      parts.push(this.formatComparison(field, operator, member));
+    }
+    if (parts.length === 1) {
+      return parts[0];
+    }
+    const joiner = isNot ? ' AND ' : ' OR ';
+    return parts.map((part: string): string => `(${part})`).join(joiner);
+  }
+
+  /**
+   * A member that equality compares on its own, outside the IN list.
+   *
+   * A quoted decimal always does. A bare number does in inline and
+   * parameterized SQL. A bound real would otherwise take a TEXT column's
+   * affinity and match the text `2024.0`.
+   *
+   * @param value - One membership member
+   * @returns True when the member is compared by itself
+   */
+  private comparesMemberApart(value: unknown): boolean {
+    if (isQuotedDecimal(value)) {
+      return true;
+    }
+    return isBareNumber(value);
   }
 
   /**

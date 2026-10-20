@@ -65,7 +65,11 @@ describe('broken numerals', () => {
     const parameterized = new SqlTranslator({ useParameters: true }).translate(
       expression
     ) as { sql: string; params: unknown[] };
-    expect(parameterized).toEqual({ sql: '"count" = ?', params: [value] });
+    const bound =
+      typeof value === 'number'
+        ? `("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" = ?)`
+        : '"count" = ?';
+    expect(parameterized).toEqual({ sql: bound, params: [value] });
     expect(
       database
         .prepare(`SELECT id FROM items WHERE ${parameterized.sql} ORDER BY id`)

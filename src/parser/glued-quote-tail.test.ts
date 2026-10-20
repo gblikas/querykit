@@ -115,7 +115,11 @@ describe('glued quote tail', () => {
     ['-status:"a"', `NOT ("status" = 'a')`, [2]],
     ['"1status":open', `"1status" = 'open'`, [1, 3]],
     ["'1status':open", `"1status" = 'open'`, [1, 3]],
-    ['status:1', `"status" = 1`, []],
+    [
+      'status:1',
+      `("status" IS NULL AND NULL) OR (typeof("status") IN ('integer', 'real') AND "status" = 1)`,
+      []
+    ],
     ['status:in["a", "b"]', `"status" IN ('a', 'b')`, [1, 3]],
     ['status:["a", "b"]', `("status" = 'a') OR ("status" = 'b')`, [1, 3]],
     ['status:in["a"b]', `"status" IN ('"a"b')`, []],

@@ -1123,7 +1123,9 @@ export class QueryParser implements IQueryParser {
     fields: string[]
   ): void {
     if (expression.type === 'comparison') {
-      if (expression.field.length > 0 && !fields.includes(expression.field)) {
+      // A quoted empty name is still a field. Skipping it made "":todo
+      // look like it named nothing, so the search box accepted it.
+      if (!fields.includes(expression.field)) {
         fields.push(expression.field);
       }
       return;
@@ -1256,9 +1258,13 @@ export class QueryParser implements IQueryParser {
 
     // Then, try to find fields that start with the same prefix
     const prefix = fieldLower.substring(0, Math.min(3, fieldLower.length));
-    for (const schemaField of schemaFields) {
-      if (schemaField.toLowerCase().startsWith(prefix)) {
-        return schemaField;
+    // An empty name has an empty prefix, and every field starts with that,
+    // so the first schema field would be suggested as a default.
+    if (prefix.length > 0) {
+      for (const schemaField of schemaFields) {
+        if (schemaField.toLowerCase().startsWith(prefix)) {
+          return schemaField;
+        }
       }
     }
 

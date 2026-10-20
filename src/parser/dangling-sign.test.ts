@@ -21,11 +21,36 @@ describe('dangling signs', () => {
   const parser = new QueryParser();
 
   it.each([
-    ['count:1', 1, `"count" = 1`, [1]],
-    ['count:-1', -1, `"count" = -1`, [2]],
-    ['count:+1', 1, `"count" = 1`, [1]],
-    ['count:02', 2, `"count" = 2`, [3]],
-    ['count:-.1', -0.1, `"count" = -0.1`, []]
+    [
+      'count:1',
+      1,
+      `("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" = 1)`,
+      [1]
+    ],
+    [
+      'count:-1',
+      -1,
+      `("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" = -1)`,
+      [2]
+    ],
+    [
+      'count:+1',
+      1,
+      `("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" = 1)`,
+      [1]
+    ],
+    [
+      'count:02',
+      2,
+      `("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" = 2)`,
+      [3]
+    ],
+    [
+      'count:-.1',
+      -0.1,
+      `("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" = -0.1)`,
+      []
+    ]
   ])('keeps %p complete with value %p', (query, value, sql, ids) => {
     expect(isInputComplete(query)).toBe(true);
     const expression = parser.parse(query);

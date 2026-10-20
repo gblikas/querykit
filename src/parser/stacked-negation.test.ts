@@ -114,7 +114,7 @@ describe('stacked negation', () => {
     ],
     [
       'NOT status:-1 AND label:x',
-      `(NOT ("status" = -1)) AND ("label" = 'x')`,
+      `(NOT (("status" IS NULL AND NULL) OR (typeof("status") IN ('integer', 'real') AND "status" = -1))) AND ("label" = 'x')`,
       [1, 2]
     ],
     [

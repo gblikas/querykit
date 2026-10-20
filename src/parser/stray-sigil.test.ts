@@ -7,6 +7,7 @@
  */
 
 import { filterInMemory } from '../adapters/memory';
+import { withNulSafeLike } from '../translators/nul-safe-like';
 import { SqlTranslator } from '../translators/sql';
 import { isInputComplete } from './input-parser';
 import { QueryParseError, QueryParser } from './parser';
@@ -51,10 +52,13 @@ describe('stray sigil', () => {
     expect(expression).toMatchObject({ operator: 'LIKE', value: 'open?' });
     expect(
       new SqlTranslator({ useParameters: false }).translate(expression)
-    ).toBe(`"status" LIKE 'open_' ESCAPE '!'`);
+    ).toBe(withNulSafeLike(`"status" LIKE 'open_' ESCAPE '!'`));
     expect(
       new SqlTranslator({ useParameters: true }).translate(expression)
-    ).toEqual({ sql: `"status" LIKE ? ESCAPE '!'`, params: ['open_'] });
+    ).toEqual({
+      sql: withNulSafeLike(`"status" LIKE ? ESCAPE '!'`),
+      params: ['open_']
+    });
     expect(filterInMemory('status:open?', rows).map(row => row.id)).toEqual([
       3
     ]);

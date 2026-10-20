@@ -94,7 +94,9 @@ describe('non-breaking space', () => {
     const expression = parser.parse(query);
     expect(
       new SqlTranslator({ useParameters: false }).translate(expression)
-    ).toBe(`("status" = 'open') AND ("priority" = 1)`);
+    ).toBe(
+      `("status" = 'open') AND (("priority" IS NULL AND NULL) OR (typeof("priority") IN ('integer', 'real') AND "priority" = 1))`
+    );
     expect(engineIds(expression, query)).toEqual([[1], [1], [1], [1]]);
   });
 

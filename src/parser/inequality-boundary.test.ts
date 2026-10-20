@@ -106,7 +106,13 @@ describe('inequality rewrite boundary', () => {
       ['open', 'x'],
       [1, 2, 3, 4]
     ],
-    ['count:!=>5', `NOT ("count" > 5)`, 'NOT ("count" > ?)', [5], [1, 3, 4]],
+    [
+      'count:!=>5',
+      `NOT (("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" > 5) OR (typeof("count") = 'text'))`,
+      'NOT (("count" IS NULL AND NULL) OR (typeof("count") IN (\'integer\', \'real\') AND "count" > ?) OR (typeof("count") = \'text\'))',
+      [5],
+      [1, 3, 4]
+    ],
     [
       '"status":!=open',
       `NOT ("status" = 'open')`,
@@ -116,8 +122,8 @@ describe('inequality rewrite boundary', () => {
     ],
     [
       'count:1 "status":!=open',
-      `("count" = 1) AND (NOT ("status" = 'open'))`,
-      '("count" = ?) AND (NOT ("status" = ?))',
+      `(("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" = 1)) AND (NOT ("status" = 'open'))`,
+      `(("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" = ?)) AND (NOT ("status" = ?))`,
       [1, 'open'],
       []
     ]

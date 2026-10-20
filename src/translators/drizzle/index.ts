@@ -6,6 +6,7 @@
  */
 
 import { SQL, SQLWrapper, sql } from 'drizzle-orm';
+import { quotedDecimalValue } from '../../parser/stored-integer';
 import {
   IComparisonExpression,
   ILogicalExpression,
@@ -17,6 +18,7 @@ import {
   readFieldIdentifiers
 } from '../field-identifiers';
 import { likeEscapeClause, toSqlLikePattern } from '../like-pattern';
+import { nulSafeLikeSql, nulSafeLikeText } from '../nul-safe-like';
 import { findOwnKeyIgnoringCase } from '../own-key-case';
 import {
   enforceTranslationSecurity,
@@ -102,6 +104,78 @@ interface IDialectColumn {
 function isSqliteColumn(column: SQLWrapper): boolean {
   const columnType = (column as Partial<IDialectColumn>).columnType;
   return typeof columnType === 'string' && columnType.startsWith('SQLite');
+}
+
+/**
+ * Whether a comparison should follow SQLite storage class. A schema-less
+ * translation matches the SQL translator. A SQLite column does too. A
+ * PostgreSQL column keeps the plain comparison so the database casts it.
+ *
+ * @param column - The schema column, or null when the field is quoted
+ * @returns True when a quoted decimal compares by storage class
+ */
+function comparesByStorageClass(column: SQLWrapper | null): boolean {
+  return column === null || isSqliteColumn(column);
+}
+
+/**
+ * A quoted decimal, the strings equality compares by storage class.
+ *
+ * @param value - One membership member
+ * @returns True when the member spells a decimal
+ */
+function isQuotedDecimal(value: unknown): value is string {
+  return typeof value === 'string' && quotedDecimalValue(value) !== null;
+}
+
+/**
+ * A finite bare number. Equality and membership compare it by storage class
+ * on SQLite, the same rule as an ordered comparison.
+ *
+ * @param value - One query value or membership member
+ * @returns True when the value is a finite number
+ */
+function isBareNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+/**
+ * A member that equality compares on its own, outside the IN list.
+ *
+ * A quoted decimal always does. A bare number does on SQLite, where a
+ * bound real would take a TEXT column's affinity and match the text
+ * `2024.0`.
+ *
+ * @param value - One membership member
+ * @returns True when the member is compared by itself
+ */
+function comparesMemberApart(value: unknown): boolean {
+  if (isQuotedDecimal(value)) {
+    return true;
+  }
+  return isBareNumber(value);
+}
+
+/**
+ * The SQL operator for a comparison that has a two-sided form.
+ *
+ * @param operator - A QueryKit comparison operator
+ * @returns The SQL operator, or null for LIKE and membership
+ */
+function comparisonSqlOperator(operator: string): string | null {
+  switch (operator) {
+    case '==':
+      return '=';
+    case '!=':
+      return '<>';
+    case '>':
+    case '>=':
+    case '<':
+    case '<=':
+      return operator;
+    default:
+      return null;
+  }
 }
 
 /**
@@ -278,10 +352,14 @@ export class DrizzleTranslator implements ITranslator<SQL> {
    * Build the condition for one operator. Every value is bound as itself:
    * a string, a number and a bigint never pass through a column encoder, so
    * a boolean-mode column cannot turn `TRUE`, `yes` or `2` into `1`. A
-   * boolean is bound through a schema column's own mapping unless the
-   * column is a SQLite column that leaves it alone (see `bindsBoolean`),
-   * and a `Date` goes through the encoder only when it rewrites it, else
-   * the boolean is inlined and the `Date` is bound as ISO-8601 text.
+   * quoted decimal on SQLite compares by storage class instead, as a number
+   * against a number and as text against text. Equality of a bare number
+   * does too, so a TEXT column does not read a bound real as `2024.0`. A
+   * boolean is bound through
+   * a schema column's own mapping unless the column is a SQLite column
+   * that leaves it alone (see `bindsBoolean`), and a `Date` goes through
+   * the encoder only when it rewrites it, else the boolean is inlined and
+   * the `Date` is bound as ISO-8601 text.
    *
    * @param column - The column or quoted identifier to compare
    * @param encoder - The schema column whose encoder may apply, if any
@@ -294,6 +372,28 @@ export class DrizzleTranslator implements ITranslator<SQL> {
     operator: string,
     value: unknown
   ): SQL {
+    const affinity = this.numericAffinitySql(column, encoder, operator, value);
+    if (affinity !== null) {
+      return affinity;
+    }
+    const bareEquality = this.bareNumberEqualitySql(
+      column,
+      encoder,
+      operator,
+      value
+    );
+    if (bareEquality !== null) {
+      return bareEquality;
+    }
+    const orderedNumber = this.orderedNumberSql(
+      column,
+      encoder,
+      operator,
+      value
+    );
+    if (orderedNumber !== null) {
+      return orderedNumber;
+    }
     switch (operator) {
       case '==':
         return value === null
@@ -317,8 +417,11 @@ export class DrizzleTranslator implements ITranslator<SQL> {
             'LIKE operator requires a string value'
           );
         }
-        const sqlPattern = this.wildcardToSqlPattern(value);
-        return sql`${column} LIKE ${sqlPattern} ${sql.raw(likeEscapeClause())}`;
+        const converted = this.wildcardToSqlPattern(value);
+        const sqliteLike = comparesByStorageClass(encoder);
+        const sqlPattern = sqliteLike ? nulSafeLikeText(converted) : converted;
+        const operand = sqliteLike ? nulSafeLikeSql(column) : column;
+        return sql`${operand} LIKE ${sqlPattern} ${sql.raw(likeEscapeClause())}`;
       }
       case 'IN': {
         if (!Array.isArray(value)) {
@@ -339,6 +442,113 @@ export class DrizzleTranslator implements ITranslator<SQL> {
       default:
         throw new DrizzleTranslationError(`Unsupported operator: ${operator}`);
     }
+  }
+
+  /**
+   * Equality of a bare number by SQLite storage class.
+   *
+   * A bound JavaScript number is a real. On a TEXT column that real's text
+   * form is `2024.0`, so a plain `=` matches the string `2024.0`. Integer
+   * and real storage still compare numerically, which is what inline SQL
+   * and in-memory filtering do. A PostgreSQL column is left to `bindValue`
+   * so the database casts. The leading `IS NULL AND NULL` term keeps a
+   * NULL unknown.
+   *
+   * @param column - The column or quoted identifier to compare
+   * @param encoder - The schema column, or null when the field is quoted
+   * @param operator - The QueryKit comparison operator
+   * @param value - The query value
+   * @returns The comparison, or null when this value stays a plain binding
+   */
+  private bareNumberEqualitySql(
+    column: SQLWrapper,
+    encoder: SQLWrapper | null,
+    operator: string,
+    value: unknown
+  ): SQL | null {
+    const sqlOperator = comparisonSqlOperator(operator);
+    if (
+      (sqlOperator !== '=' && sqlOperator !== '<>') ||
+      !comparesByStorageClass(encoder) ||
+      !isBareNumber(value)
+    ) {
+      return null;
+    }
+    const equality = sql`(${column} IS NULL AND NULL) OR (typeof(${column}) IN ('integer', 'real') AND ${column} = ${value})`;
+    return sqlOperator === '=' ? equality : sql`NOT (${equality})`;
+  }
+
+  /**
+   * An ordered comparison of a bare number by SQLite storage class.
+   *
+   * Every text value is greater than every number, matching in-memory
+   * filtering and a column with no affinity. Integer and real storage
+   * compare numerically, so a typed numeric column keeps its matches. A
+   * PostgreSQL column is left to `bindValue` so the database casts. The
+   * leading `IS NULL AND NULL` term keeps a NULL unknown.
+   *
+   * @param column - The column or quoted identifier to compare
+   * @param encoder - The schema column, or null when the field is quoted
+   * @param operator - The QueryKit comparison operator
+   * @param value - The query value
+   * @returns The comparison, or null when this value stays a plain binding
+   */
+  private orderedNumberSql(
+    column: SQLWrapper,
+    encoder: SQLWrapper | null,
+    operator: string,
+    value: unknown
+  ): SQL | null {
+    const sqlOperator = comparisonSqlOperator(operator);
+    if (
+      sqlOperator === null ||
+      sqlOperator === '=' ||
+      sqlOperator === '<>' ||
+      !comparesByStorageClass(encoder) ||
+      typeof value !== 'number' ||
+      !Number.isFinite(value)
+    ) {
+      return null;
+    }
+    const op = sql.raw(sqlOperator);
+    const numeric = sql`typeof(${column}) IN ('integer', 'real') AND ${column} ${op} ${value}`;
+    if (sqlOperator === '>' || sqlOperator === '>=') {
+      return sql`(${column} IS NULL AND NULL) OR (${numeric}) OR (typeof(${column}) = 'text')`;
+    }
+    return sql`(${column} IS NULL AND NULL) OR (${numeric})`;
+  }
+
+  /**
+   * A quoted decimal compared by SQLite storage class, matching the
+   * in-memory adapter. A number uses the number the text spells. Text stays
+   * text. A PostgreSQL column is left to `bindValue` so the engine casts.
+   *
+   * @param column - The column or quoted identifier to compare
+   * @param encoder - The schema column, or null when the field is quoted
+   * @param operator - The QueryKit comparison operator
+   * @param value - The query value
+   * @returns The comparison, or null when this value stays a plain binding
+   */
+  private numericAffinitySql(
+    column: SQLWrapper,
+    encoder: SQLWrapper | null,
+    operator: string,
+    value: unknown
+  ): SQL | null {
+    const sqlOperator = comparisonSqlOperator(operator);
+    if (
+      sqlOperator === null ||
+      !comparesByStorageClass(encoder) ||
+      typeof value !== 'string'
+    ) {
+      return null;
+    }
+    const numeral = quotedDecimalValue(value);
+    if (numeral === null) {
+      return null;
+    }
+    const op = sql.raw(sqlOperator);
+    return sql`(${column} IS NULL AND NULL) OR (typeof(${column}) IN ('integer', 'real') AND ${column} ${op} ${numeral}) OR (typeof(${column}) = 'text' AND ${column} ${op} ${value})`;
   }
 
   /**
@@ -382,6 +592,46 @@ export class DrizzleTranslator implements ITranslator<SQL> {
   }
 
   /**
+   * A quoted decimal or bare number in a membership list, compared by
+   * storage class so the list agrees with `=`. Other members keep the IN /
+   * NULL rewrite. A PostgreSQL column is not sent here; it binds the value
+   * and lets the database cast it.
+   *
+   * @param column - The column or quoted identifier
+   * @param encoder - The schema column, or null when the field is quoted
+   * @param values - List members, at least one compared by storage class
+   * @param isNegated - True for NOT IN
+   * @returns The membership predicate
+   */
+  private translateNumeralMembership(
+    column: SQLWrapper,
+    encoder: SQLWrapper | null,
+    values: unknown[],
+    isNegated: boolean
+  ): SQL {
+    const apart = values.filter(comparesMemberApart);
+    const rest = values.filter(
+      (value: unknown): boolean => !comparesMemberApart(value)
+    );
+    const operator = isNegated ? '!=' : '==';
+    const parts: SQL[] = [];
+    if (rest.length > 0) {
+      parts.push(this.translateMembership(column, encoder, rest, isNegated));
+    }
+    for (const member of apart) {
+      parts.push(this.buildSqlForOperator(column, encoder, operator, member));
+    }
+    if (parts.length === 1) {
+      return parts[0];
+    }
+    const joiner = isNegated ? sql` AND ` : sql` OR `;
+    return sql`(${sql.join(
+      parts.map((part: SQL): SQL => sql`(${part})`),
+      joiner
+    )})`;
+  }
+
+  /**
    * Translate IN / NOT IN so NULL members agree with IS NULL / IS NOT NULL.
    * Empty IN is false and empty NOT IN is true; Drizzle's inArray has
    * treated an empty list differently across versions, so the list is
@@ -402,6 +652,14 @@ export class DrizzleTranslator implements ITranslator<SQL> {
     }
     if (values.length === 0) {
       return isNegated ? sql`TRUE` : sql`FALSE`;
+    }
+    if (comparesByStorageClass(encoder) && values.some(comparesMemberApart)) {
+      return this.translateNumeralMembership(
+        column,
+        encoder,
+        values,
+        isNegated
+      );
     }
     const nonNullValues = values.filter(
       (value: unknown): boolean => value !== null

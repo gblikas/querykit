@@ -8,6 +8,7 @@
  */
 
 import { filterInMemory } from '../adapters/memory';
+import { withNulSafeLike } from '../translators/nul-safe-like';
 import { SqlTranslator } from '../translators/sql';
 import { isInputComplete } from './input-parser';
 import { QueryParseError, QueryParser } from './parser';
@@ -70,7 +71,7 @@ describe('symbol in value', () => {
     const expression = parser.parse(query);
     expect(
       new SqlTranslator({ useParameters: false }).translate(expression)
-    ).toBe(sql);
+    ).toBe(withNulSafeLike(sql));
     expect(filterInMemory(query, rows).map(row => row.id)).toEqual(ids);
   });
 

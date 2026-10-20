@@ -12,6 +12,7 @@
  * root barrel re-exports every public name of this module.
  */
 
+import { sqliteWindowCount } from './common/sqlite-window-count';
 import { QueryParser, IParserOptions } from './parser';
 import {
   DEFAULT_SECURITY_OPTIONS,
@@ -298,7 +299,15 @@ function definedSecurityOptions(
  * Choose the limit forwarded to the adapter.
  *
  * An omitted limit uses `defaultLimit`. A limit above `maxLimit` is capped.
- * The chosen limit is always less than or equal to `maxLimit`.
+ * The chosen limit is always less than or equal to `maxLimit`. A boolean
+ * `true` is 1 and `false` is 0, the way SQLite reads `TRUE` and `FALSE`. A
+ * canonical digit string is that integer, the way SQLite reads `LIMIT '2'`,
+ * and so is that integer with surrounding ASCII space, a decimal whose
+ * fraction is only zeros, a leading plus, a leading minus, leading zeros,
+ * or an exponent (`" 2"`, `"2 "`, `"2.0"`, `"02"`, `"+2"`, `"-2"`,
+ * `"2e1"`). `"2.5"` and `"+ 2"` are not integers. A negative spelling is
+ * no upper bound in SQLite; the kit forwards `maxLimit` instead of the
+ * negative number, so the cap stays on. A numeric negative still throws.
  *
  * @param requestedLimit - Limit supplied by the caller, if any
  * @param security - Resolved security settings
@@ -310,7 +319,17 @@ function resolveResultLimit(
   security: Required<ISecurityOptions>
 ): number {
   const chosenLimit =
-    requestedLimit === undefined ? security.defaultLimit : requestedLimit;
+    requestedLimit === undefined
+      ? security.defaultLimit
+      : sqliteWindowCount(requestedLimit);
+  const negativeSpelling = cappedNegativeSpelling(
+    requestedLimit,
+    chosenLimit,
+    security
+  );
+  if (negativeSpelling !== undefined) {
+    return negativeSpelling;
+  }
   if (!isResultLimit(chosenLimit)) {
     throw new QuerySecurityError('Invalid query limit');
   }
@@ -318,6 +337,42 @@ function resolveResultLimit(
     return security.maxLimit;
   }
   return chosenLimit;
+}
+
+/**
+ * The cap for a negative integer spelling such as `"-2"`.
+ *
+ * SQLite reads that limit as no upper bound. Forwarding the negative number
+ * would switch `maxLimit` off, so the kit uses the cap. A numeric negative
+ * is not a spelling and is left for `isResultLimit` to reject.
+ *
+ * @param requestedLimit - Limit supplied by the caller, if any
+ * @param chosenLimit - That limit after `sqliteWindowCount`
+ * @param security - Resolved security settings
+ * @returns `maxLimit` for a negative integer spelling, otherwise `undefined`
+ */
+function cappedNegativeSpelling(
+  requestedLimit: unknown,
+  chosenLimit: unknown,
+  security: Required<ISecurityOptions>
+): number | undefined {
+  if (typeof requestedLimit !== 'string') {
+    return undefined;
+  }
+  if (!isNegativeInteger(chosenLimit)) {
+    return undefined;
+  }
+  return security.maxLimit;
+}
+
+/**
+ * Whether a counted window is a negative safe integer.
+ *
+ * @param value - Limit after `sqliteWindowCount`
+ * @returns True when the value is a negative safe integer
+ */
+function isNegativeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value < 0;
 }
 
 /**
@@ -669,13 +724,16 @@ export function createQueryKit<
                 limitState,
                 securityOptions
               );
+              const effectiveOffset = sqliteWindowCount(offsetState) as
+                | number
+                | undefined;
               const results = await executeWithTimeout(
                 () =>
                   options.adapter.execute(table, finalExpression, {
                     ...executionSecurity(securityOptions),
                     orderBy: sortFields.length > 0 ? orderBy : undefined,
                     limit: effectiveLimit,
-                    offset: offsetState,
+                    offset: effectiveOffset,
                     schema: selectedTableSchema(schema, table)
                   }),
                 securityOptions.queryTimeout

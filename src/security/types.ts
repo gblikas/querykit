@@ -96,9 +96,11 @@ export interface ISecurityOptions {
    *
    * Any query that references a denied value in any form is rejected, including
    * negated forms (`NOT status:"deleted"`, `status != "deleted"`, `status NOT IN
-   * ["deleted"]`). This follows an explicit allow-listing approach: if you don't
-   * want users to reference a sensitive value at all, `denyValues` blocks it
-   * completely, regardless of how it's used.
+   * ["deleted"]`) and a LIKE wildcard that matches a denied value the way
+   * SQLite LIKE does (`secret:hid*` and `secret:*hidden*` when `hidden` is
+   * denied; `secret:other*` is not). This follows an explicit allow-listing
+   * approach: if you don't want users to reference a sensitive value at all,
+   * `denyValues` blocks it completely, regardless of how it's used.
    *
    * To guarantee denied records are never returned from any query — including
    * queries that don't reference the denied value at all (e.g. `NOT status:

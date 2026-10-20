@@ -9,6 +9,7 @@
  */
 
 import { filterInMemory } from '../adapters/memory';
+import { withNulSafeLike } from '../translators/nul-safe-like';
 import { SqlTranslator } from '../translators/sql';
 import { isInputComplete } from './input-parser';
 import { QueryParseError, QueryParser } from './parser';
@@ -95,19 +96,71 @@ describe('digit-led value', () => {
   });
 
   it.each([
-    ['count:1', `"count" = 1`, [1, 3, 5]],
-    ['count:01', `"count" = 1`, [1, 3, 5]],
-    ['count:1.', `"count" = 1`, [1, 3, 5]],
-    ['count:1.0', `"count" = 1`, [1, 3, 5]],
-    ['count:+1', `"count" = 1`, [1, 3, 5]],
-    ['count:1e0', `"count" = 1`, [1, 3, 5]],
-    ['count:1.e5', `"count" = 100000`, []],
-    ['count:-1', `"count" = -1`, []],
-    ['count:.5', `"count" = 0.5`, []],
-    ['count:-.5', `"count" = -0.5`, []],
-    ['count:1.5e2', `"count" = 150`, []],
-    ['count:>1', `"count" > 1`, [2, 4]],
-    ['count:[1 TO 2]', `("count" >= 1) AND ("count" <= 2)`, [1, 2, 3, 5]],
+    [
+      'count:1',
+      `("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" = 1)`,
+      [1, 3, 5]
+    ],
+    [
+      'count:01',
+      `("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" = 1)`,
+      [1, 3, 5]
+    ],
+    [
+      'count:1.',
+      `("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" = 1)`,
+      [1, 3, 5]
+    ],
+    [
+      'count:1.0',
+      `("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" = 1)`,
+      [1, 3, 5]
+    ],
+    [
+      'count:+1',
+      `("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" = 1)`,
+      [1, 3, 5]
+    ],
+    [
+      'count:1e0',
+      `("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" = 1)`,
+      [1, 3, 5]
+    ],
+    [
+      'count:1.e5',
+      `("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" = 100000)`,
+      []
+    ],
+    [
+      'count:-1',
+      `("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" = -1)`,
+      []
+    ],
+    [
+      'count:.5',
+      `("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" = 0.5)`,
+      []
+    ],
+    [
+      'count:-.5',
+      `("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" = -0.5)`,
+      []
+    ],
+    [
+      'count:1.5e2',
+      `("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" = 150)`,
+      []
+    ],
+    [
+      'count:>1',
+      `("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" > 1) OR (typeof("count") = 'text')`,
+      [2, 4]
+    ],
+    [
+      'count:[1 TO 2]',
+      `(("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" >= 1) OR (typeof("count") = 'text')) AND (("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" <= 2))`,
+      [1, 2, 3, 5]
+    ],
     ['label:"1x"', `"label" = '1x'`, [1]],
     ["label:'1x'", `"label" = '1x'`, [1]],
     ['status:"2nd"', `"status" = '2nd'`, [2]],
@@ -131,7 +184,7 @@ describe('digit-led value', () => {
     const expression = parser.parse(query);
     expect(
       new SqlTranslator({ useParameters: false }).translate(expression)
-    ).toBe(sql);
+    ).toBe(withNulSafeLike(sql));
     expect(filterInMemory(query, rows).map(row => row.id)).toEqual(ids);
   });
 });

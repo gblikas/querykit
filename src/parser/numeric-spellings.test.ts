@@ -77,22 +77,35 @@ describe('unquoted numeric spellings', () => {
   }
 
   it.each([
-    ['priority:007', 7, '"priority" = 7', [1]],
-    ['priority:00.50', 0.5, '"priority" = 0.5', [3]],
-    ['priority:-0', 0, '"priority" = 0', [4]]
+    [
+      'priority:007',
+      7,
+      '("priority" IS NULL AND NULL) OR (typeof("priority") IN (\'integer\', \'real\') AND "priority" = 7)',
+      [1]
+    ],
+    [
+      'priority:00.50',
+      0.5,
+      '("priority" IS NULL AND NULL) OR (typeof("priority") IN (\'integer\', \'real\') AND "priority" = 0.5)',
+      [3]
+    ],
+    [
+      'priority:-0',
+      0,
+      '("priority" IS NULL AND NULL) OR (typeof("priority") IN (\'integer\', \'real\') AND "priority" = 0)',
+      [4]
+    ]
   ])(
     'leaves %s to Liqe and matches the stored number',
     (query, value, inlineSql, ids) => {
       const run = runEverywhere(query);
       expect(run.value).toBe(value);
       expect(run.inlineSql).toBe(inlineSql);
-      expect(run.parameterized).toEqual({
-        sql: '"priority" = ?',
-        params: [value]
-      });
-      expect(run.drizzle).toEqual({ sql: '"priority" = ?', params: [value] });
+      const bound = `("priority" IS NULL AND NULL) OR (typeof("priority") IN ('integer', 'real') AND "priority" = ?)`;
+      expect(run.parameterized).toEqual({ sql: bound, params: [value] });
+      expect(run.drizzle).toEqual({ sql: bound, params: [value] });
       expect(run.schemaDrizzle).toEqual({
-        sql: '"items"."priority" = ?',
+        sql: `("items"."priority" IS NULL AND NULL) OR (typeof("items"."priority") IN ('integer', 'real') AND "items"."priority" = ?)`,
         params: [value]
       });
       expect(run.ids).toEqual(ids);
@@ -100,22 +113,35 @@ describe('unquoted numeric spellings', () => {
   );
 
   it.each([
-    ['priority:+1', 1, '"priority" = 1', [2]],
-    ['priority:1.', 1, '"priority" = 1', [2]],
-    ['priority:.5', 0.5, '"priority" = 0.5', [3]]
+    [
+      'priority:+1',
+      1,
+      '("priority" IS NULL AND NULL) OR (typeof("priority") IN (\'integer\', \'real\') AND "priority" = 1)',
+      [2]
+    ],
+    [
+      'priority:1.',
+      1,
+      '("priority" IS NULL AND NULL) OR (typeof("priority") IN (\'integer\', \'real\') AND "priority" = 1)',
+      [2]
+    ],
+    [
+      'priority:.5',
+      0.5,
+      '("priority" IS NULL AND NULL) OR (typeof("priority") IN (\'integer\', \'real\') AND "priority" = 0.5)',
+      [3]
+    ]
   ])(
     'spells %s as the plain decimal and matches the stored number',
     (query, value, inlineSql, ids) => {
       const run = runEverywhere(query);
       expect(run.value).toBe(value);
       expect(run.inlineSql).toBe(inlineSql);
-      expect(run.parameterized).toEqual({
-        sql: '"priority" = ?',
-        params: [value]
-      });
-      expect(run.drizzle).toEqual({ sql: '"priority" = ?', params: [value] });
+      const bound = `("priority" IS NULL AND NULL) OR (typeof("priority") IN ('integer', 'real') AND "priority" = ?)`;
+      expect(run.parameterized).toEqual({ sql: bound, params: [value] });
+      expect(run.drizzle).toEqual({ sql: bound, params: [value] });
       expect(run.schemaDrizzle).toEqual({
-        sql: '"items"."priority" = ?',
+        sql: `("items"."priority" IS NULL AND NULL) OR (typeof("items"."priority") IN ('integer', 'real') AND "items"."priority" = ?)`,
         params: [value]
       });
       expect(run.ids).toEqual(ids);

@@ -10,6 +10,7 @@ import { inMemoryAdapter } from '../adapters/memory';
 import { QueryExpression } from '../parser/types';
 import { DrizzleTranslator } from './drizzle';
 import { toSqlLikePattern } from './like-pattern';
+import { withNulSafeLike } from './nul-safe-like';
 import { SqlTranslator } from './sql';
 
 const nodeRequire = createRequire(__filename);
@@ -96,8 +97,12 @@ describe('portable LIKE escape', () => {
     const parameterized = new SqlTranslator({ useParameters: true }).translate(
       expression
     ) as ICompiledSql;
-    expect(inline).toBe(`"name" LIKE '${SQL_PATTERN}' ESCAPE '!'`);
-    expect(parameterized.sql).toBe('"name" LIKE ? ESCAPE \'!\'');
+    expect(inline).toBe(
+      withNulSafeLike(`"name" LIKE '${SQL_PATTERN}' ESCAPE '!'`)
+    );
+    expect(parameterized.sql).toBe(
+      withNulSafeLike('"name" LIKE ? ESCAPE \'!\'')
+    );
     expect(parameterized.params).toEqual([SQL_PATTERN]);
     expect(escapeCharacter(parameterized.sql)).toBe('!');
     expect(escapeCharacter(parameterized.sql)).toHaveLength(1);

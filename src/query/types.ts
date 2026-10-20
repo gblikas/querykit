@@ -89,7 +89,8 @@ export interface IQueryBuilder<T> {
   notWhere(field: QueryField<T>, operator: ComparisonOperator, value: QueryValue): IQueryBuilder<T>;
   
   /**
-   * Add an order by clause to the query
+   * Add an order by clause to the query. A direction other than `asc` or
+   * `desc` is rejected, in any letter case, including an empty string.
    */
   orderBy(field: QueryField<T>, direction?: SortDirection): IQueryBuilder<T>;
   

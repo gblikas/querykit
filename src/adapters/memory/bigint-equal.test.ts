@@ -54,16 +54,22 @@ describe('equality with an integer past the safe range', () => {
         value
       });
       const run = harness.expectSameSqlIds(query, expectedIds);
-      expect(run.inlineSql).toBe(`"count" = ${digits}`);
-      expect(run.parameterized).toEqual({
-        sql: '"count" = ?',
-        params: [value]
-      });
-      expect(run.drizzle).toEqual({ sql: '"count" = ?', params: [value] });
-      expect(run.schemaDrizzle).toEqual({
-        sql: '"items"."count" = ?',
-        params: [value]
-      });
+      const inlineSql =
+        typeof value === 'bigint'
+          ? `"count" = ${digits}`
+          : `("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" = ${digits})`;
+      expect(run.inlineSql).toBe(inlineSql);
+      const bound =
+        typeof value === 'number'
+          ? `("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" = ?)`
+          : '"count" = ?';
+      const qualified =
+        typeof value === 'number'
+          ? `("items"."count" IS NULL AND NULL) OR (typeof("items"."count") IN ('integer', 'real') AND "items"."count" = ?)`
+          : '"items"."count" = ?';
+      expect(run.parameterized).toEqual({ sql: bound, params: [value] });
+      expect(run.drizzle).toEqual({ sql: bound, params: [value] });
+      expect(run.schemaDrizzle).toEqual({ sql: qualified, params: [value] });
     }
   );
 

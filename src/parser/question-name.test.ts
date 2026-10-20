@@ -10,6 +10,7 @@
 
 import { integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 import { filterInMemory } from '../adapters/memory';
+import { withNulSafeLike } from '../translators/nul-safe-like';
 import { isInputComplete } from './input-parser';
 import { QueryParseError, QueryParser } from './parser';
 import { openSqliteHarness } from '../test-support';
@@ -88,17 +89,16 @@ describe('question mark in a field name', () => {
         value
       });
       const run = harness.expectSameIds(query, expectedIds);
-      expect(run.inlineSql).toBe(`"status" LIKE '${pattern}' ESCAPE '!'`);
+      expect(run.inlineSql).toBe(
+        withNulSafeLike(`"status" LIKE '${pattern}' ESCAPE '!'`)
+      );
       expect(run.parameterized).toEqual({
-        sql: `"status" LIKE ? ESCAPE '!'`,
+        sql: withNulSafeLike(`"status" LIKE ? ESCAPE '!'`),
         params: [pattern]
       });
-      expect(run.drizzle).toEqual({
-        sql: `"status" LIKE ? ESCAPE '!'`,
-        params: [pattern]
-      });
+      expect(run.drizzle).toEqual(run.parameterized);
       expect(run.schemaDrizzle).toEqual({
-        sql: `"items"."status" LIKE ? ESCAPE '!'`,
+        sql: withNulSafeLike(`"items"."status" LIKE ? ESCAPE '!'`),
         params: [pattern]
       });
     }

@@ -180,7 +180,9 @@ describe('DrizzleTranslator semantics', () => {
 
   it('quotes each part of a table-qualified field', (): void => {
     const compiled = compile(comparison('items.priority', '>', 2));
-    expect(compiled.sql).toBe('"items"."priority" > ?');
+    expect(compiled.sql).toBe(
+      '("items"."priority" IS NULL AND NULL) OR (typeof("items"."priority") IN (\'integer\', \'real\') AND "items"."priority" > ?) OR (typeof("items"."priority") = \'text\')'
+    );
     expect(compiled.params).toEqual([2]);
     expect(matchingIds(compiled)).toEqual([3, 5, 7]);
   });
@@ -190,7 +192,9 @@ describe('DrizzleTranslator semantics', () => {
       users: { id: sql.raw('users.id') },
       todos: { id: sql.raw('todos.id') }
     });
-    expect(compiled.sql).toBe('"id" = ?');
+    expect(compiled.sql).toBe(
+      `("id" IS NULL AND NULL) OR (typeof("id") IN ('integer', 'real') AND "id" = ?)`
+    );
     expect(compiled.sql).not.toContain('users');
     expect(matchingIds(compiled)).toEqual([1]);
   });

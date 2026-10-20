@@ -9,6 +9,7 @@
  */
 
 import { filterInMemory } from '../adapters/memory';
+import { withNulSafeLike } from '../translators/nul-safe-like';
 import { SqlTranslator } from '../translators/sql';
 import { isInputComplete } from './input-parser';
 import { findTrailingLogicalOperator, parseQueryInput } from './tokenizer';
@@ -116,21 +117,41 @@ describe('search box parity with the parser rewrites', () => {
   it.each([
     ['status:[)]', `"status" = ')'`, [2]],
     ['label:in[(]', `"label" IN ('(')`, [2]],
-    ['count:!=>5', `NOT ("count" > 5)`, [1, 2, 4]],
-    ['count:!=>[1 TO 5]', `NOT (("count" >= 1) AND ("count" <= 5))`, [3]],
-    ['count:!==5', `NOT ("count" = 5)`, [1, 3, 4]],
+    [
+      'count:!=>5',
+      `NOT (("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" > 5) OR (typeof("count") = 'text'))`,
+      [1, 2, 4]
+    ],
+    [
+      'count:!=>[1 TO 5]',
+      `NOT ((("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" >= 1) OR (typeof("count") = 'text')) AND (("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" <= 5)))`,
+      [3]
+    ],
+    [
+      'count:!==5',
+      `NOT (("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" = 5))`,
+      [1, 3, 4]
+    ],
     ['"label":>=or', `"label" >= 'or'`, [1, 3]],
     ["'label':?", `"label" LIKE '_' ESCAPE '!'`, [1, 2, 4]],
     ['"label":!=\ufeffa', `NOT ("label" = '\ufeffa')`, [1, 2, 3, 4]],
     ['status:[a]b', `"status" = 'ab'`, [3]],
-    ['count:[1 TO *]5', `"count" >= 15`, [3]],
+    [
+      'count:[1 TO *]5',
+      `("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" >= 15) OR (typeof("count") = 'text')`,
+      [3]
+    ],
     ['label:[a]AND status:a', `("label" = 'aAND') AND ("status" = 'a')`, []],
     [
       'label:[x, or]AND status:a',
       `(("label" = 'x') OR ("label" = 'or')) AND ("status" = 'a')`,
       [1]
     ],
-    ['-count:[1 TO *]', `NOT ("count" >= 1)`, []],
+    [
+      '-count:[1 TO *]',
+      `NOT (("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" >= 1) OR (typeof("count") = 'text'))`,
+      []
+    ],
     ['-status:[a]', `NOT ("status" = 'a')`, [2, 3, 4]],
     ['-status:in[a, b]', `NOT ("status" IN ('a', 'b'))`, [2, 3]],
     [
@@ -138,11 +159,19 @@ describe('search box parity with the parser rewrites', () => {
       `NOT (("status" >= 'a') AND ("status" <= 'b'))`,
       [2]
     ],
-    ['(status:a)AND(count:1)', `("status" = 'a') AND ("count" = 1)`, [1]],
-    ['status:a AND(count:1)', `("status" = 'a') AND ("count" = 1)`, [1]],
+    [
+      '(status:a)AND(count:1)',
+      `("status" = 'a') AND (("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" = 1))`,
+      [1]
+    ],
+    [
+      'status:a AND(count:1)',
+      `("status" = 'a') AND (("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" = 1))`,
+      [1]
+    ],
     [
       '(status:a count:1)AND label:x',
-      `(("status" = 'a') AND ("count" = 1)) AND ("label" = 'x')`,
+      `(("status" = 'a') AND (("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" = 1))) AND ("label" = 'x')`,
       [1]
     ]
   ])('keeps %p complete with inline SQL %p', (query, sql, ids) => {
@@ -150,7 +179,7 @@ describe('search box parity with the parser rewrites', () => {
     const expression = parser.parse(query);
     expect(
       new SqlTranslator({ useParameters: false }).translate(expression)
-    ).toBe(sql);
+    ).toBe(withNulSafeLike(sql));
     expect(filterInMemory(query, rows).map(row => row.id)).toEqual(ids);
     expect(parser.parseWithContext(query).success).toBe(true);
   });

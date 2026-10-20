@@ -54,11 +54,14 @@ describe('boolean digit equality', () => {
         value
       });
       const run = harness.expectSameSqlIds(query, expectedIds);
-      expect(run.inlineSql).toBe(`"flag" = ${value}`);
-      expect(run.parameterized).toEqual({ sql: '"flag" = ?', params: [value] });
-      expect(run.drizzle).toEqual({ sql: '"flag" = ?', params: [value] });
+      expect(run.inlineSql).toBe(
+        `("flag" IS NULL AND NULL) OR (typeof("flag") IN ('integer', 'real') AND "flag" = ${value})`
+      );
+      const bound = `("flag" IS NULL AND NULL) OR (typeof("flag") IN ('integer', 'real') AND "flag" = ?)`;
+      expect(run.parameterized).toEqual({ sql: bound, params: [value] });
+      expect(run.drizzle).toEqual({ sql: bound, params: [value] });
       expect(run.schemaDrizzle).toEqual({
-        sql: '"items"."flag" = ?',
+        sql: `("items"."flag" IS NULL AND NULL) OR (typeof("items"."flag") IN ('integer', 'real') AND "items"."flag" = ?)`,
         params: [value]
       });
     }

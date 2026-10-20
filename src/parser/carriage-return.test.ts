@@ -99,7 +99,11 @@ describe('carriage return and control characters', () => {
     ['status:in[open\u001fx]', `"status" IN ('open\u001fx')`, []],
     ['status:in\r[open]', `"status" IN ('open')`, [1, 3]],
     ['status:in[a,\rb]', `"status" IN ('a', 'b')`, []],
-    ['count:[1\rTO 5]', `("count" >= 1) AND ("count" <= 5)`, []]
+    [
+      'count:[1\rTO 5]',
+      `(("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" >= 1) OR (typeof("count") = 'text')) AND (("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" <= 5))`,
+      []
+    ]
   ])('keeps %p complete with inline SQL %p', (query, sql, ids) => {
     expect(isInputComplete(query)).toBe(true);
     const expression = parser.parse(query);

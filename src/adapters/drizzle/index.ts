@@ -15,6 +15,7 @@ import { enforceTranslationSecurity } from '../../translators/translation-securi
 import { ITranslationSecurity } from '../../translators/types';
 import { QuerySecurityError } from '../../security/validator';
 import { IAdapter, IAdapterOptions, IQueryExecutionOptions } from '../types';
+import { sqliteWindowCount } from '../../common/sqlite-window-count';
 import { QueryExpression } from '../../parser/types';
 import { SQL, SQLWrapper, asc, desc, sql } from 'drizzle-orm';
 import { createQueryKit, QueryKit } from '../../query-kit';
@@ -176,10 +177,19 @@ export class DrizzleAdapter<
    * length, depth and clause caps) run before `select().from`, so a rejected
    * query builds nothing and reads nothing; the enforced exclusions are
    * appended by the translator. A `QuerySecurityError` is thrown as is, not
-   * wrapped as an adapter error.
+   * wrapped as an adapter error. A boolean limit or offset is read as
+   * SQLite reads `TRUE` and `FALSE` (`true` is 1, `false` is 0). A canonical
+   * digit string is that integer (`"2"` is 2, `"0"` is 0), and so is that
+   * integer with surrounding ASCII space, a decimal whose fraction is only
+   * zeros, a leading plus, a leading minus, leading zeros, or an exponent
+   * (`" 2"`, `"2 "`, `"2.0"`, `"02"`, `"+2"`, `"-2"`, `"2e1"`), before that
+   * check. A negative integer is no upper bound. A non-finite limit
+   * or offset (`NaN`, `Infinity`, or `-Infinity`)
+   * is rejected there too: Drizzle would otherwise omit a `NaN` or
+   * `-Infinity` limit and return the matching rows.
    *
    * @throws {QuerySecurityError} When the query breaks a cap or names a field outside the allowlist
-   * @throws {DrizzleAdapterError} When the table is unknown or the query cannot be built or run
+   * @throws {DrizzleAdapterError} When the table is unknown, the limit or offset is not finite, or the query cannot be built or run
    */
   public async execute<TResult = unknown>(
     tableName: string,
@@ -199,6 +209,8 @@ export class DrizzleAdapter<
       ...security,
       enforceExcludedValues: undefined
     });
+    const window = this.countedWindow(options);
+    this.rejectNonFiniteWindow(window);
 
     try {
       // Start with a base query
@@ -224,14 +236,14 @@ export class DrizzleAdapter<
         }
       }
 
-      const limit = this.limitClause(options);
+      const limit = this.limitClause(window);
       if (limit !== undefined) {
         query = query.limit(limit);
       }
 
       // Add offset if specified
-      if (options?.offset !== undefined) {
-        query = query.offset(options.offset);
+      if (window?.offset !== undefined) {
+        query = query.offset(window.offset);
       }
 
       // Execute the query
@@ -249,11 +261,62 @@ export class DrizzleAdapter<
   }
 
   /**
+   * Reject a non-finite limit or offset before Drizzle builds the statement.
+   *
+   * Drizzle omits a limit when `limit >= 0` is false and omits an offset
+   * when the offset is falsy. `NaN` fails both checks, and `-Infinity`
+   * fails the limit check, so the clause disappears and the matching rows
+   * come back. A non-finite limit beside an offset would otherwise be
+   * written as `LIMIT -1`. `Infinity` passes `>= 0` and is bound, which
+   * SQLite then rejects; it is still not an integer. SQLite and the
+   * in-memory adapter reject the whole window. A boolean is already 1 or 0
+   * here, and a canonical, padded, signed, decimal, or exponent integer
+   * string is already that integer; `countedWindow` reads both before this
+   * check. `"-2"` is -2 and `"2e1"` is 20. `"+ 2"` is still a string.
+   *
+   * @param options Result window as the caller passed it
+   * @throws {DrizzleAdapterError} When the limit or the offset is NaN, Infinity, or -Infinity
+   */
+  private rejectNonFiniteWindow(options?: IDrizzleQueryExecutionOptions): void {
+    const { limit, offset } = options ?? {};
+    if (limit !== undefined && !Number.isFinite(limit)) {
+      throw new DrizzleAdapterError('Limit must be an integer');
+    }
+    if (offset !== undefined && !Number.isFinite(offset)) {
+      throw new DrizzleAdapterError('Offset must be an integer');
+    }
+  }
+
+  /**
+   * A copy of the execution options whose boolean limit and offset are 1 and
+   * 0, and whose digit, padded, signed, decimal, or exponent integer strings
+   * are those integers. The caller's object is left unchanged, so a later
+   * read of the options still sees the original value. `undefined` stays
+   * `undefined`.
+   *
+   * @param options Result window as the caller passed it
+   * @returns The same window with `true` read as 1, `false` read as 0, `"2"` read as 2, `"-2"` read as -2, and `"2e1"` read as 20
+   */
+  private countedWindow(
+    options?: IDrizzleQueryExecutionOptions
+  ): IDrizzleQueryExecutionOptions | undefined {
+    if (options === undefined) {
+      return undefined;
+    }
+    return {
+      ...options,
+      limit: sqliteWindowCount(options.limit) as number | undefined,
+      offset: sqliteWindowCount(options.offset) as number | undefined
+    };
+  }
+
+  /**
    * The LIMIT of one execution. SQLite rejects an OFFSET with no LIMIT and
    * reads `LIMIT -1` as no limit, while Drizzle drops a negative number, so
    * an offset with no limit, or beside a negative limit, is written as the
    * raw `-1`; a negative limit with no offset is omitted. A non-negative
-   * limit is passed as given.
+   * limit is passed as given. A NaN, Infinity, or -Infinity limit or offset
+   * never reaches this method; `rejectNonFiniteWindow` rejects it first.
    */
   private limitClause(
     options?: IDrizzleQueryExecutionOptions

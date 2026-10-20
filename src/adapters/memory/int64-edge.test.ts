@@ -48,7 +48,7 @@ describe('signed 64-bit integer edges', () => {
     [
       'count:9223372036854775808',
       9223372036854775808,
-      '"count" = 9223372036854776000',
+      '("count" IS NULL AND NULL) OR (typeof("count") IN (\'integer\', \'real\') AND "count" = 9223372036854776000)',
       []
     ]
   ])(
@@ -64,10 +64,11 @@ describe('signed 64-bit integer edges', () => {
       });
       const run = harness.expectSameIds(query, expectedIds);
       expect(run.inlineSql).toBe(inlineSql);
-      expect(run.parameterized).toEqual({
-        sql: '"count" = ?',
-        params: [value]
-      });
+      const bound =
+        typeof value === 'number'
+          ? `("count" IS NULL AND NULL) OR (typeof("count") IN ('integer', 'real') AND "count" = ?)`
+          : '"count" = ?';
+      expect(run.parameterized).toEqual({ sql: bound, params: [value] });
     }
   );
 });

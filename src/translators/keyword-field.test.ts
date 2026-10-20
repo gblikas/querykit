@@ -49,19 +49,23 @@ describe('keyword field names', () => {
         value
       });
       const run = harness.expectSameIds(query, expectedIds);
-      expect(run.inlineSql).toBe(`"${field}" = ${inlineValue}`);
-      expect(run.parameterized).toEqual({
-        sql: `"${field}" = ?`,
-        params: [value]
-      });
-      expect(run.drizzle).toEqual({
-        sql: `"${field}" = ?`,
-        params: [value]
-      });
-      expect(run.schemaDrizzle).toEqual({
-        sql: `"items"."${field}" = ?`,
-        params: [value]
-      });
+      const quoted = `"${field}"`;
+      const inlineSql =
+        typeof value === 'number'
+          ? `(${quoted} IS NULL AND NULL) OR (typeof(${quoted}) IN ('integer', 'real') AND ${quoted} = ${inlineValue})`
+          : `${quoted} = ${inlineValue}`;
+      expect(run.inlineSql).toBe(inlineSql);
+      const bound =
+        typeof value === 'number'
+          ? `(${quoted} IS NULL AND NULL) OR (typeof(${quoted}) IN ('integer', 'real') AND ${quoted} = ?)`
+          : `${quoted} = ?`;
+      const qualified =
+        typeof value === 'number'
+          ? `("items".${quoted} IS NULL AND NULL) OR (typeof("items".${quoted}) IN ('integer', 'real') AND "items".${quoted} = ?)`
+          : `"items".${quoted} = ?`;
+      expect(run.parameterized).toEqual({ sql: bound, params: [value] });
+      expect(run.drizzle).toEqual({ sql: bound, params: [value] });
+      expect(run.schemaDrizzle).toEqual({ sql: qualified, params: [value] });
     }
   );
 
